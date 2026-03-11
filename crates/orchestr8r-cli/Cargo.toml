@@ -1,0 +1,18 @@
+[package]
+name = "orchestr8r-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "orchestr8r"
+path = "src/main.rs"
+
+[dependencies]
+orchestr8r-core = { path = "../orchestr8r-core" }
+orchestr8r-storage = { path = "../orchestr8r-storage" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,10 @@
+name = "hello-world"
+kind = "indefinite"
+
+[[steps]]
+type = "shell"
+command = ["echo", "Hello from orchestr8r!"]
+
+[[steps]]
+type = "checkpoint"
+message = "Continue to next iteration?"

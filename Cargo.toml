@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/orchestr8r-core",
+    "crates/orchestr8r-storage",
+    "crates/orchestr8r-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+rusqlite = { version = "0.31", features = ["bundled"] }
