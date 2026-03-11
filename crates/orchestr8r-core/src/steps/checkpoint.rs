@@ -19,13 +19,22 @@ impl StepExecutor for CheckpointExecutor {
 
         println!("\n[CHECKPOINT] {}", message);
         println!("Scratch dir: {}", ctx.scratch_dir.display());
-        println!("Type 'accept' to continue or 'reject' to stop: ");
+        println!("Type 'accept'/'y'/'yes'/'ok'/'continue'/'proceed' to continue or 'reject'/'n'/'no' to stop: ");
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         let input = input.trim().to_lowercase();
 
-        let accepted = input == "accept";
+        let accepted = matches!(
+            input.as_str(),
+            "accept" | "a" | "y" | "yes" | "ok" | "continue" | "proceed"
+        );
+        let rejected = matches!(input.as_str(), "reject" | "n" | "no");
+
+        if !accepted && !rejected {
+            println!("Invalid input. Please type 'accept' or 'reject'.");
+            return Err(StepError::Rejected);
+        }
 
         if !accepted {
             return Err(StepError::Rejected);
