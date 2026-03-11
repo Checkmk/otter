@@ -8,7 +8,7 @@ Orchestr8r is a **Rust-native workflow automation service** that executes multi-
 
 ## Core Principles
 
-- **Built in Rust** — the entire service, daemon, plugins, and TUI are written in Rust
+- **Built in Rust** — no FFI boundaries; a single language across the entire codebase
 - **Zero required external services** — works fully offline with SQLite and local container runtime
 - **Pluggable by design** — storage, container runtime, triggers, and notifications are abstracted behind traits
 - **Security boundary** — secrets are isolated from agent processes; agents receive only what they need via injection
@@ -58,6 +58,14 @@ orchestr8r/
 
 ---
 
+## Plugin Model
+
+All extensibility points (step executors, trigger sources, container runtimes, storage backends, notifiers, secret stores, agent runners) are defined as Rust traits. In the initial implementation, all built-in implementations are compiled directly into the binary — there is no dynamic plugin loading (no `.so` files, WASM modules, or subprocess-based plugins).
+
+The trait boundaries are intentionally designed to allow dynamic loading to be introduced later (e.g., via WASM sandboxing or a subprocess protocol) without restructuring the core engine.
+
+---
+
 ## Workflow Engine
 
 ### Workflow Definition (TOML)
@@ -82,20 +90,18 @@ notify = ["desktop"]
 
 - **Indefinite workflows** loop continuously; the next iteration begins only after the previous completes
 - **Triggered workflows** start on an event and run to completion (or failure)
-- Exactly one instance of each workflow runs at a time
+- Exactly one instance of each workflow runs at a time; if a trigger fires while an instance is running, the event is **queued** and processed when the current run finishes
 
-### Step Types (built-in, trait-based)
+### Step Types
 
-| Step Type    | Description                                                               |
-| ------------ | ------------------------------------------------------------------------- |
-| `container`  | Launches a container via the `ContainerRuntime` trait                     |
-| `checkpoint` | Pauses for human input; sends notification, awaits accept/reject/feedback |
-| `agent`      | Invokes an `AgentRunner` (e.g., shells out to a CLI agent tool)           |
-| `worktree`   | Creates a git worktree for isolated work                                  |
-| `notify`     | Sends a notification without pausing                                      |
-| `shell`      | Runs an arbitrary shell command in a sandbox                              |
-
-All step types are defined as Rust structs implementing a `StepExecutor` trait. The architecture does not block adding dynamically loaded step plugins in the future (e.g., via `libloading` or WASM), but the initial implementation uses built-in steps only.
+| Step Type    | Description                                                                           |
+| ------------ | ------------------------------------------------------------------------------------- |
+| `container`  | Launches a container via the `ContainerRuntime` trait                                 |
+| `checkpoint` | Pauses for human input; sends a desktop notification, awaits accept/reject in the TUI |
+| `agent`      | Invokes an `AgentRunner` (e.g., shells out to a CLI agent tool)                       |
+| `worktree`   | Creates a git worktree for isolated work; cleanup is a dedicated plugin/step          |
+| `notify`     | Sends a notification without pausing                                                  |
+| `shell`      | Runs an arbitrary shell command in a sandbox                                          |
 
 ```rust
 #[async_trait]
@@ -108,8 +114,6 @@ pub trait StepExecutor: Send + Sync {
 ---
 
 ## Trigger System
-
-Triggers are **first-class plugins** implementing a `TriggerSource` trait:
 
 ```rust
 #[async_trait]
@@ -124,12 +128,10 @@ Built-in trigger implementations:
 | Trigger      | Mechanism                                |
 | ------------ | ---------------------------------------- |
 | `cron`       | `tokio-cron-scheduler` or similar        |
-| `webhook`    | Embedded HTTP listener (e.g., `axum`)    |
+| `webhook`    | Embedded HTTP listener (`axum`)          |
 | `file-watch` | `notify` crate (inotify/FSEvents/kqueue) |
 | `email`      | IMAP IDLE (push-based)                   |
 | `manual`     | TUI or CLI command                       |
-
-Triggers are registered at startup from workflow TOML config. Each trigger maintains its own async task and sends `TriggerEvent` messages to the workflow scheduler via a channel.
 
 ---
 
@@ -145,7 +147,7 @@ pub trait ContainerRuntime: Send + Sync {
 }
 ```
 
-Initial implementation: **Docker** via the `bollard` crate. Podman (Docker-compatible API) works without code changes by pointing to the Podman socket.
+Initial implementation: **Docker** via the `bollard` crate. Podman works without code changes by pointing to the Podman socket.
 
 ---
 
@@ -161,19 +163,11 @@ pub trait StorageBackend: Send + Sync {
 }
 ```
 
-Initial implementation: **SQLite** via `rusqlite` or `sqlx` with the SQLite feature. Database file stored at `~/.local/share/orchestr8r/state.db` (XDG-compliant).
+Initial implementation: **SQLite** via `sqlx` (sqlite feature) or `rusqlite`. Database at `~/.local/share/orchestr8r/state.db`.
 
 ---
 
 ## Secrets Management
-
-### Design Goals
-
-- Secrets are **never passed to agent processes directly** through environment inspection
-- Agents receive secrets only via **explicit injection** into their container/process at runtime
-- The core service reads secrets; agent subprocesses see only what is declared in the workflow step's `secrets` list
-
-### Implementation
 
 ```rust
 pub trait SecretStore: Send + Sync {
@@ -183,7 +177,9 @@ pub trait SecretStore: Send + Sync {
 }
 ```
 
-Initial implementation: **Encrypted local file** using `age` encryption (via the `age` crate). The encryption key is derived from a passphrase stored in the OS keychain (`keyring` crate) so the user is not prompted on every start. Secrets file: `~/.local/share/orchestr8r/secrets.age`.
+Initial implementation: **encrypted local file** using `age`. The encryption key is derived from a passphrase stored in the OS keychain (`keyring` crate). Secrets file: `~/.local/share/orchestr8r/secrets.age`.
+
+Agents receive secrets only via explicit injection at runtime — only secrets declared in the step's `secrets` list are visible to the subprocess.
 
 ---
 
@@ -197,15 +193,11 @@ pub trait Notifier: Send + Sync {
 }
 ```
 
-Initial implementation: **desktop notifications** via the `notify-rust` crate (supports Linux, macOS, Windows). Checkpoint steps block workflow progression until the user responds via the TUI dashboard.
-
-Future notifier implementations: email, webhook.
+Initial implementation: **desktop notifications** via `notify-rust`. Notifications are **informational only** — the user must open the TUI to respond to a checkpoint.
 
 ---
 
 ## AI Agent Integration
-
-Agent steps implement `StepExecutor` via an `AgentRunner` abstraction:
 
 ```rust
 #[async_trait]
@@ -214,26 +206,26 @@ pub trait AgentRunner: Send + Sync {
 }
 ```
 
-**Recommended initial implementation:** subprocess-based runner that shells out to CLI agent tools (e.g., `claude`, `aider`, custom scripts). This is provider-agnostic by construction — any agent that can be invoked as a CLI tool is supported. Direct API integration (Anthropic, OpenAI) can be added as additional `AgentRunner` implementations without changing the interface.
+Initial implementation: subprocess runner that shells out to CLI agent tools (e.g., `claude`, `aider`, custom scripts). Direct API integration (Anthropic, OpenAI) can be added as additional `AgentRunner` implementations.
 
 ---
 
 ## TUI Dashboard
 
-Built with **`ratatui`**. The TUI is the primary user interface for:
+The TUI is the primary user interface for:
 
 - Viewing running and completed workflow instances with live log streaming
 - Responding to checkpoint steps (accept / reject / provide feedback)
 - Managing workflow enable/disable
 - Viewing plugin/trigger status
 
-The TUI communicates with the core daemon via an **in-process channel** when running as a single binary, or via a **Unix domain socket / named pipe** when the daemon runs headlessly and the TUI attaches separately.
+The TUI communicates with the core daemon via an **in-process channel** when running as a single binary, or via a **Unix domain socket / named pipe** when attaching to a headless daemon.
 
 ---
 
 ## Configuration
 
-All configuration lives in `~/.config/orchestr8r/` (XDG-compliant):
+All configuration lives in `~/.config/orchestr8r/`:
 
 ```
 ~/.config/orchestr8r/
@@ -264,6 +256,24 @@ default = ["desktop"]
 
 ---
 
+## Inter-Step Data Flow
+
+Steps communicate via a **shared scratch directory** scoped to each workflow run (`~/.local/share/orchestr8r/runs/<run-id>/`), available to every step via `StepContext`.
+
+- Container and agent steps receive it as a bind-mounted volume
+- Shell steps receive it as a working directory or environment variable
+- The directory is retained after the run and subject to a configurable retention policy
+
+---
+
+## Crash Recovery
+
+In-progress runs are **not automatically resumed** on restart. The daemon marks any non-terminal runs as `failed` and sends a desktop notification for each. The user can re-trigger from the TUI or CLI.
+
+Auto-resume is deferred: it requires step-level idempotency guarantees and careful handling of partial container/worktree state.
+
+---
+
 ## Deployment Model
 
 | Mode               | Description                                                                                                                    |
@@ -278,7 +288,6 @@ default = ["desktop"]
 
 - The daemon runs as the **current user** (no root required if Docker socket permissions allow it)
 - Agent subprocesses run **inside containers** with only declared secrets injected
-- The `SecretStore` is only accessible by the core daemon process — agents cannot enumerate or read secrets beyond what is explicitly injected
 - Workflow TOML files are validated at load time with strict schema enforcement
 
 ---
@@ -300,3 +309,12 @@ default = ["desktop"]
 | Error handling        | `thiserror`, `anyhow`                 |
 | Logging               | `tracing`, `tracing-subscriber`       |
 | CLI parsing           | `clap`                                |
+
+---
+
+## Open Questions / Future Work
+
+- **Checkpoint feedback loop:** Checkpoints support only accept/reject. A feedback response that re-runs a preceding step with user input would require per-checkpoint `on_feedback` routing in the workflow TOML and step-level idempotency semantics.
+- **Actionable notifications:** Add accept/reject actions directly in desktop notifications (platform permitting).
+- **Auto-resume after crash:** Requires step-level idempotency guarantees and handling of partial container/worktree state.
+- **Retry policy:** No per-step retry or backoff is defined. Configurable retry counts and dead-letter behavior are needed.
