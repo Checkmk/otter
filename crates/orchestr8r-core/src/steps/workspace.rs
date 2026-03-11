@@ -66,6 +66,7 @@ mod tests {
             command: None,
             message: None,
             path: path.map(String::from),
+            output_file: None,
         }
     }
 

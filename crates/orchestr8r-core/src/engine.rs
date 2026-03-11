@@ -190,6 +190,7 @@ mod tests {
                 command: Some(vec!["echo".to_string(), "hello".to_string()]),
                 message: None,
                 path: None,
+                output_file: None,
             }],
         };
 
@@ -240,6 +241,7 @@ mod tests {
                 command: Some(vec!["false".to_string()]),
                 message: None,
                 path: None,
+                output_file: None,
             }],
         };
 
@@ -270,12 +272,14 @@ mod tests {
                     command: None,
                     message: None,
                     path: Some(workspace.path().to_string_lossy().to_string()),
+                    output_file: None,
                 },
                 StepDef {
                     step_type: StepType::Shell,
                     command: Some(vec!["touch".to_string(), "marker.txt".to_string()]),
                     message: None,
                     path: None,
+                    output_file: None,
                 },
             ],
         };

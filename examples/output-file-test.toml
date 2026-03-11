@@ -1,0 +1,17 @@
+name = "output-file-test"
+kind = "indefinite"
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print", "--allowed-tools", "Write,Read"]
+message = "Create file foo.txt with content 'bar'"
+output_file = "foo.txt"
+
+[[steps]]
+type = "checkpoint"
+message = "foo.txt should exist in the scratch dir."
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print"]
+message = "Output content of foo.txt"

@@ -31,12 +31,20 @@ impl StepExecutor for AgentExecutor {
 
         let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
-        let output = tokio::process::Command::new(&command[0])
+        let mut child = tokio::process::Command::new(&command[0])
             .args(&command[1..])
-            .arg(message)
             .current_dir(working_dir)
-            .output()
-            .await?;
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(message.as_bytes()).await?;
+        }
+
+        let output = child.wait_with_output().await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -60,6 +68,17 @@ impl StepExecutor for AgentExecutor {
             .scratch_dir
             .join(format!("step-{}-output.md", ctx.step_index));
         tokio::fs::write(&output_path, &stdout).await?;
+
+        if let Some(output_file) = &step_def.output_file {
+            let path = working_dir.join(output_file);
+            if !path.exists() {
+                return Err(StepError::ExecutionFailed(format!(
+                    "expected output file '{}' not found in {}",
+                    output_file,
+                    working_dir.display()
+                )));
+            }
+        }
 
         Ok(StepOutput {
             stdout,
@@ -93,14 +112,15 @@ mod tests {
             command: command.map(|c| c.into_iter().map(String::from).collect()),
             message: message.map(String::from),
             path: None,
+            output_file: None,
         }
     }
 
     #[tokio::test]
-    async fn passes_message_as_final_arg() {
+    async fn passes_message_via_stdin() {
         // GIVEN
         let dir = tempfile::tempdir().unwrap();
-        let s = step(Some(vec!["echo"]), Some("hello agent"));
+        let s = step(Some(vec!["cat"]), Some("hello agent"));
 
         // WHEN
         let result = AgentExecutor
@@ -116,7 +136,7 @@ mod tests {
     async fn writes_output_to_scratch_dir() {
         // GIVEN
         let dir = tempfile::tempdir().unwrap();
-        let s = step(Some(vec!["echo"]), Some("written output"));
+        let s = step(Some(vec!["cat"]), Some("written output"));
 
         // WHEN
         AgentExecutor
@@ -138,6 +158,39 @@ mod tests {
         // WHEN
         let result = AgentExecutor
             .execute(&s, &ctx(dir.path().to_path_buf(), 0))
+            .await;
+
+        // THEN
+        assert!(matches!(result, Err(StepError::ExecutionFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn succeeds_when_output_file_exists_in_scratch() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::write(scratch.path().join("plan.md"), "the plan").unwrap();
+        let mut s = step(Some(vec!["echo"]), Some("hello"));
+        s.output_file = Some("plan.md".to_string());
+
+        // WHEN
+        let result = AgentExecutor
+            .execute(&s, &ctx(scratch.path().to_path_buf(), 0))
+            .await;
+
+        // THEN
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fails_when_output_file_missing_from_scratch() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let mut s = step(Some(vec!["echo"]), Some("hello"));
+        s.output_file = Some("plan.md".to_string());
+
+        // WHEN
+        let result = AgentExecutor
+            .execute(&s, &ctx(scratch.path().to_path_buf(), 0))
             .await;
 
         // THEN
