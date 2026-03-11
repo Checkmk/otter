@@ -1,19 +1,22 @@
 # Orchestr8r
 
-The service that helps you manage AI workflows.
+Automate multi-step AI agent tasks triggered by real-world events.
 
-- A workflow is a series of steps that can run indefinitely or when triggered running in a docker container
-- Example indefinite workflow:
+- A **workflow** is a series of steps defined in config, executing inside a container — either **indefinite** (always running while the service is up, looping continuously) or **triggered** (started by an event)
+- Each workflow has exactly one running instance at a time — an indefinite workflow only starts the next loop after the previous one completes, never spawning parallel containers
+- Workflows are composed of **step plugins** — reusable, installable units of work (e.g., launch agent, spin up container, create worktree, send notification, wait for approval)
+- **Triggers** are first-class for event-driven workflows: cron/scheduled, event-driven (email, webhook, file change), or manual
+- **Checkpoint steps** are a built-in step type that pauses a workflow for human input — accept, reject, or provide feedback — before continuing
+- A dashboard lets you monitor running workflows, view logs, and manage step plugins
+- Secrets and credentials are managed centrally and injected into containers at runtime
+- Example indefinite workflow (always running):
   - Launch custom agent that compares actual codebase to a target_architecture.md and suggest an implementation plan to bring the two together
-  - Notify the Orchestr8r user about the plan, ask for acceptance or interview for feedback until plan is accepted
+  - Checkpoint: notify the Orchestr8r user about the plan, interview for feedback until plan is accepted
   - Launch custom agent to implement the plan
-  - Notify the Orchestr8r user to review the implementation, ask for acceptance or interview for feedback until implementation is accepted
-  - Push the plan as a PR
-- Example: When I get an email about a new PR to be reviewed
-  - When I receive a specific type of email notifying me about a new requested review
+  - Checkpoint: notify the Orchestr8r user to review the implementation, interview for feedback until accepted
+  - Push the implementation as a PR
+- Example event-driven workflow (email trigger: new PR review requested):
   - Spin up a new container
   - Create worktree with PR
-  - Launch custom agent to review the PR
-  - Create the required review comments
-  - Notify the Orchestr8r user to review the review comments, ask for acceptance to post them or store them in md file
-- Note that each bullet point in a workflow is a reusable step corresponding to an instance of a step plugin
+  - Launch custom agent to review the PR and generate review comments
+  - Checkpoint: notify the Orchestr8r user to review the comments, ask for acceptance to post them or save them to a markdown file
