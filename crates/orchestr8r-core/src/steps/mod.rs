@@ -1,5 +1,6 @@
 pub mod shell;
 pub mod checkpoint;
+pub mod agent;
 
 use async_trait::async_trait;
 use crate::types::{StepContext, StepOutput, StepError};
@@ -14,5 +15,6 @@ pub fn registry() -> Vec<Box<dyn StepExecutor>> {
     vec![
         Box::new(shell::ShellExecutor),
         Box::new(checkpoint::CheckpointExecutor),
+        Box::new(agent::AgentExecutor),
     ]
 }

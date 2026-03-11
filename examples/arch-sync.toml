@@ -1,0 +1,20 @@
+name = "arch-sync"
+kind = "indefinite"
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print"]
+message = "Review README.md and TARGET_ARCHITECTURE.md and the current code. Identify the most crucial difference and create an implementation plan. Write the plan to plan.md in your working directory."
+
+[[steps]]
+type = "checkpoint"
+message = "Review the agent's plan. Accept to proceed with implementation, reject to stop."
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print"]
+message = "Read plan.md in your working directory and implement it."
+
+[[steps]]
+type = "checkpoint"
+message = "Review the implementation. Accept to continue to next iteration, reject to stop."

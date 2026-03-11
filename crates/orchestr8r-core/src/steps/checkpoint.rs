@@ -10,10 +10,11 @@ impl StepExecutor for CheckpointExecutor {
         "checkpoint"
     }
 
-    async fn execute(&self, step_def: &StepDef, _ctx: &StepContext) -> Result<StepOutput, StepError> {
+    async fn execute(&self, step_def: &StepDef, ctx: &StepContext) -> Result<StepOutput, StepError> {
         let message = step_def.message.as_deref().unwrap_or("Checkpoint reached");
 
         println!("\n[CHECKPOINT] {}", message);
+        println!("Scratch dir: {}", ctx.scratch_dir.display());
         println!("Type 'accept' to continue or 'reject' to stop: ");
 
         let mut input = String::new();
