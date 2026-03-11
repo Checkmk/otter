@@ -1,13 +1,13 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, warn, error};
 use chrono::Utc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tracing::{error, info, warn};
 
-use crate::types::{
-    WorkflowDef, WorkflowRun, RunStatus, StepContext, LogEntry, StorageBackend,
-};
 use crate::steps::StepExecutor;
 use crate::types::StepError;
+use crate::types::{
+    LogEntry, RunStatus, StepContext, StepType, StorageBackend, WorkflowDef, WorkflowRun,
+};
 
 pub struct Engine {
     executors: Vec<Box<dyn StepExecutor>>,
@@ -24,7 +24,7 @@ impl Engine {
         }
     }
 
-    fn find_executor(&self, step_type: &str) -> Option<&dyn StepExecutor> {
+    fn find_executor(&self, step_type: StepType) -> Option<&dyn StepExecutor> {
         self.executors
             .iter()
             .find(|e| e.step_type() == step_type)
@@ -43,6 +43,8 @@ impl Engine {
         self.storage.save_workflow_run(&run)?;
         info!(run_id = %run.id, workflow = %workflow.name, "Starting workflow run");
 
+        let mut workspace_dir: Option<std::path::PathBuf> = None;
+
         'outer: loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current iteration");
@@ -58,7 +60,7 @@ impl Engine {
                 }
 
                 run.current_step = i;
-                run.status = if step_def.step_type == "checkpoint" {
+                run.status = if step_def.step_type == StepType::Checkpoint {
                     RunStatus::WaitingCheckpoint
                 } else {
                     RunStatus::Running
@@ -71,11 +73,12 @@ impl Engine {
                     iteration: run.iteration,
                     step_index: i,
                     scratch_dir: scratch_dir.clone(),
+                    workspace_dir: workspace_dir.clone(),
                 };
 
                 info!(step = i, step_type = %step_def.step_type, "Executing step");
 
-                let executor = match self.find_executor(&step_def.step_type) {
+                let executor = match self.find_executor(step_def.step_type) {
                     Some(e) => e,
                     None => {
                         error!(step_type = %step_def.step_type, "No executor found for step type");
@@ -87,11 +90,18 @@ impl Engine {
 
                 match executor.execute(step_def, &ctx).await {
                     Ok(output) => {
+                        if step_def.step_type == StepType::Workspace {
+                            let resolved = output.stdout.trim().to_string();
+                            if !resolved.is_empty() {
+                                workspace_dir = Some(std::path::PathBuf::from(&resolved));
+                            }
+                        }
+
                         let entry = LogEntry {
                             run_id: run.id,
                             iteration: run.iteration,
                             step_index: i,
-                            step_type: step_def.step_type.clone(),
+                            step_type: step_def.step_type.to_string(),
                             stdout: output.stdout.clone(),
                             stderr: output.stderr.clone(),
                             exit_code: output.exit_code,
@@ -102,12 +112,16 @@ impl Engine {
                         info!(step = i, "Step completed successfully");
                     }
                     Err(StepError::Rejected) => {
-                        warn!(step = i, iteration = run.iteration, "Checkpoint rejected — stopping workflow");
+                        warn!(
+                            step = i,
+                            iteration = run.iteration,
+                            "Checkpoint rejected — stopping workflow"
+                        );
                         let entry = LogEntry {
                             run_id: run.id,
                             iteration: run.iteration,
                             step_index: i,
-                            step_type: step_def.step_type.clone(),
+                            step_type: step_def.step_type.to_string(),
                             stdout: String::new(),
                             stderr: String::new(),
                             exit_code: None,
@@ -125,7 +139,7 @@ impl Engine {
                             run_id: run.id,
                             iteration: run.iteration,
                             step_index: i,
-                            step_type: step_def.step_type.clone(),
+                            step_type: step_def.step_type.to_string(),
                             stdout: String::new(),
                             stderr: e.to_string(),
                             exit_code: Some(1),
@@ -153,29 +167,14 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use crate::storage::InMemoryStorage;
-    use crate::types::{WorkflowDef, WorkflowKind, StepDef, RunStatus};
+    use crate::types::{RunStatus, StepDef, StepType, WorkflowDef, WorkflowKind};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn make_engine(storage: Arc<InMemoryStorage>) -> Engine {
         let scratch = std::env::temp_dir().join("orchestr8r-tests");
         Engine::new(storage, scratch)
-    }
-
-    fn shutdown_after(iterations: u64) -> Arc<AtomicBool> {
-        // Returns a flag that is already set — engine stops after first iteration check.
-        // For controlled iteration counts we set it after spawning.
-        let flag = Arc::new(AtomicBool::new(false));
-        let flag_clone = flag.clone();
-        tokio::spawn(async move {
-            // Yield so the engine starts, then signal shutdown.
-            for _ in 0..iterations {
-                tokio::task::yield_now().await;
-            }
-            flag_clone.store(true, Ordering::Relaxed);
-        });
-        flag
     }
 
     #[tokio::test]
@@ -187,9 +186,10 @@ mod tests {
             name: "test-shell".to_string(),
             kind: WorkflowKind::Indefinite,
             steps: vec![StepDef {
-                step_type: "shell".to_string(),
+                step_type: StepType::Shell,
                 command: Some(vec!["echo".to_string(), "hello".to_string()]),
                 message: None,
+                path: None,
             }],
         };
 
@@ -213,18 +213,33 @@ mod tests {
         assert!(logs[0].stdout.contains("hello"));
     }
 
+    #[test]
+    fn unknown_step_type_fails_deserialization() {
+        // GIVEN a TOML workflow with an invalid step type
+        let toml_str = r#"
+            name = "bad"
+            kind = "indefinite"
+            [[steps]]
+            type = "nonexistent"
+        "#;
+
+        // WHEN / THEN
+        assert!(toml::from_str::<WorkflowDef>(toml_str).is_err());
+    }
+
     #[tokio::test]
-    async fn unknown_step_type_fails_run() {
-        // GIVEN a workflow with a step type that has no registered executor
+    async fn failed_shell_command_marks_run_failed() {
+        // GIVEN a shell step whose command exits non-zero
         let storage = Arc::new(InMemoryStorage::new());
         let engine = make_engine(storage.clone());
         let workflow = WorkflowDef {
-            name: "test-unknown".to_string(),
+            name: "test-fail".to_string(),
             kind: WorkflowKind::Indefinite,
             steps: vec![StepDef {
-                step_type: "nonexistent".to_string(),
-                command: None,
+                step_type: StepType::Shell,
+                command: Some(vec!["false".to_string()]),
                 message: None,
+                path: None,
             }],
         };
 
@@ -238,26 +253,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_shell_command_marks_run_failed() {
-        // GIVEN a shell step whose command exits non-zero
+    async fn workspace_step_sets_working_dir_for_shell() {
+        // GIVEN a workspace step pointing to a temp dir, followed by a shell step
+        // that creates a marker file there
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("marker.txt");
+
         let storage = Arc::new(InMemoryStorage::new());
         let engine = make_engine(storage.clone());
         let workflow = WorkflowDef {
-            name: "test-fail".to_string(),
+            name: "test-workspace".to_string(),
             kind: WorkflowKind::Indefinite,
-            steps: vec![StepDef {
-                step_type: "shell".to_string(),
-                command: Some(vec!["false".to_string()]),
-                message: None,
-            }],
+            steps: vec![
+                StepDef {
+                    step_type: StepType::Workspace,
+                    command: None,
+                    message: None,
+                    path: Some(workspace.path().to_string_lossy().to_string()),
+                },
+                StepDef {
+                    step_type: StepType::Shell,
+                    command: Some(vec!["touch".to_string(), "marker.txt".to_string()]),
+                    message: None,
+                    path: None,
+                },
+            ],
         };
 
         // WHEN
         let shutdown = Arc::new(AtomicBool::new(false));
-        engine.run(&workflow, shutdown).await.unwrap();
+        let shutdown_clone = shutdown.clone();
+        let handle = tokio::spawn(async move {
+            engine.run(&workflow, shutdown_clone).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown.store(true, Ordering::Relaxed);
+        handle.await.unwrap();
 
         // THEN
-        let runs = storage.runs();
-        assert_eq!(runs.last().unwrap().status, RunStatus::Failed);
+        assert!(
+            marker.exists(),
+            "shell step should have run in the workspace dir"
+        );
     }
 }

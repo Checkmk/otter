@@ -138,17 +138,19 @@ mod tests {
         let storage = InMemoryStorage::new();
         let run_id = Uuid::new_v4();
         for i in 0..3 {
-            storage.append_log(LogEntry {
-                run_id,
-                iteration: 0,
-                step_index: i,
-                step_type: "shell".to_string(),
-                stdout: format!("out {i}"),
-                stderr: String::new(),
-                exit_code: Some(0),
-                accepted: None,
-                timestamp: Utc::now(),
-            }).unwrap();
+            storage
+                .append_log(LogEntry {
+                    run_id,
+                    iteration: 0,
+                    step_index: i,
+                    step_type: "shell".to_string(),
+                    stdout: format!("out {i}"),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: None,
+                    timestamp: Utc::now(),
+                })
+                .unwrap();
         }
 
         // THEN

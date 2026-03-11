@@ -1,14 +1,19 @@
-pub mod shell;
-pub mod checkpoint;
 pub mod agent;
+pub mod checkpoint;
+pub mod shell;
+pub mod workspace;
 
+use crate::types::{StepContext, StepError, StepOutput, StepType};
 use async_trait::async_trait;
-use crate::types::{StepContext, StepOutput, StepError};
 
 #[async_trait]
 pub trait StepExecutor: Send + Sync {
-    async fn execute(&self, step_def: &crate::types::StepDef, ctx: &StepContext) -> Result<StepOutput, StepError>;
-    fn step_type(&self) -> &'static str;
+    async fn execute(
+        &self,
+        step_def: &crate::types::StepDef,
+        ctx: &StepContext,
+    ) -> Result<StepOutput, StepError>;
+    fn step_type(&self) -> StepType;
 }
 
 pub fn registry() -> Vec<Box<dyn StepExecutor>> {
@@ -16,5 +21,6 @@ pub fn registry() -> Vec<Box<dyn StepExecutor>> {
         Box::new(shell::ShellExecutor),
         Box::new(checkpoint::CheckpointExecutor),
         Box::new(agent::AgentExecutor),
+        Box::new(workspace::WorkspaceExecutor),
     ]
 }

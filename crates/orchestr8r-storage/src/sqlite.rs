@@ -1,9 +1,9 @@
-use rusqlite::{Connection, params};
+use anyhow::Context;
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
-use anyhow::Context;
 
-use orchestr8r_core::types::{WorkflowRun, RunStatus, LogEntry, StorageBackend};
+use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
 pub struct SqliteStorage {
     pub(crate) conn: Mutex<Connection>,
@@ -18,14 +18,17 @@ impl SqliteStorage {
         let conn = Connection::open(db_path)
             .with_context(|| format!("Failed to open SQLite DB at {:?}", db_path))?;
 
-        let storage = Self { conn: Mutex::new(conn) };
+        let storage = Self {
+            conn: Mutex::new(conn),
+        };
         storage.migrate()?;
         Ok(storage)
     }
 
     fn migrate(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS workflow_runs (
                 id TEXT PRIMARY KEY,
                 workflow_name TEXT NOT NULL,
@@ -47,7 +50,8 @@ impl SqliteStorage {
                 accepted INTEGER,
                 timestamp TEXT NOT NULL
             );
-        ")?;
+        ",
+        )?;
         Ok(())
     }
 }
@@ -109,7 +113,7 @@ impl StorageBackend for SqliteStorage {
         let mut stmt = conn.prepare(
             "SELECT id, workflow_name, status, current_step, iteration, started_at
              FROM workflow_runs WHERE workflow_name=?1
-             ORDER BY started_at DESC LIMIT 1"
+             ORDER BY started_at DESC LIMIT 1",
         )?;
 
         let mut rows = stmt.query(params![workflow_name])?;
@@ -141,14 +145,15 @@ impl StorageBackend for SqliteStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestr8r_core::types::{LogEntry, RunStatus, WorkflowRun};
     use chrono::Utc;
-    use uuid::Uuid;
+    use orchestr8r_core::types::{LogEntry, RunStatus, WorkflowRun};
 
     fn in_memory_storage() -> SqliteStorage {
         // Use an in-process SQLite memory database for fast, isolated tests.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let storage = SqliteStorage { conn: Mutex::new(conn) };
+        let storage = SqliteStorage {
+            conn: Mutex::new(conn),
+        };
         storage.migrate().unwrap();
         storage
     }
@@ -224,17 +229,19 @@ mod tests {
         let run = make_run("wf");
         storage.save_workflow_run(&run).unwrap();
         for i in 0..3 {
-            storage.append_log(LogEntry {
-                run_id: run.id,
-                iteration: 0,
-                step_index: i,
-                step_type: "shell".to_string(),
-                stdout: format!("out {i}"),
-                stderr: String::new(),
-                exit_code: Some(0),
-                accepted: None,
-                timestamp: Utc::now(),
-            }).unwrap();
+            storage
+                .append_log(LogEntry {
+                    run_id: run.id,
+                    iteration: 0,
+                    step_index: i,
+                    step_type: "shell".to_string(),
+                    stdout: format!("out {i}"),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: None,
+                    timestamp: Utc::now(),
+                })
+                .unwrap();
         }
 
         // THEN
@@ -251,17 +258,19 @@ mod tests {
         let storage = in_memory_storage();
         let run = make_run("wf");
         storage.save_workflow_run(&run).unwrap();
-        storage.append_log(LogEntry {
-            run_id: run.id,
-            iteration: 0,
-            step_index: 0,
-            step_type: "checkpoint".to_string(),
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            accepted: Some(true),
-            timestamp: Utc::now(),
-        }).unwrap();
+        storage
+            .append_log(LogEntry {
+                run_id: run.id,
+                iteration: 0,
+                step_index: 0,
+                step_type: "checkpoint".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                accepted: Some(true),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
 
         // WHEN
         let conn = storage.conn.lock().unwrap();

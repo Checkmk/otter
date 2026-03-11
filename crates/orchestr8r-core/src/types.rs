@@ -15,12 +15,33 @@ pub enum WorkflowKind {
     Indefinite,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepType {
+    Shell,
+    Checkpoint,
+    Agent,
+    Workspace,
+}
+
+impl std::fmt::Display for StepType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StepType::Shell => write!(f, "shell"),
+            StepType::Checkpoint => write!(f, "checkpoint"),
+            StepType::Agent => write!(f, "agent"),
+            StepType::Workspace => write!(f, "workspace"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StepDef {
     #[serde(rename = "type")]
-    pub step_type: String,
+    pub step_type: StepType,
     pub command: Option<Vec<String>>,
     pub message: Option<String>,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +94,7 @@ pub struct StepContext {
     pub iteration: u64,
     pub step_index: usize,
     pub scratch_dir: std::path::PathBuf,
+    pub workspace_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +165,10 @@ mod tests {
     fn run_status_display() {
         // WHEN / THEN
         assert_eq!(RunStatus::Running.to_string(), "running");
-        assert_eq!(RunStatus::WaitingCheckpoint.to_string(), "waiting_checkpoint");
+        assert_eq!(
+            RunStatus::WaitingCheckpoint.to_string(),
+            "waiting_checkpoint"
+        );
         assert_eq!(RunStatus::Completed.to_string(), "completed");
         assert_eq!(RunStatus::Failed.to_string(), "failed");
     }
@@ -170,10 +195,10 @@ mod tests {
         // THEN
         assert_eq!(def.name, "test");
         assert_eq!(def.steps.len(), 2);
-        assert_eq!(def.steps[0].step_type, "shell");
+        assert_eq!(def.steps[0].step_type, StepType::Shell);
         let cmd = def.steps[0].command.as_ref().unwrap();
         assert_eq!(cmd, &["echo", "hi"]);
-        assert_eq!(def.steps[1].step_type, "checkpoint");
+        assert_eq!(def.steps[1].step_type, StepType::Checkpoint);
         assert_eq!(def.steps[1].message.as_deref(), Some("ok?"));
     }
 }

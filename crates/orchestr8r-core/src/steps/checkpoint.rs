@@ -1,16 +1,20 @@
-use async_trait::async_trait;
-use crate::types::{StepDef, StepContext, StepOutput, StepError};
 use super::StepExecutor;
+use crate::types::{StepContext, StepDef, StepError, StepOutput};
+use async_trait::async_trait;
 
 pub struct CheckpointExecutor;
 
 #[async_trait]
 impl StepExecutor for CheckpointExecutor {
-    fn step_type(&self) -> &'static str {
-        "checkpoint"
+    fn step_type(&self) -> crate::types::StepType {
+        crate::types::StepType::Checkpoint
     }
 
-    async fn execute(&self, step_def: &StepDef, ctx: &StepContext) -> Result<StepOutput, StepError> {
+    async fn execute(
+        &self,
+        step_def: &StepDef,
+        ctx: &StepContext,
+    ) -> Result<StepOutput, StepError> {
         let message = step_def.message.as_deref().unwrap_or("Checkpoint reached");
 
         println!("\n[CHECKPOINT] {}", message);

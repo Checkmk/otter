@@ -2,6 +2,10 @@ name = "arch-sync"
 kind = "indefinite"
 
 [[steps]]
+type = "workspace"
+path = "."
+
+[[steps]]
 type = "agent"
 command = ["claude", "--print"]
 message = "Review README.md and TARGET_ARCHITECTURE.md and the current code. Identify the most crucial difference and create an implementation plan. Write the plan to plan.md in your working directory."

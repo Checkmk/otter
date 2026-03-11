@@ -1,32 +1,40 @@
-use async_trait::async_trait;
-use crate::types::{StepDef, StepContext, StepOutput, StepError};
 use super::StepExecutor;
+use crate::types::{StepContext, StepDef, StepError, StepOutput};
+use async_trait::async_trait;
 
 pub struct AgentExecutor;
 
 #[async_trait]
 impl StepExecutor for AgentExecutor {
-    fn step_type(&self) -> &'static str {
-        "agent"
+    fn step_type(&self) -> crate::types::StepType {
+        crate::types::StepType::Agent
     }
 
-    async fn execute(&self, step_def: &StepDef, ctx: &StepContext) -> Result<StepOutput, StepError> {
-        let command = step_def.command.as_ref().ok_or_else(|| {
-            StepError::ExecutionFailed("agent step missing command".to_string())
-        })?;
+    async fn execute(
+        &self,
+        step_def: &StepDef,
+        ctx: &StepContext,
+    ) -> Result<StepOutput, StepError> {
+        let command = step_def
+            .command
+            .as_ref()
+            .ok_or_else(|| StepError::ExecutionFailed("agent step missing command".to_string()))?;
 
         if command.is_empty() {
             return Err(StepError::ExecutionFailed("empty command".to_string()));
         }
 
-        let message = step_def.message.as_ref().ok_or_else(|| {
-            StepError::ExecutionFailed("agent step missing message".to_string())
-        })?;
+        let message = step_def
+            .message
+            .as_ref()
+            .ok_or_else(|| StepError::ExecutionFailed("agent step missing message".to_string()))?;
+
+        let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
         let output = tokio::process::Command::new(&command[0])
             .args(&command[1..])
             .arg(message)
-            .current_dir(&ctx.scratch_dir)
+            .current_dir(working_dir)
             .output()
             .await?;
 
@@ -48,7 +56,9 @@ impl StepExecutor for AgentExecutor {
             )));
         }
 
-        let output_path = ctx.scratch_dir.join(format!("step-{}-output.md", ctx.step_index));
+        let output_path = ctx
+            .scratch_dir
+            .join(format!("step-{}-output.md", ctx.step_index));
         tokio::fs::write(&output_path, &stdout).await?;
 
         Ok(StepOutput {
@@ -63,7 +73,7 @@ impl StepExecutor for AgentExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::StepDef;
+    use crate::types::{StepDef, StepType};
     use uuid::Uuid;
 
     fn ctx(scratch_dir: std::path::PathBuf, step_index: usize) -> StepContext {
@@ -73,14 +83,16 @@ mod tests {
             iteration: 0,
             step_index,
             scratch_dir,
+            workspace_dir: None,
         }
     }
 
     fn step(command: Option<Vec<&str>>, message: Option<&str>) -> StepDef {
         StepDef {
-            step_type: "agent".to_string(),
+            step_type: StepType::Agent,
             command: command.map(|c| c.into_iter().map(String::from).collect()),
             message: message.map(String::from),
+            path: None,
         }
     }
 
@@ -91,7 +103,9 @@ mod tests {
         let s = step(Some(vec!["echo"]), Some("hello agent"));
 
         // WHEN
-        let result = AgentExecutor.execute(&s, &ctx(dir.path().to_path_buf(), 0)).await;
+        let result = AgentExecutor
+            .execute(&s, &ctx(dir.path().to_path_buf(), 0))
+            .await;
 
         // THEN
         assert!(result.is_ok());
@@ -105,7 +119,10 @@ mod tests {
         let s = step(Some(vec!["echo"]), Some("written output"));
 
         // WHEN
-        AgentExecutor.execute(&s, &ctx(dir.path().to_path_buf(), 2)).await.unwrap();
+        AgentExecutor
+            .execute(&s, &ctx(dir.path().to_path_buf(), 2))
+            .await
+            .unwrap();
 
         // THEN
         let contents = std::fs::read_to_string(dir.path().join("step-2-output.md")).unwrap();
@@ -119,7 +136,9 @@ mod tests {
         let s = step(Some(vec!["echo"]), None);
 
         // WHEN
-        let result = AgentExecutor.execute(&s, &ctx(dir.path().to_path_buf(), 0)).await;
+        let result = AgentExecutor
+            .execute(&s, &ctx(dir.path().to_path_buf(), 0))
+            .await;
 
         // THEN
         assert!(matches!(result, Err(StepError::ExecutionFailed(_))));
@@ -132,7 +151,9 @@ mod tests {
         let s = step(None, Some("hello"));
 
         // WHEN
-        let result = AgentExecutor.execute(&s, &ctx(dir.path().to_path_buf(), 0)).await;
+        let result = AgentExecutor
+            .execute(&s, &ctx(dir.path().to_path_buf(), 0))
+            .await;
 
         // THEN
         assert!(matches!(result, Err(StepError::ExecutionFailed(_))));

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ArgAction};
+use clap::{ArgAction, Parser, Subcommand};
 use tracing::info;
 
 use orchestr8r_core::engine::Engine;
@@ -53,8 +53,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(level.into()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),
         )
         .init();
 
@@ -92,7 +91,9 @@ async fn run_workflow(workflow_path: PathBuf) -> anyhow::Result<()> {
     let shutdown_clone = shutdown.clone();
 
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl_c");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for ctrl_c");
         info!("Ctrl+C received, shutting down after current step...");
         shutdown_clone.store(true, Ordering::Relaxed);
     });
@@ -114,6 +115,9 @@ fn dirs_data_dir() -> PathBuf {
     #[cfg(not(target_os = "windows"))]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".local").join("share").join("orchestr8r")
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("orchestr8r")
     }
 }
