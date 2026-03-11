@@ -20,3 +20,44 @@ Automate multi-step AI agent tasks triggered by real-world events.
   - Create worktree with PR
   - Launch custom agent to review the PR and generate review comments
   - Checkpoint: notify the Orchestr8r user to review the comments, ask for acceptance to post them or save them to a markdown file
+
+## Usage
+
+```
+cargo run -- <workflow.toml>
+```
+
+### Workflow definition
+
+Workflows are defined in TOML. Each workflow has a name, a kind, and a list of steps:
+
+```toml
+name = "arch-sync"
+kind = "indefinite"
+
+[[steps]]
+type = "workspace"
+path = "."
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print"]
+message = "Review the code and create a plan. Write it to plan.md."
+
+[[steps]]
+type = "checkpoint"
+message = "Review the plan. Accept to proceed, reject to stop."
+```
+
+### Step types
+
+| Type         | Description                                                           | Required fields      |
+| ------------ | --------------------------------------------------------------------- | -------------------- |
+| `workspace`  | Sets the working directory for subsequent steps                       | `path`               |
+| `agent`      | Runs a CLI command with a message as the final argument, saves output | `command`, `message` |
+| `shell`      | Runs an arbitrary command                                             | `command`            |
+| `checkpoint` | Pauses for human accept/reject input                                  | `message` (optional) |
+
+### Workflow kinds
+
+- **`indefinite`** — loops continuously; each iteration runs all steps, then starts over until shutdown or rejection
