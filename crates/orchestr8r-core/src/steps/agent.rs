@@ -1,0 +1,119 @@
+use super::StepExecutor;
+use crate::types::{StepContext, StepDef, StepError, StepOutput};
+use async_trait::async_trait;
+
+pub struct AgentExecutor;
+
+#[async_trait]
+impl StepExecutor for AgentExecutor {
+    fn step_type(&self) -> crate::types::StepType {
+        crate::types::StepType::Agent
+    }
+
+    async fn execute(
+        &self,
+        step_def: &StepDef,
+        ctx: &StepContext,
+    ) -> Result<StepOutput, StepError> {
+        let manager = ctx
+            .session_manager
+            .as_ref()
+            .ok_or_else(|| StepError::ExecutionFailed("no session manager in context".into()))?;
+
+        let message = step_def
+            .message
+            .as_deref()
+            .ok_or_else(|| StepError::ExecutionFailed("agent step missing message".into()))?;
+
+        let working_dir = ctx
+            .workspace_dir
+            .as_deref()
+            .unwrap_or(&ctx.scratch_dir);
+
+        let output = manager
+            .run_step(
+                step_def.session.as_deref(),
+                step_def.command.as_deref(),
+                message,
+                working_dir,
+            )
+            .await
+            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+
+        let out_path = ctx
+            .scratch_dir
+            .join(format!("step-{}-output.md", ctx.step_index));
+        let _ = tokio::fs::write(&out_path, &output.stdout).await;
+
+        Ok(StepOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+            accepted: None,
+            extra_logs: vec![],
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::session::AgentSessionManager;
+    use crate::types::StepType;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    struct FixedRunner;
+
+    #[async_trait::async_trait]
+    impl AgentRunner for FixedRunner {
+        async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+            Ok((
+                AgentSessionHandle { id: "s".into(), command: spec.command, working_dir: spec.working_dir.clone() },
+                AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
+            ))
+        }
+
+        async fn prompt(&self, _session: &AgentSessionHandle, _message: &str) -> Result<AgentOutput, AgentError> {
+            Ok(AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) })
+        }
+
+        async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_writes_output_to_scratch_dir() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let manager = Arc::new(AgentSessionManager::new(Arc::new(FixedRunner)));
+        let ctx = StepContext {
+            run_id: Uuid::new_v4(),
+            workflow_name: "test".into(),
+            iteration: 0,
+            step_index: 2,
+            scratch_dir: scratch.path().to_path_buf(),
+            workspace_dir: None,
+            checkpoint_tx: None,
+            session_manager: Some(manager),
+        };
+        let step_def = StepDef {
+            step_type: StepType::Agent,
+            command: Some(vec!["agent".into()]),
+            message: Some("do work".into()),
+            path: None,
+            output_file: None,
+            session: None,
+        };
+
+        // WHEN
+        let output = AgentExecutor.execute(&step_def, &ctx).await.unwrap();
+
+        // THEN
+        assert_eq!(output.stdout, "agent output");
+        let written = std::fs::read_to_string(scratch.path().join("step-2-output.md")).unwrap();
+        assert_eq!(written, "agent output");
+    }
+}

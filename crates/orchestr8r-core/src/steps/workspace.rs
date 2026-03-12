@@ -39,7 +39,7 @@ impl StepExecutor for WorkspaceExecutor {
             stderr: String::new(),
             exit_code: Some(0),
             accepted: None,
-            feedback: None,
+            extra_logs: vec![],
         })
     }
 }
@@ -58,8 +58,8 @@ mod tests {
             step_index: 0,
             scratch_dir: std::env::temp_dir(),
             workspace_dir: None,
-            feedback_available: false,
             checkpoint_tx: None,
+            session_manager: None,
         }
     }
 

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -117,7 +118,7 @@ impl std::fmt::Display for RunStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StepContext {
     pub run_id: Uuid,
     pub workflow_name: String,
@@ -125,8 +126,8 @@ pub struct StepContext {
     pub step_index: usize,
     pub scratch_dir: std::path::PathBuf,
     pub workspace_dir: Option<std::path::PathBuf>,
-    pub feedback_available: bool,
     pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
+    pub session_manager: Option<Arc<crate::session::AgentSessionManager>>,
 }
 
 #[derive(Debug)]
@@ -149,20 +150,29 @@ pub enum EngineEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct SubStepLog {
+    pub step_type: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StepOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub accepted: Option<bool>,
-    pub feedback: Option<String>,
+    pub extra_logs: Vec<SubStepLog>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
     #[error("step execution failed: {0}")]
     ExecutionFailed(String),
+    /// Checkpoint stopped by user. Carries any sub-step logs accumulated before the stop.
     #[error("rejected at checkpoint")]
-    Rejected,
+    Rejected(Vec<SubStepLog>),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

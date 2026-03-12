@@ -1,10 +1,11 @@
 use chrono::Utc;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+use crate::agent_runner::AgentRunner;
+use crate::session::AgentSessionManager;
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
@@ -88,9 +89,8 @@ impl Engine {
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         info!(run_id = %run.id, workflow = %workflow.name, "Starting indefinite workflow run");
 
+        let session_manager = Arc::new(AgentSessionManager::new(self.agent_runner.clone()));
         let mut workspace_dir: Option<std::path::PathBuf> = None;
-        let mut sessions: HashMap<String, AgentSessionHandle> = HashMap::new();
-        let mut last_session_key: Option<String> = None;
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -106,8 +106,7 @@ impl Engine {
                     &mut run,
                     &scratch_dir,
                     &mut workspace_dir,
-                    &mut sessions,
-                    &mut last_session_key,
+                    &session_manager,
                     &shutdown,
                     &ui_tx,
                 )
@@ -123,7 +122,7 @@ impl Engine {
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         }
 
-        self.cleanup_sessions(&sessions).await;
+        session_manager.cleanup().await;
         info!(run_id = %run.id, iterations = run.iteration, "Workflow run ended");
         Ok(())
     }
@@ -202,7 +201,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn run_once(
+    pub async fn run_once(
         &self,
         workflow: &WorkflowDef,
         shutdown: Arc<AtomicBool>,
@@ -216,9 +215,8 @@ impl Engine {
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         info!(run_id = %run.id, workflow = %workflow.name, "Starting triggered workflow run");
 
+        let session_manager = Arc::new(AgentSessionManager::new(self.agent_runner.clone()));
         let mut workspace_dir: Option<std::path::PathBuf> = None;
-        let mut sessions: HashMap<String, AgentSessionHandle> = HashMap::new();
-        let mut last_session_key: Option<String> = None;
 
         let stop = self
             .execute_steps(
@@ -226,8 +224,7 @@ impl Engine {
                 &mut run,
                 &scratch_dir,
                 &mut workspace_dir,
-                &mut sessions,
-                &mut last_session_key,
+                &session_manager,
                 &shutdown,
                 &ui_tx,
             )
@@ -239,21 +236,19 @@ impl Engine {
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         }
 
-        self.cleanup_sessions(&sessions).await;
+        session_manager.cleanup().await;
         info!(run_id = %run.id, "Triggered workflow run ended");
         Ok(())
     }
 
-    /// Runs all steps in `workflow` once.
-    /// Returns `Ok(true)` if execution should stop (failed or shutdown), `Ok(false)` if all steps completed.
+    /// Runs all steps once. Returns `Ok(true)` if execution should stop (failed or shutdown).
     async fn execute_steps(
         &self,
         workflow: &WorkflowDef,
         run: &mut WorkflowRun,
         scratch_dir: &std::path::PathBuf,
         workspace_dir: &mut Option<std::path::PathBuf>,
-        sessions: &mut HashMap<String, AgentSessionHandle>,
-        last_session_key: &mut Option<String>,
+        session_manager: &Arc<AgentSessionManager>,
         shutdown: &Arc<AtomicBool>,
         ui_tx: &Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<bool> {
@@ -264,240 +259,11 @@ impl Engine {
             }
 
             run.current_step = i;
-
-            // Agent steps are handled directly by the engine
-            if step_def.step_type == StepType::Agent {
-                run.status = RunStatus::Running;
-                self.storage.update_workflow_run(run)?;
-                Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
-
-                info!(step = i, step_type = "agent", "Executing agent step");
-
-                let ctx = StepContext {
-                    run_id: run.id,
-                    workflow_name: workflow.name.clone(),
-                    iteration: run.iteration,
-                    step_index: i,
-                    scratch_dir: scratch_dir.clone(),
-                    workspace_dir: workspace_dir.clone(),
-                    feedback_available: false,
-                    checkpoint_tx: None,
-                };
-
-                match self
-                    .execute_agent_step(step_def, &ctx, sessions, last_session_key)
-                    .await
-                {
-                    Ok(output) => {
-                        let entry = LogEntry {
-                            run_id: run.id,
-                            iteration: run.iteration,
-                            step_index: i,
-                            step_type: "agent".to_string(),
-                            stdout: output.stdout.clone(),
-                            stderr: output.stderr.clone(),
-                            exit_code: output.exit_code,
-                            accepted: None,
-                            feedback: None,
-                            timestamp: Utc::now(),
-                        };
-                        self.storage.append_log(entry.clone())?;
-                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-
-                        let output_path =
-                            scratch_dir.join(format!("step-{}-output.md", ctx.step_index));
-                        let _ = tokio::fs::write(&output_path, &output.stdout).await;
-
-                        info!(step = i, "Agent step completed successfully");
-                    }
-                    Err(e) => {
-                        error!(step = i, error = %e, "Agent step failed");
-                        let entry = LogEntry {
-                            run_id: run.id,
-                            iteration: run.iteration,
-                            step_index: i,
-                            step_type: "agent".to_string(),
-                            stdout: String::new(),
-                            stderr: e.to_string(),
-                            exit_code: Some(1),
-                            accepted: None,
-                            feedback: None,
-                            timestamp: Utc::now(),
-                        };
-                        self.storage.append_log(entry.clone())?;
-                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                        run.status = RunStatus::Failed;
-                        self.storage.update_workflow_run(run)?;
-                        Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
-                        return Ok(true);
-                    }
-                }
-                continue;
-            }
-
-            // Checkpoint steps get the feedback loop
-            if step_def.step_type == StepType::Checkpoint {
-                run.status = RunStatus::WaitingCheckpoint;
-                self.storage.update_workflow_run(run)?;
-                Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
-
-                let has_session = last_session_key
-                    .as_ref()
-                    .map_or(false, |k| sessions.contains_key(k));
-
-                let ctx = StepContext {
-                    run_id: run.id,
-                    workflow_name: workflow.name.clone(),
-                    iteration: run.iteration,
-                    step_index: i,
-                    scratch_dir: scratch_dir.clone(),
-                    workspace_dir: workspace_dir.clone(),
-                    feedback_available: has_session,
-                    checkpoint_tx: ui_tx.clone(),
-                };
-
-                let executor = match self.find_executor(StepType::Checkpoint) {
-                    Some(e) => e,
-                    None => {
-                        error!("No executor found for checkpoint");
-                        run.status = RunStatus::Failed;
-                        self.storage.update_workflow_run(run)?;
-                        return Ok(true);
-                    }
-                };
-
-                let mut failed = false;
-                'checkpoint: loop {
-                    match executor.execute(step_def, &ctx).await {
-                        Ok(output) => {
-                            if let Some(ref feedback_text) = output.feedback {
-                                let entry = LogEntry {
-                                    run_id: run.id,
-                                    iteration: run.iteration,
-                                    step_index: i,
-                                    step_type: "checkpoint".to_string(),
-                                    stdout: String::new(),
-                                    stderr: String::new(),
-                                    exit_code: None,
-                                    accepted: None,
-                                    feedback: Some(feedback_text.clone()),
-                                    timestamp: Utc::now(),
-                                };
-                                self.storage.append_log(entry.clone())?;
-                                Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-
-                                if let Some(ref session_key) = *last_session_key {
-                                    if let Some(session) = sessions.get(session_key) {
-                                        match self
-                                            .agent_runner
-                                            .prompt(session, feedback_text)
-                                            .await
-                                        {
-                                            Ok(agent_output) => {
-                                                let agent_entry = LogEntry {
-                                                    run_id: run.id,
-                                                    iteration: run.iteration,
-                                                    step_index: i,
-                                                    step_type: "agent".to_string(),
-                                                    stdout: agent_output.stdout,
-                                                    stderr: agent_output.stderr,
-                                                    exit_code: agent_output.exit_code,
-                                                    accepted: None,
-                                                    feedback: None,
-                                                    timestamp: Utc::now(),
-                                                };
-                                                self.storage.append_log(agent_entry.clone())?;
-                                                Self::emit(
-                                                    ui_tx,
-                                                    EngineEvent::LogAppended(agent_entry),
-                                                );
-                                            }
-                                            Err(e) => {
-                                                warn!(error = %e, "Agent feedback prompt failed");
-                                            }
-                                        }
-                                    } else {
-                                        warn!("No active session for feedback");
-                                    }
-                                } else {
-                                    warn!("No agent session available for feedback");
-                                }
-                                continue 'checkpoint;
-                            }
-
-                            // Accepted
-                            let entry = LogEntry {
-                                run_id: run.id,
-                                iteration: run.iteration,
-                                step_index: i,
-                                step_type: "checkpoint".to_string(),
-                                stdout: output.stdout.clone(),
-                                stderr: output.stderr.clone(),
-                                exit_code: output.exit_code,
-                                accepted: output.accepted,
-                                feedback: None,
-                                timestamp: Utc::now(),
-                            };
-                            self.storage.append_log(entry.clone())?;
-                            Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                            info!(step = i, "Checkpoint accepted");
-                            break 'checkpoint;
-                        }
-                        Err(StepError::Rejected) => {
-                            warn!(step = i, "Checkpoint rejected — stopping workflow");
-                            let entry = LogEntry {
-                                run_id: run.id,
-                                iteration: run.iteration,
-                                step_index: i,
-                                step_type: "checkpoint".to_string(),
-                                stdout: String::new(),
-                                stderr: String::new(),
-                                exit_code: None,
-                                accepted: Some(false),
-                                feedback: None,
-                                timestamp: Utc::now(),
-                            };
-                            self.storage.append_log(entry.clone())?;
-                            Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                            run.status = RunStatus::Failed;
-                            self.storage.update_workflow_run(run)?;
-                            Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
-                            failed = true;
-                            break 'checkpoint;
-                        }
-                        Err(e) => {
-                            error!(step = i, error = %e, "Checkpoint failed");
-                            let entry = LogEntry {
-                                run_id: run.id,
-                                iteration: run.iteration,
-                                step_index: i,
-                                step_type: "checkpoint".to_string(),
-                                stdout: String::new(),
-                                stderr: e.to_string(),
-                                exit_code: Some(1),
-                                accepted: None,
-                                feedback: None,
-                                timestamp: Utc::now(),
-                            };
-                            self.storage.append_log(entry.clone())?;
-                            Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                            run.status = RunStatus::Failed;
-                            self.storage.update_workflow_run(run)?;
-                            Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
-                            failed = true;
-                            break 'checkpoint;
-                        }
-                    }
-                }
-
-                if failed {
-                    return Ok(true);
-                }
-                continue;
-            }
-
-            // All other step types: delegate to executor
-            run.status = RunStatus::Running;
+            run.status = if step_def.step_type == StepType::Checkpoint {
+                RunStatus::WaitingCheckpoint
+            } else {
+                RunStatus::Running
+            };
             self.storage.update_workflow_run(run)?;
             Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
 
@@ -508,8 +274,8 @@ impl Engine {
                 step_index: i,
                 scratch_dir: scratch_dir.clone(),
                 workspace_dir: workspace_dir.clone(),
-                feedback_available: false,
-                checkpoint_tx: None,
+                checkpoint_tx: ui_tx.clone(),
+                session_manager: Some(session_manager.clone()),
             };
 
             info!(step = i, step_type = %step_def.step_type, "Executing step");
@@ -520,17 +286,28 @@ impl Engine {
                     error!(step_type = %step_def.step_type, "No executor found for step type");
                     run.status = RunStatus::Failed;
                     self.storage.update_workflow_run(run)?;
+                    Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
                     return Ok(true);
                 }
             };
 
             match executor.execute(step_def, &ctx).await {
                 Ok(output) => {
-                    if step_def.step_type == StepType::Workspace {
-                        let resolved = output.stdout.trim().to_string();
-                        if !resolved.is_empty() {
-                            *workspace_dir = Some(std::path::PathBuf::from(&resolved));
-                        }
+                    for extra in &output.extra_logs {
+                        let entry = LogEntry {
+                            run_id: run.id,
+                            iteration: run.iteration,
+                            step_index: i,
+                            step_type: extra.step_type.clone(),
+                            stdout: extra.stdout.clone(),
+                            stderr: extra.stderr.clone(),
+                            exit_code: extra.exit_code,
+                            accepted: None,
+                            feedback: None,
+                            timestamp: Utc::now(),
+                        };
+                        self.storage.append_log(entry.clone())?;
+                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
                     }
 
                     let entry = LogEntry {
@@ -547,10 +324,34 @@ impl Engine {
                     };
                     self.storage.append_log(entry.clone())?;
                     Self::emit(ui_tx, EngineEvent::LogAppended(entry));
+
+                    if step_def.step_type == StepType::Workspace {
+                        let resolved = output.stdout.trim().to_string();
+                        if !resolved.is_empty() {
+                            *workspace_dir = Some(std::path::PathBuf::from(&resolved));
+                        }
+                    }
+
                     info!(step = i, "Step completed successfully");
                 }
-                Err(StepError::Rejected) => {
-                    warn!(step = i, iteration = run.iteration, "Checkpoint rejected — stopping workflow");
+                Err(StepError::Rejected(extra)) => {
+                    warn!(step = i, iteration = run.iteration, "Step rejected — stopping workflow");
+                    for log in &extra {
+                        let entry = LogEntry {
+                            run_id: run.id,
+                            iteration: run.iteration,
+                            step_index: i,
+                            step_type: log.step_type.clone(),
+                            stdout: log.stdout.clone(),
+                            stderr: log.stderr.clone(),
+                            exit_code: log.exit_code,
+                            accepted: None,
+                            feedback: None,
+                            timestamp: Utc::now(),
+                        };
+                        self.storage.append_log(entry.clone())?;
+                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
+                    }
                     let entry = LogEntry {
                         run_id: run.id,
                         iteration: run.iteration,
@@ -596,75 +397,16 @@ impl Engine {
 
         Ok(false)
     }
-
-    async fn cleanup_sessions(&self, sessions: &HashMap<String, AgentSessionHandle>) {
-        for (_key, session) in sessions {
-            if let Err(e) = self.agent_runner.stop(session).await {
-                warn!(error = %e, "Failed to stop agent session");
-            }
-        }
-    }
-
-    async fn execute_agent_step(
-        &self,
-        step_def: &crate::types::StepDef,
-        ctx: &StepContext,
-        sessions: &mut HashMap<String, AgentSessionHandle>,
-        last_session_key: &mut Option<String>,
-    ) -> Result<AgentOutput, AgentError> {
-        let message = step_def
-            .message
-            .as_ref()
-            .ok_or_else(|| AgentError::Failed("agent step missing message".to_string()))?;
-
-        let session_key = step_def
-            .session
-            .clone()
-            .unwrap_or_else(|| format!("__anon_{}_{}", ctx.iteration, ctx.step_index));
-
-        let working_dir = ctx
-            .workspace_dir
-            .clone()
-            .unwrap_or_else(|| ctx.scratch_dir.clone());
-
-        let output = if sessions.contains_key(&session_key) {
-            let session = sessions.get(&session_key).unwrap();
-            self.agent_runner.prompt(session, message).await?
-        } else {
-            let command = step_def
-                .command
-                .as_ref()
-                .ok_or_else(|| {
-                    AgentError::Failed(
-                        "agent step missing command (required for new session)".to_string(),
-                    )
-                })?
-                .clone();
-
-            let spec = AgentSpec {
-                command,
-                message: message.clone(),
-                working_dir,
-            };
-
-            let (handle, start_output) = self.agent_runner.start(spec).await?;
-            sessions.insert(session_key.clone(), handle);
-            start_output
-        };
-
-        *last_session_key = Some(session_key.clone());
-
-        Ok(output)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
     use crate::storage::InMemoryStorage;
-    use crate::types::{RunStatus, StepDef, StepOutput, StepType, WorkflowDef, WorkflowKind};
+    use crate::types::{CheckpointResponse, RunStatus, StepDef, StepType, WorkflowDef, WorkflowKind};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct NoOpAgentRunner;
 
@@ -754,68 +496,6 @@ mod tests {
         async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
             self.calls.lock().unwrap().push("stop".to_string());
             Ok(())
-        }
-    }
-
-    use std::sync::Mutex;
-
-    /// Mock checkpoint that returns a sequence of pre-configured responses.
-    /// When responses are exhausted, rejects to terminate the workflow.
-    struct MockCheckpointExecutor {
-        responses: Mutex<Vec<Result<StepOutput, StepError>>>,
-    }
-
-    impl MockCheckpointExecutor {
-        fn accepting() -> Self {
-            Self {
-                responses: Mutex::new(vec![Ok(StepOutput {
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                    accepted: Some(true),
-                    feedback: None,
-                })]),
-            }
-        }
-
-        fn feedback_then_accept(feedback_text: &str) -> Self {
-            Self {
-                responses: Mutex::new(vec![
-                    Ok(StepOutput {
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        exit_code: Some(0),
-                        accepted: None,
-                        feedback: Some(feedback_text.to_string()),
-                    }),
-                    Ok(StepOutput {
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        exit_code: Some(0),
-                        accepted: Some(true),
-                        feedback: None,
-                    }),
-                ]),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl StepExecutor for MockCheckpointExecutor {
-        async fn execute(
-            &self,
-            _step_def: &crate::types::StepDef,
-            _ctx: &StepContext,
-        ) -> Result<StepOutput, StepError> {
-            let mut responses = self.responses.lock().unwrap();
-            if responses.is_empty() {
-                Err(StepError::Rejected)
-            } else {
-                responses.remove(0)
-            }
-        }
-        fn step_type(&self) -> StepType {
-            StepType::Checkpoint
         }
     }
 
@@ -976,7 +656,7 @@ mod tests {
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
-            vec![],
+            vec![Box::new(crate::steps::agent::AgentExecutor)],
         );
         let wf = workflow(
             "test-sessions",
@@ -1021,17 +701,14 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_feedback_loop_reprompts_agent() {
-        // GIVEN an agent step followed by a checkpoint that gives feedback then accepts
+        // GIVEN an agent step followed by a checkpoint that receives feedback then continue
         let storage = Arc::new(InMemoryStorage::new());
         let agent_runner = Arc::new(MockAgentRunner::new());
         let scratch = tempfile::tempdir().unwrap();
-        let engine = Engine::with_executors(
+        let engine = Engine::new(
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
-            vec![Box::new(MockCheckpointExecutor::feedback_then_accept(
-                "please fix the typo",
-            ))],
         );
         let wf = workflow(
             "test-feedback",
@@ -1052,22 +729,46 @@ mod tests {
             ],
         );
 
-        // WHEN — mock gives feedback then accepts; next iteration rejects, terminating the run
-        let shutdown = Arc::new(AtomicBool::new(false));
-        engine.run(&wf, shutdown, None).await.unwrap();
+        let (ui_tx, mut ui_rx) = mpsc::channel::<EngineEvent>(32);
 
-        // THEN — agent was started, then re-prompted with feedback
+        // Respond: feedback first, then stop to terminate the run
+        let feedback_sent = Arc::new(AtomicBool::new(false));
+        let feedback_sent_clone = feedback_sent.clone();
+        tokio::spawn(async move {
+            while let Some(event) = ui_rx.recv().await {
+                if let EngineEvent::CheckpointPending { response_tx, .. } = event {
+                    if !feedback_sent_clone.load(Ordering::Relaxed) {
+                        feedback_sent_clone.store(true, Ordering::Relaxed);
+                        let _ = response_tx.send(CheckpointResponse::Feedback(
+                            "please fix the typo".to_string(),
+                        ));
+                    } else {
+                        let _ = response_tx.send(CheckpointResponse::Stop);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // WHEN
+        let shutdown = Arc::new(AtomicBool::new(false));
+        engine.run(&wf, shutdown, Some(ui_tx)).await.unwrap();
+
+        // THEN — agent started, then re-prompted with feedback text
         let calls = agent_runner.calls();
         assert_eq!(calls[0], "start:write code");
         assert_eq!(calls[1], "prompt:please fix the typo");
 
-        // Feedback log entry was recorded
+        // Agent's feedback response was logged via extra_logs at the checkpoint step
         let logs = storage.logs();
-        let feedback_logs: Vec<_> = logs.iter().filter(|l| l.feedback.is_some()).collect();
-        assert_eq!(feedback_logs.len(), 1);
+        let agent_at_checkpoint: Vec<_> = logs
+            .iter()
+            .filter(|l| l.step_type == "agent" && l.step_index == 1)
+            .collect();
         assert_eq!(
-            feedback_logs[0].feedback.as_deref(),
-            Some("please fix the typo")
+            agent_at_checkpoint.len(),
+            1,
+            "checkpoint should log the agent feedback response"
         );
     }
 
@@ -1077,11 +778,25 @@ mod tests {
         let storage = Arc::new(InMemoryStorage::new());
         let agent_runner = Arc::new(MockAgentRunner::new());
         let scratch = tempfile::tempdir().unwrap();
-        let engine = Engine::with_executors(
+
+        // Use a channel so we can verify what feedback_available was sent
+        let (ui_tx, mut ui_rx) = mpsc::channel::<EngineEvent>(32);
+        let feedback_available_seen = Arc::new(Mutex::new(None::<bool>));
+        let seen_clone = feedback_available_seen.clone();
+        tokio::spawn(async move {
+            while let Some(event) = ui_rx.recv().await {
+                if let EngineEvent::CheckpointPending { feedback_available, response_tx, .. } = event {
+                    *seen_clone.lock().unwrap() = Some(feedback_available);
+                    let _ = response_tx.send(CheckpointResponse::Stop);
+                    break;
+                }
+            }
+        });
+
+        let engine = Engine::new(
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
-            vec![Box::new(MockCheckpointExecutor::accepting())],
         );
         let wf = workflow(
             "test-no-session",
@@ -1093,15 +808,13 @@ mod tests {
             }],
         );
 
-        // WHEN — mock accepts once then rejects, terminating the run
+        // WHEN
         let shutdown = Arc::new(AtomicBool::new(false));
-        engine.run(&wf, shutdown, None).await.unwrap();
+        engine.run(&wf, shutdown, Some(ui_tx)).await.unwrap();
 
-        // THEN — no agent calls, checkpoint accepted without feedback option
+        // THEN — no agent calls, checkpoint reported feedback_available = false
         assert!(agent_runner.calls().is_empty());
-        let logs = storage.logs();
-        assert!(!logs.is_empty());
-        assert!(logs.iter().all(|l| l.feedback.is_none()));
+        assert_eq!(*feedback_available_seen.lock().unwrap(), Some(false));
     }
 
     #[tokio::test]
@@ -1114,7 +827,7 @@ mod tests {
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
-            vec![],
+            vec![Box::new(crate::steps::agent::AgentExecutor)],
         );
         let wf = workflow(
             "test-anon",
@@ -1147,8 +860,7 @@ mod tests {
         shutdown.store(true, Ordering::Relaxed);
         handle.await.unwrap();
 
-        // THEN — every anonymous step calls start (never prompt), because each
-        // iteration generates unique keys (__anon_{iteration}_{step_index})
+        // THEN — every anonymous step calls start (never prompt)
         let calls = agent_runner.calls();
         let starts: Vec<_> = calls.iter().filter(|c| c.starts_with("start:")).collect();
         let prompts = calls.iter().filter(|c| c.starts_with("prompt:")).count();
@@ -1166,7 +878,7 @@ mod tests {
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
-            vec![],
+            vec![Box::new(crate::steps::agent::AgentExecutor)],
         );
         let wf = workflow(
             "test-cleanup",
@@ -1205,8 +917,6 @@ mod tests {
 
         let storage = Arc::new(InMemoryStorage::new());
         let scratch = tempfile::tempdir().unwrap();
-        let signal_dir = tempfile::tempdir().unwrap();
-        let signal_path = signal_dir.path().join("my-workflow");
 
         let engine = Engine::new(
             storage.clone(),
@@ -1227,18 +937,10 @@ mod tests {
             }],
         };
 
-        // Override the signal path by creating the file before the engine starts
-        // and again after the first run completes
-        std::fs::write(&signal_path, "").unwrap();
-
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
         let storage_clone = storage.clone();
 
-        // We need to use the actual data_dir that the engine computes (scratch.parent())
-        // so we adjust the scratch dir to make signal_path land correctly.
-        // Instead, override by computing manually with a custom trigger.
-        // For this test, use run_once() directly to verify triggered behavior.
         let handle = tokio::spawn(async move {
             engine.run_once(&wf, shutdown_clone, None).await.unwrap();
             storage_clone

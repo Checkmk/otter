@@ -1,5 +1,5 @@
 use super::StepExecutor;
-use crate::types::{CheckpointResponse, StepContext, StepDef, StepError, StepOutput, EngineEvent};
+use crate::types::{CheckpointResponse, EngineEvent, StepContext, StepDef, StepError, StepOutput, SubStepLog};
 use async_trait::async_trait;
 
 pub struct CheckpointExecutor;
@@ -29,34 +29,56 @@ async fn execute_via_channel(
     ctx: &StepContext,
     message: &str,
 ) -> Result<StepOutput, StepError> {
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    let _ = tx
-        .send(EngineEvent::CheckpointPending {
-            run_id: ctx.run_id,
-            step_index: ctx.step_index,
-            message: message.to_string(),
-            feedback_available: ctx.feedback_available,
-            response_tx,
-        })
-        .await;
+    let mut extra_logs: Vec<SubStepLog> = Vec::new();
 
-    match response_rx.await {
-        Ok(CheckpointResponse::Continue) => Ok(StepOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            accepted: Some(true),
-            feedback: None,
-        }),
-        Ok(CheckpointResponse::Stop) => Err(StepError::Rejected),
-        Ok(CheckpointResponse::Feedback(text)) => Ok(StepOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            accepted: None,
-            feedback: Some(text),
-        }),
-        Err(_) => Err(StepError::Rejected),
+    loop {
+        let feedback_available = ctx
+            .session_manager
+            .as_ref()
+            .map_or(false, |m| m.has_active_session());
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let _ = tx
+            .send(EngineEvent::CheckpointPending {
+                run_id: ctx.run_id,
+                step_index: ctx.step_index,
+                message: message.to_string(),
+                feedback_available,
+                response_tx,
+            })
+            .await;
+
+        match response_rx.await {
+            Ok(CheckpointResponse::Continue) => {
+                return Ok(StepOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: Some(true),
+                    extra_logs,
+                });
+            }
+            Ok(CheckpointResponse::Stop) => return Err(StepError::Rejected(extra_logs)),
+            Ok(CheckpointResponse::Feedback(text)) => {
+                if let Some(manager) = &ctx.session_manager {
+                    match manager.prompt_last(&text).await {
+                        Ok(Some(agent_out)) => {
+                            extra_logs.push(SubStepLog {
+                                step_type: "agent".to_string(),
+                                stdout: agent_out.stdout,
+                                stderr: agent_out.stderr,
+                                exit_code: agent_out.exit_code,
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Agent feedback prompt failed");
+                        }
+                    }
+                }
+                // loop: present checkpoint again with updated agent response
+            }
+            Err(_) => return Err(StepError::Rejected(extra_logs)),
+        }
     }
 }
-
