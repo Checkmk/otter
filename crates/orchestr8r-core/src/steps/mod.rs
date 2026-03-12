@@ -1,4 +1,3 @@
-pub mod agent;
 pub mod checkpoint;
 pub mod shell;
 pub mod workspace;
@@ -20,7 +19,6 @@ pub fn registry() -> Vec<Box<dyn StepExecutor>> {
     vec![
         Box::new(shell::ShellExecutor),
         Box::new(checkpoint::CheckpointExecutor),
-        Box::new(agent::AgentExecutor),
         Box::new(workspace::WorkspaceExecutor),
     ]
 }

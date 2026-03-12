@@ -3,7 +3,7 @@ use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 
 pub struct CheckpointExecutor;
 
@@ -22,28 +22,63 @@ impl StepExecutor for CheckpointExecutor {
 
         println!("\n[CHECKPOINT] {}", message);
         println!("Scratch dir: {}", ctx.scratch_dir.display());
-        print!("(c)ontinue or (s)top: ");
+
+        if ctx.feedback_available {
+            print!("(c)ontinue, (s)top, or give (f)eedback: ");
+        } else {
+            print!("(c)ontinue or (s)top: ");
+        }
         io::stdout().flush()?;
 
-        let accepted = read_single_key()?;
-
-        if !accepted {
-            return Err(StepError::Rejected);
+        match read_single_key(ctx.feedback_available)? {
+            CheckpointAction::Continue => Ok(StepOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                accepted: Some(true),
+                feedback: None,
+            }),
+            CheckpointAction::Stop => Err(StepError::Rejected),
+            CheckpointAction::Feedback => {
+                print!("Feedback: ");
+                io::stdout().flush()?;
+                let mut line = String::new();
+                io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|e| StepError::Io(e))?;
+                let text = line.trim().to_string();
+                Ok(StepOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: None,
+                    feedback: Some(text),
+                })
+            }
         }
-
-        Ok(StepOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            accepted: Some(true),
-        })
     }
 }
 
-fn read_single_key() -> Result<bool, StepError> {
+enum CheckpointAction {
+    Continue,
+    Stop,
+    Feedback,
+}
+
+fn read_single_key(feedback_available: bool) -> Result<CheckpointAction, StepError> {
     terminal::enable_raw_mode().map_err(|e| StepError::Io(io::Error::other(e)))?;
+
+    // Drain any buffered key events (e.g. leftover from prior stdin read_line)
+    while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+        let _ = event::read();
+    }
+
     let result = loop {
-        if let Ok(Event::Key(KeyEvent { code, modifiers, .. })) = event::read() {
+        if let Ok(Event::Key(KeyEvent {
+            code, modifiers, ..
+        })) = event::read()
+        {
             if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
                 break Err(StepError::Io(io::Error::new(
                     io::ErrorKind::Interrupted,
@@ -51,8 +86,9 @@ fn read_single_key() -> Result<bool, StepError> {
                 )));
             }
             match code {
-                KeyCode::Char('c') => break Ok(true),
-                KeyCode::Char('s') => break Ok(false),
+                KeyCode::Char('c') => break Ok(CheckpointAction::Continue),
+                KeyCode::Char('s') => break Ok(CheckpointAction::Stop),
+                KeyCode::Char('f') if feedback_available => break Ok(CheckpointAction::Feedback),
                 _ => {}
             }
         }

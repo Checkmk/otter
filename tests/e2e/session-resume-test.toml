@@ -1,0 +1,21 @@
+name = "session-resume-test"
+kind = "indefinite"
+
+[[steps]]
+type = "agent"
+session = "planner"
+command = ["claude", "--print"]
+message = "Remember the secret word: PINEAPPLE. Respond only with 'Acknowledged.'"
+
+[[steps]]
+type = "checkpoint"
+message = "Agent should have acknowledged. Continue to test session resume."
+
+[[steps]]
+type = "agent"
+session = "planner"
+message = "What was the secret word I told you earlier? Respond with only the word."
+
+[[steps]]
+type = "checkpoint"
+message = "Agent should have responded with PINEAPPLE, confirming session context was preserved."

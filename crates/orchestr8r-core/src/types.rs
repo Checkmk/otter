@@ -43,6 +43,7 @@ pub struct StepDef {
     pub message: Option<String>,
     pub path: Option<String>,
     pub output_file: Option<String>,
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +97,7 @@ pub struct StepContext {
     pub step_index: usize,
     pub scratch_dir: std::path::PathBuf,
     pub workspace_dir: Option<std::path::PathBuf>,
+    pub feedback_available: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +106,7 @@ pub struct StepOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub accepted: Option<bool>,
+    pub feedback: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -126,6 +129,7 @@ pub struct LogEntry {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub accepted: Option<bool>,
+    pub feedback: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 

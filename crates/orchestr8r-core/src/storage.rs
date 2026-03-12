@@ -148,6 +148,7 @@ mod tests {
                     stderr: String::new(),
                     exit_code: Some(0),
                     accepted: None,
+                    feedback: None,
                     timestamp: Utc::now(),
                 })
                 .unwrap();

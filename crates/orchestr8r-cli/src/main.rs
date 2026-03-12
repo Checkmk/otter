@@ -6,6 +6,7 @@ use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use tracing::info;
 
+use orchestr8r_core::agent_runner::SubprocessAgentRunner;
 use orchestr8r_core::engine::Engine;
 use orchestr8r_core::types::WorkflowDef;
 use orchestr8r_storage::SqliteStorage;
@@ -98,7 +99,7 @@ async fn run_workflow(workflow_path: PathBuf) -> anyhow::Result<()> {
         shutdown_clone.store(true, Ordering::Relaxed);
     });
 
-    let engine = Engine::new(storage, scratch_base);
+    let engine = Engine::new(storage, scratch_base, Arc::new(SubprocessAgentRunner));
     engine.run(&workflow_def, shutdown).await?;
 
     info!("Workflow stopped cleanly");

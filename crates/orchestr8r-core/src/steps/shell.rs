@@ -55,6 +55,7 @@ impl StepExecutor for ShellExecutor {
             stderr,
             exit_code,
             accepted: None,
+            feedback: None,
         })
     }
 }

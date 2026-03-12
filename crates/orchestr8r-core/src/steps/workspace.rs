@@ -39,6 +39,7 @@ impl StepExecutor for WorkspaceExecutor {
             stderr: String::new(),
             exit_code: Some(0),
             accepted: None,
+            feedback: None,
         })
     }
 }
@@ -57,6 +58,7 @@ mod tests {
             step_index: 0,
             scratch_dir: std::env::temp_dir(),
             workspace_dir: None,
+            feedback_available: false,
         }
     }
 
@@ -67,6 +69,7 @@ mod tests {
             message: None,
             path: path.map(String::from),
             output_file: None,
+            session: None,
         }
     }
 

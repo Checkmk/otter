@@ -48,6 +48,7 @@ impl SqliteStorage {
                 stderr TEXT NOT NULL,
                 exit_code INTEGER,
                 accepted INTEGER,
+                feedback TEXT,
                 timestamp TEXT NOT NULL
             );
         ",
@@ -91,8 +92,8 @@ impl StorageBackend for SqliteStorage {
     fn append_log(&self, entry: LogEntry) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO step_logs (run_id, iteration, step_index, step_type, stdout, stderr, exit_code, accepted, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO step_logs (run_id, iteration, step_index, step_type, stdout, stderr, exit_code, accepted, feedback, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 entry.run_id.to_string(),
                 entry.iteration as i64,
@@ -102,6 +103,7 @@ impl StorageBackend for SqliteStorage {
                 entry.stderr,
                 entry.exit_code,
                 entry.accepted.map(|a| if a { 1i64 } else { 0i64 }),
+                entry.feedback,
                 entry.timestamp.to_rfc3339(),
             ],
         )?;
@@ -239,6 +241,7 @@ mod tests {
                     stderr: String::new(),
                     exit_code: Some(0),
                     accepted: None,
+                    feedback: None,
                     timestamp: Utc::now(),
                 })
                 .unwrap();
@@ -268,6 +271,7 @@ mod tests {
                 stderr: String::new(),
                 exit_code: Some(0),
                 accepted: Some(true),
+                feedback: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
