@@ -477,12 +477,7 @@ impl Engine {
                 working_dir,
             };
 
-            let handle = self.agent_runner.start(spec).await?;
-            let start_output = AgentOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            };
+            let (handle, start_output) = self.agent_runner.start(spec).await?;
             sessions.insert(session_key.clone(), handle);
             start_output
         };
@@ -505,12 +500,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentRunner for NoOpAgentRunner {
-        async fn start(&self, _spec: AgentSpec) -> Result<AgentSessionHandle, AgentError> {
-            Ok(AgentSessionHandle {
+        async fn start(&self, _spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+            Ok((AgentSessionHandle {
                 id: "noop".to_string(),
                 command: vec![],
                 working_dir: std::path::PathBuf::new(),
-            })
+            }, AgentOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            }))
         }
         async fn prompt(
             &self,
@@ -552,16 +551,20 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentRunner for MockAgentRunner {
-        async fn start(&self, spec: AgentSpec) -> Result<AgentSessionHandle, AgentError> {
+        async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("start:{}", spec.message));
-            Ok(AgentSessionHandle {
+            Ok((AgentSessionHandle {
                 id: "mock-session".to_string(),
                 command: spec.command,
                 working_dir: spec.working_dir,
-            })
+            }, AgentOutput {
+                stdout: format!("response to: {}", spec.message),
+                stderr: String::new(),
+                exit_code: Some(0),
+            }))
         }
         async fn prompt(
             &self,

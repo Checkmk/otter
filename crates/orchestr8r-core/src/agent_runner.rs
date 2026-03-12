@@ -33,7 +33,7 @@ pub enum AgentError {
 
 #[async_trait]
 pub trait AgentRunner: Send + Sync {
-    async fn start(&self, spec: AgentSpec) -> Result<AgentSessionHandle, AgentError>;
+    async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError>;
     async fn prompt(
         &self,
         session: &AgentSessionHandle,
@@ -51,7 +51,7 @@ pub struct ClaudeCodeRunner;
 
 #[async_trait]
 impl AgentRunner for ClaudeCodeRunner {
-    async fn start(&self, spec: AgentSpec) -> Result<AgentSessionHandle, AgentError> {
+    async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
         let session_id = Uuid::new_v4().to_string();
 
         let handle = AgentSessionHandle {
@@ -75,11 +75,7 @@ impl AgentRunner for ClaudeCodeRunner {
             }
         }
 
-        if !output.stdout.is_empty() {
-            print!("{}", output.stdout);
-        }
-
-        Ok(handle)
+        Ok((handle, output))
     }
 
     async fn prompt(
@@ -100,10 +96,6 @@ impl AgentRunner for ClaudeCodeRunner {
                     output.stderr
                 )));
             }
-        }
-
-        if !output.stdout.is_empty() {
-            print!("{}", output.stdout);
         }
 
         Ok(output)

@@ -161,15 +161,22 @@ fn run_stdin_checkpoint_handler(
             None => break,
         };
 
-        let EngineEvent::CheckpointPending {
-            message,
-            feedback_available,
-            response_tx,
-            ..
-        } = ev
-        else {
-            continue;
-        };
+        match ev {
+            EngineEvent::LogAppended(entry) => {
+                if !entry.stdout.is_empty() {
+                    print!("{}", entry.stdout);
+                }
+                if !entry.stderr.is_empty() {
+                    eprint!("{}", entry.stderr);
+                }
+                continue;
+            }
+            EngineEvent::CheckpointPending {
+                message,
+                feedback_available,
+                response_tx,
+                ..
+            } => {
 
         println!("\n[CHECKPOINT] {message}");
         if feedback_available {
@@ -215,6 +222,9 @@ fn run_stdin_checkpoint_handler(
             _ => CheckpointResponse::Stop,
         };
         let _ = response_tx.send(response);
+            }
+            _ => {}
+        }
     }
 
     Ok(())

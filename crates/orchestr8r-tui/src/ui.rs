@@ -68,7 +68,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
-            let first_line = text.lines().next().unwrap_or("");
+            let first_line = text.lines().next().unwrap_or("").replace('\r', "");
             vec![Line::from(format!("{} {}", prefix, first_line))]
         })
         .collect();

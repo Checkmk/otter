@@ -4,7 +4,7 @@ kind = "indefinite"
 [[steps]]
 type = "agent"
 command = ["claude", "--print", "--allowed-tools", "Write,Read"]
-message = "Create file foo.txt with content 'bar'"
+message = "Create file foo.txt with content 'bar' and output 'done' when finished."
 output_file = "foo.txt"
 
 [[steps]]
