@@ -13,7 +13,7 @@ message = "Save the final plan to plan.md: Review README.md and TARGET_ARCHITECT
 
 [[steps]]
 type = "checkpoint"
-message = "Review the agent's plan. Accept to proceed with implementation, reject to stop."
+message = "Review the agent's plan."
 
 [[steps]]
 type = "agent"
@@ -22,4 +22,4 @@ message = "Read plan.md and implement it."
 
 [[steps]]
 type = "checkpoint"
-message = "Review the implementation. Accept to continue to next iteration, reject to stop."
+message = "Review the implementation."

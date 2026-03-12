@@ -6,12 +6,12 @@ Automate multi-step AI agent tasks triggered by real-world events.
 - Each workflow has exactly one running instance at a time — an indefinite workflow only starts the next loop after the previous one completes, never spawning parallel containers
 - Workflows are composed of **step plugins** — reusable, installable units of work (e.g., launch agent, spin up container, create worktree, send notification, wait for approval)
 - **Triggers** are first-class for event-driven workflows: cron/scheduled, event-driven (email, webhook, file change), or manual
-- **Checkpoint steps** pause a workflow for human input — accept to continue, reject to stop, or **give feedback** to re-prompt the previous agent in the same session
+- **Checkpoint steps** pause a workflow for human input — the available actions (accept, reject, feedback) are presented automatically by the UI
 - A dashboard lets you monitor running workflows, view logs, and manage step plugins
 - Secrets and credentials are managed centrally and injected into containers at runtime
 - Example indefinite workflow (always running):
   - Launch custom agent that compares actual codebase to a target_architecture.md and suggest an implementation plan to bring the two together
-  - Checkpoint: review the plan — accept, reject, or give feedback to refine it
+  - Checkpoint: review the plan
   - Launch a new agent session to implement the plan
   - Checkpoint: notify the Orchestr8r user to review the implementation
   - Push the implementation as a PR
@@ -19,7 +19,7 @@ Automate multi-step AI agent tasks triggered by real-world events.
   - Spin up a new container
   - Create worktree with PR
   - Launch custom agent to review the PR and generate review comments
-  - Checkpoint: review the comments — accept to post, reject to save to file, or give feedback to refine
+  - Checkpoint: review the comments
 
 ## Usage
 
@@ -46,7 +46,7 @@ message = "Review the code and create a plan. Write it to plan.md."
 
 [[steps]]
 type = "checkpoint"
-message = "Review the plan. Accept to proceed, reject to stop."
+message = "Review the plan."
 ```
 
 ### Step types
@@ -56,7 +56,7 @@ message = "Review the plan. Accept to proceed, reject to stop."
 | `workspace`  | Sets the working directory for subsequent steps                       | `path`               |
 | `agent`      | Runs a CLI command with a message as the final argument, saves output | `command`, `message`; optional `session` |
 | `shell`      | Runs an arbitrary command                                             | `command`            |
-| `checkpoint` | Pauses for human accept/reject/feedback input                         | `message` (optional) |
+| `checkpoint` | Pauses for human input; actions are shown by the UI                   | `message` (optional) |
 
 ### Workflow kinds
 

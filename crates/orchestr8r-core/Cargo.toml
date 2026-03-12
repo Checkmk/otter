@@ -13,6 +13,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+crossterm = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

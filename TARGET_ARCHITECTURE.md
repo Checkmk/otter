@@ -84,7 +84,7 @@ secrets = ["GITHUB_TOKEN"]
 
 [[workflows.steps]]
 type = "checkpoint"
-message = "Review the comments. Accept to post, reject to save to file, or give feedback to refine."
+message = "Review the comments."
 notify = ["desktop"]
 ```
 
