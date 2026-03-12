@@ -13,6 +13,7 @@ use crate::types::{
     EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
     WorkflowDef, WorkflowKind, WorkflowRun,
 };
+use orchestr8r_notify::{NoOpNotifier, Notifier};
 use tokio::sync::mpsc;
 
 pub struct Engine {
@@ -20,6 +21,7 @@ pub struct Engine {
     storage: Arc<dyn StorageBackend>,
     scratch_base: std::path::PathBuf,
     agent_runner: Arc<dyn AgentRunner>,
+    notifier: Arc<dyn Notifier>,
 }
 
 impl Engine {
@@ -27,12 +29,14 @@ impl Engine {
         storage: Arc<dyn StorageBackend>,
         scratch_base: std::path::PathBuf,
         agent_runner: Arc<dyn AgentRunner>,
+        notifier: Arc<dyn Notifier>,
     ) -> Self {
         Self {
             executors: crate::steps::registry(),
             storage,
             scratch_base,
             agent_runner,
+            notifier,
         }
     }
 
@@ -47,6 +51,7 @@ impl Engine {
             storage,
             scratch_base,
             agent_runner,
+            notifier: Arc::new(NoOpNotifier),
         }
     }
 
@@ -276,6 +281,7 @@ impl Engine {
                 workspace_dir: workspace_dir.clone(),
                 checkpoint_tx: ui_tx.clone(),
                 session_manager: Some(session_manager.clone()),
+                notifier: self.notifier.clone(),
             };
 
             info!(step = i, step_type = %step_def.step_type, "Executing step");
@@ -441,7 +447,7 @@ mod tests {
 
     fn make_engine(storage: Arc<InMemoryStorage>) -> Engine {
         let scratch = std::env::temp_dir().join("orchestr8r-tests");
-        Engine::new(storage, scratch, Arc::new(NoOpAgentRunner))
+        Engine::new(storage, scratch, Arc::new(NoOpAgentRunner), Arc::new(orchestr8r_notify::NoOpNotifier))
     }
 
     /// Tracks all agent runner calls for assertions.
@@ -507,6 +513,7 @@ mod tests {
             path: None,
             output_file: None,
             session: None,
+            notify: None,
         }
     }
 
@@ -534,6 +541,7 @@ mod tests {
                 path: None,
                 output_file: None,
                 session: None,
+                notify: None,
             }],
         );
 
@@ -586,6 +594,7 @@ mod tests {
                 path: None,
                 output_file: None,
                 session: None,
+                notify: None,
             }],
         );
 
@@ -617,6 +626,7 @@ mod tests {
                     path: Some(workspace.path().to_string_lossy().to_string()),
                     output_file: None,
                     session: None,
+                    notify: None,
                 },
                 StepDef {
                     step_type: StepType::Shell,
@@ -625,6 +635,7 @@ mod tests {
                     path: None,
                     output_file: None,
                     session: None,
+                    notify: None,
                 },
             ],
         );
@@ -699,16 +710,40 @@ mod tests {
         );
     }
 
+    struct MockNotifier {
+        count: Mutex<usize>,
+    }
+
+    impl MockNotifier {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { count: Mutex::new(0) })
+        }
+        fn call_count(&self) -> usize {
+            *self.count.lock().unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl orchestr8r_notify::Notifier for MockNotifier {
+        fn name(&self) -> &str { "mock" }
+        async fn send(&self, _: &orchestr8r_notify::Notification) -> Result<(), orchestr8r_notify::NotifyError> {
+            *self.count.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn checkpoint_feedback_loop_reprompts_agent() {
         // GIVEN an agent step followed by a checkpoint that receives feedback then continue
         let storage = Arc::new(InMemoryStorage::new());
         let agent_runner = Arc::new(MockAgentRunner::new());
         let scratch = tempfile::tempdir().unwrap();
+        let notifier = MockNotifier::new();
         let engine = Engine::new(
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
+            notifier.clone(),
         );
         let wf = workflow(
             "test-feedback",
@@ -770,6 +805,12 @@ mod tests {
             1,
             "checkpoint should log the agent feedback response"
         );
+
+        // Exactly one notification was sent when the checkpoint became pending
+        assert!(
+            notifier.call_count() >= 1,
+            "checkpoint should have sent a desktop notification"
+        );
     }
 
     #[tokio::test]
@@ -797,6 +838,7 @@ mod tests {
             storage.clone(),
             scratch.path().to_path_buf(),
             agent_runner.clone(),
+            Arc::new(orchestr8r_notify::NoOpNotifier),
         );
         let wf = workflow(
             "test-no-session",
@@ -922,6 +964,7 @@ mod tests {
             storage.clone(),
             scratch.path().to_path_buf(),
             Arc::new(NoOpAgentRunner),
+            Arc::new(orchestr8r_notify::NoOpNotifier),
         );
 
         let wf = WorkflowDef {

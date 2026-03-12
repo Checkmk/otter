@@ -51,6 +51,7 @@ pub enum StepType {
     Checkpoint,
     Agent,
     Workspace,
+    Notify,
 }
 
 impl std::fmt::Display for StepType {
@@ -60,6 +61,7 @@ impl std::fmt::Display for StepType {
             StepType::Checkpoint => write!(f, "checkpoint"),
             StepType::Agent => write!(f, "agent"),
             StepType::Workspace => write!(f, "workspace"),
+            StepType::Notify => write!(f, "notify"),
         }
     }
 }
@@ -73,6 +75,7 @@ pub struct StepDef {
     pub path: Option<String>,
     pub output_file: Option<String>,
     pub session: Option<String>,
+    pub notify: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +131,7 @@ pub struct StepContext {
     pub workspace_dir: Option<std::path::PathBuf>,
     pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
     pub session_manager: Option<Arc<crate::session::AgentSessionManager>>,
+    pub notifier: Arc<dyn orchestr8r_notify::Notifier>,
 }
 
 #[derive(Debug)]

@@ -60,6 +60,7 @@ mod tests {
             workspace_dir: None,
             checkpoint_tx: None,
             session_manager: None,
+            notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
         }
     }
 
@@ -71,6 +72,7 @@ mod tests {
             path: path.map(String::from),
             output_file: None,
             session: None,
+            notify: None,
         }
     }
 

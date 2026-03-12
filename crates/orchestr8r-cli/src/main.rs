@@ -9,6 +9,7 @@ use tracing::info;
 use orchestr8r_core::agent_runner::ClaudeCodeRunner;
 use orchestr8r_core::engine::Engine;
 use orchestr8r_core::types::{CheckpointResponse, EngineEvent, WorkflowDef};
+use orchestr8r_notify::{DesktopNotifier, Notifier};
 use orchestr8r_storage::SqliteStorage;
 
 #[derive(Parser)]
@@ -158,6 +159,8 @@ async fn run_workflows(workflows: Vec<WorkflowDef>, no_tui: bool) -> anyhow::Res
             .with_context(|| format!("Failed to open storage at {:?}", db_path))?,
     );
 
+    let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
+
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
 
@@ -174,7 +177,7 @@ async fn run_workflows(workflows: Vec<WorkflowDef>, no_tui: bool) -> anyhow::Res
     // Spawn one engine task per workflow
     let mut engine_handles = Vec::new();
     for workflow_def in workflows {
-        let engine = Engine::new(storage.clone(), scratch_base.clone(), Arc::new(ClaudeCodeRunner));
+        let engine = Engine::new(storage.clone(), scratch_base.clone(), Arc::new(ClaudeCodeRunner), notifier.clone());
         let shutdown_for_engine = shutdown.clone();
         let ui_tx_for_engine = ui_tx.clone();
 

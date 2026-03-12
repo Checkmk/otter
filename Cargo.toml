@@ -4,6 +4,7 @@ members = [
     "crates/orchestr8r-storage",
     "crates/orchestr8r-tui",
     "crates/orchestr8r-cli",
+    "crates/orchestr8r-notify",
 ]
 resolver = "2"
 

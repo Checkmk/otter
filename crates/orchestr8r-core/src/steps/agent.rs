@@ -98,6 +98,7 @@ mod tests {
             workspace_dir: None,
             checkpoint_tx: None,
             session_manager: Some(manager),
+            notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
         };
         let step_def = StepDef {
             step_type: StepType::Agent,
@@ -106,6 +107,7 @@ mod tests {
             path: None,
             output_file: None,
             session: None,
+            notify: None,
         };
 
         // WHEN

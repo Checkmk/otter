@@ -1,6 +1,7 @@
 use super::StepExecutor;
 use crate::types::{CheckpointResponse, EngineEvent, StepContext, StepDef, StepError, StepOutput, SubStepLog};
 use async_trait::async_trait;
+use orchestr8r_notify::Notification;
 
 pub struct CheckpointExecutor;
 
@@ -45,6 +46,14 @@ async fn execute_via_channel(
                 message: message.to_string(),
                 feedback_available,
                 response_tx,
+            })
+            .await;
+
+        let _ = ctx
+            .notifier
+            .send(&Notification {
+                summary: "orchestr8r — checkpoint".to_string(),
+                body: message.to_string(),
             })
             .await;
 
