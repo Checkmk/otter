@@ -7,7 +7,7 @@ path = "."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--print", "--allowed-tools", "Write,Read"]
+command = ["claude", "--allowed-tools", "Write,Read"]
 output_file = "plan.md"
 message = "Save the final plan to plan.md: Review README.md and TARGET_ARCHITECTURE.md and the current code. Identify the most crucial difference and create an implementation plan."
 
@@ -17,7 +17,7 @@ message = "Review the agent's plan."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--print", "--permission-mode", "acceptEdits"]
+command = ["claude", "--permission-mode", "acceptEdits"]
 message = "Read plan.md and implement it."
 
 [[steps]]

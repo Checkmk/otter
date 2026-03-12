@@ -42,15 +42,15 @@ pub trait AgentRunner: Send + Sync {
     async fn stop(&self, session: &AgentSessionHandle) -> Result<(), AgentError>;
 }
 
-/// Subprocess-based agent runner targeting the `claude` CLI.
+/// Agent runner targeting the Claude Code CLI.
 ///
-/// - `start()` spawns `command --print --session-id <uuid>` with the message on stdin.
-/// - `prompt()` spawns `command --print --resume <id>` with the new message on stdin.
+/// - `start()` spawns `command --session-id <uuid>` with the message on stdin.
+/// - `prompt()` spawns `command --resume <id>` with the new message on stdin.
 /// - `stop()` is a no-op — the CLI manages its own session cleanup.
-pub struct SubprocessAgentRunner;
+pub struct ClaudeCodeRunner;
 
 #[async_trait]
-impl AgentRunner for SubprocessAgentRunner {
+impl AgentRunner for ClaudeCodeRunner {
     async fn start(&self, spec: AgentSpec) -> Result<AgentSessionHandle, AgentError> {
         let session_id = Uuid::new_v4().to_string();
 
