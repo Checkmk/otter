@@ -84,7 +84,7 @@ secrets = ["GITHUB_TOKEN"]
 
 [[workflows.steps]]
 type = "checkpoint"
-message = "Review the comments above. Accept to post, reject to save to file."
+message = "Review the comments. Accept to post, reject to save to file, or give feedback to refine."
 notify = ["desktop"]
 ```
 
@@ -97,8 +97,8 @@ notify = ["desktop"]
 | Step Type    | Description                                                                           |
 | ------------ | ------------------------------------------------------------------------------------- |
 | `container`  | Launches a container via the `ContainerRuntime` trait                                 |
-| `checkpoint` | Pauses for human input; sends a desktop notification, awaits accept/reject in the TUI |
-| `agent`      | Invokes an `AgentRunner` (e.g., shells out to a CLI agent tool)                       |
+| `checkpoint` | Pauses for human input; awaits accept/reject/feedback in the TUI (see Agent Sessions) |
+| `agent`      | Invokes an `AgentRunner` within an agent session (see Agent Sessions)                 |
 | `worktree`   | Creates a git worktree for isolated work; cleanup is a dedicated plugin/step          |
 | `notify`     | Sends a notification without pausing                                                  |
 | `shell`      | Runs an arbitrary shell command in a sandbox                                          |
@@ -199,10 +199,48 @@ Initial implementation: **desktop notifications** via `notify-rust`. Notificatio
 
 ## AI Agent Integration
 
+### Agent Sessions
+
+An **agent session** is a long-lived conversational context that persists across steps within a workflow run. Sessions are identified by an explicit `session` field on agent steps. This enables:
+
+- **Multi-prompt sequences:** Multiple `agent` steps with the same `session` name send sequential prompts to the same session, preserving full conversation context
+- **Checkpoint feedback:** When a checkpoint follows an agent step and the user chooses "feedback", the feedback text is sent as an additional prompt to the agent's session — the agent responds, and the checkpoint re-presents the result. This loop repeats until the user accepts or rejects.
+
+An agent step **without** a `session` field starts a fresh, single-use session that is discarded after the step completes. An agent step **with** a `session` field creates the session on first use and resumes it on subsequent steps with the same name. The `command` field is only required on the first agent step that creates the session.
+
+A checkpoint always targets the most recent agent session (whether named or single-use). Feedback is only available when the preceding agent session is still alive — i.e., when the previous step was an agent, or a named session is still open.
+
+```toml
+[[steps]]
+type = "agent"
+session = "planner"
+command = ["claude", "--print"]
+message = "Review the code and create a plan."
+
+[[steps]]
+type = "checkpoint"
+message = "Review the plan."
+
+[[steps]]
+type = "agent"
+session = "planner"
+message = "Now implement the plan."
+```
+
+Session lifecycle:
+1. An `agent` step with a `session` name creates the session (first use) or resumes it
+2. An `agent` step without `session` creates a temporary session scoped to that step
+3. Named sessions stay alive for the entire workflow run — checkpoints and other steps do not affect their lifecycle
+4. All sessions are cleaned up when the workflow run completes (or fails)
+
+### AgentRunner Trait
+
 ```rust
 #[async_trait]
 pub trait AgentRunner: Send + Sync {
-    async fn run(&self, spec: AgentSpec) -> Result<AgentOutput, AgentError>;
+    async fn start(&self, spec: AgentSpec) -> Result<AgentSession, AgentError>;
+    async fn prompt(&self, session: &mut AgentSession, message: &str) -> Result<AgentOutput, AgentError>;
+    async fn stop(&self, session: AgentSession) -> Result<(), AgentError>;
 }
 ```
 
@@ -264,6 +302,8 @@ Steps communicate via a **shared scratch directory** scoped to each workflow run
 - Shell steps receive it as a working directory or environment variable
 - The directory is retained after the run and subject to a configurable retention policy
 
+**Open concern:** The current `workspace` step conflates "working directory" (e.g., a git repo the agent modifies) with "inter-step data passing" (e.g., `output_file`). These should eventually be separated — the workspace is where agents operate, while step artifacts (plans, outputs) should live in the scratch directory to keep the workspace clean. The exact boundary is TBD.
+
 ---
 
 ## Crash Recovery
@@ -314,7 +354,6 @@ Auto-resume is deferred: it requires step-level idempotency guarantees and caref
 
 ## Open Questions / Future Work
 
-- **Checkpoint feedback loop:** Checkpoints support only accept/reject. A feedback response that re-runs a preceding step with user input would require per-checkpoint `on_feedback` routing in the workflow TOML and step-level idempotency semantics.
-- **Actionable notifications:** Add accept/reject actions directly in desktop notifications (platform permitting).
+- **Actionable notifications:** Add accept/reject/feedback actions directly in desktop notifications (platform permitting).
 - **Auto-resume after crash:** Requires step-level idempotency guarantees and handling of partial container/worktree state.
 - **Retry policy:** No per-step retry or backoff is defined. Configurable retry counts and dead-letter behavior are needed.

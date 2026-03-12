@@ -6,20 +6,20 @@ Automate multi-step AI agent tasks triggered by real-world events.
 - Each workflow has exactly one running instance at a time — an indefinite workflow only starts the next loop after the previous one completes, never spawning parallel containers
 - Workflows are composed of **step plugins** — reusable, installable units of work (e.g., launch agent, spin up container, create worktree, send notification, wait for approval)
 - **Triggers** are first-class for event-driven workflows: cron/scheduled, event-driven (email, webhook, file change), or manual
-- **Checkpoint steps** are a built-in step type that pauses a workflow for human input — accept to continue, reject to pause
+- **Checkpoint steps** pause a workflow for human input — accept to continue, reject to stop, or **give feedback** to re-prompt the previous agent in the same session
 - A dashboard lets you monitor running workflows, view logs, and manage step plugins
 - Secrets and credentials are managed centrally and injected into containers at runtime
 - Example indefinite workflow (always running):
   - Launch custom agent that compares actual codebase to a target_architecture.md and suggest an implementation plan to bring the two together
-  - Checkpoint: notify the Orchestr8r user about the plan
-  - Launch custom agent to implement the plan
+  - Checkpoint: review the plan — accept, reject, or give feedback to refine it
+  - Launch a new agent session to implement the plan
   - Checkpoint: notify the Orchestr8r user to review the implementation
   - Push the implementation as a PR
 - Example event-driven workflow (email trigger: new PR review requested):
   - Spin up a new container
   - Create worktree with PR
   - Launch custom agent to review the PR and generate review comments
-  - Checkpoint: notify the Orchestr8r user to review the comments, ask for acceptance to post them or save them to a markdown file
+  - Checkpoint: review the comments — accept to post, reject to save to file, or give feedback to refine
 
 ## Usage
 
@@ -54,9 +54,9 @@ message = "Review the plan. Accept to proceed, reject to stop."
 | Type         | Description                                                           | Required fields      |
 | ------------ | --------------------------------------------------------------------- | -------------------- |
 | `workspace`  | Sets the working directory for subsequent steps                       | `path`               |
-| `agent`      | Runs a CLI command with a message as the final argument, saves output | `command`, `message` |
+| `agent`      | Runs a CLI command with a message as the final argument, saves output | `command`, `message`; optional `session` |
 | `shell`      | Runs an arbitrary command                                             | `command`            |
-| `checkpoint` | Pauses for human accept/reject input                                  | `message` (optional) |
+| `checkpoint` | Pauses for human accept/reject/feedback input                         | `message` (optional) |
 
 ### Workflow kinds
 
