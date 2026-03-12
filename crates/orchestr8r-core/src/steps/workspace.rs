@@ -59,6 +59,7 @@ mod tests {
             scratch_dir: std::env::temp_dir(),
             workspace_dir: None,
             feedback_available: false,
+            checkpoint_tx: None,
         }
     }
 

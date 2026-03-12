@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +99,26 @@ pub struct StepContext {
     pub scratch_dir: std::path::PathBuf,
     pub workspace_dir: Option<std::path::PathBuf>,
     pub feedback_available: bool,
+    pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
+}
+
+#[derive(Debug)]
+pub enum CheckpointResponse {
+    Continue,
+    Stop,
+    Feedback(String),
+}
+
+pub enum EngineEvent {
+    LogAppended(LogEntry),
+    RunUpdated(WorkflowRun),
+    CheckpointPending {
+        run_id: Uuid,
+        step_index: usize,
+        message: String,
+        feedback_available: bool,
+        response_tx: oneshot::Sender<CheckpointResponse>,
+    },
 }
 
 #[derive(Debug, Clone)]

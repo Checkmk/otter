@@ -97,7 +97,7 @@ notify = ["desktop"]
 | Step Type    | Description                                                                           |
 | ------------ | ------------------------------------------------------------------------------------- |
 | `container`  | Launches a container via the `ContainerRuntime` trait                                 |
-| `checkpoint` | Pauses for human input; awaits accept/reject/feedback in the TUI (see Agent Sessions) |
+| `checkpoint` | Pauses for human input; awaits continue/stop/feedback in the TUI (see Agent Sessions) |
 | `agent`      | Invokes an `AgentRunner` within an agent session (see Agent Sessions)                 |
 | `worktree`   | Creates a git worktree for isolated work; cleanup is a dedicated plugin/step          |
 | `notify`     | Sends a notification without pausing                                                  |
@@ -204,7 +204,7 @@ Initial implementation: **desktop notifications** via `notify-rust`. Notificatio
 An **agent session** is a long-lived conversational context that persists across steps within a workflow run. Sessions are identified by an explicit `session` field on agent steps. This enables:
 
 - **Multi-prompt sequences:** Multiple `agent` steps with the same `session` name send sequential prompts to the same session, preserving full conversation context
-- **Checkpoint feedback:** When a checkpoint follows an agent step and the user chooses "feedback", the feedback text is sent as an additional prompt to the agent's session — the agent responds, and the checkpoint re-presents the result. This loop repeats until the user accepts or rejects.
+- **Checkpoint feedback:** When a checkpoint follows an agent step and the user chooses "feedback", the feedback text is sent as an additional prompt to the agent's session — the agent responds, and the checkpoint re-presents the result. This loop repeats until the user continues or stops.
 
 An agent step **without** a `session` field starts a fresh, single-use session that is discarded after the step completes. An agent step **with** a `session` field creates the session on first use and resumes it on subsequent steps with the same name. The `command` field is only required on the first agent step that creates the session.
 
@@ -253,7 +253,7 @@ Initial implementation: subprocess runner that shells out to CLI agent tools (e.
 The TUI is the primary user interface for:
 
 - Viewing running and completed workflow instances with live log streaming
-- Responding to checkpoint steps (accept / reject / provide feedback)
+- Responding to checkpoint steps (continue / stop / provide feedback)
 - Managing workflow enable/disable
 - Viewing plugin/trigger status
 
@@ -354,6 +354,6 @@ Auto-resume is deferred: it requires step-level idempotency guarantees and caref
 
 ## Open Questions / Future Work
 
-- **Actionable notifications:** Add accept/reject/feedback actions directly in desktop notifications (platform permitting).
+- **Actionable notifications:** Add continue/stop/feedback actions directly in desktop notifications (platform permitting).
 - **Auto-resume after crash:** Requires step-level idempotency guarantees and handling of partial container/worktree state.
 - **Retry policy:** No per-step retry or backoff is defined. Configurable retry counts and dead-letter behavior are needed.

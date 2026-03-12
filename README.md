@@ -6,7 +6,7 @@ Automate multi-step AI agent tasks triggered by real-world events.
 - Each workflow has exactly one running instance at a time — an indefinite workflow only starts the next loop after the previous one completes, never spawning parallel containers
 - Workflows are composed of **step plugins** — reusable, installable units of work (e.g., launch agent, spin up container, create worktree, send notification, wait for approval)
 - **Triggers** are first-class for event-driven workflows: cron/scheduled, event-driven (email, webhook, file change), or manual
-- **Checkpoint steps** pause a workflow for human input — the available actions (accept, reject, feedback) are presented automatically by the UI
+- **Checkpoint steps** pause a workflow for human input — the available actions (continue, stop, feedback) are presented automatically by the UI
 - A dashboard lets you monitor running workflows, view logs, and manage step plugins
 - Secrets and credentials are managed centrally and injected into containers at runtime
 - Example indefinite workflow (always running):

@@ -36,13 +36,6 @@ impl StepExecutor for ShellExecutor {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code();
 
-        if !stdout.is_empty() {
-            print!("{}", stdout);
-        }
-        if !stderr.is_empty() {
-            eprint!("{}", stderr);
-        }
-
         if !output.status.success() {
             return Err(StepError::ExecutionFailed(format!(
                 "command exited with code {:?}",

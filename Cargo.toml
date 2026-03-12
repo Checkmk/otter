@@ -2,6 +2,7 @@
 members = [
     "crates/orchestr8r-core",
     "crates/orchestr8r-storage",
+    "crates/orchestr8r-tui",
     "crates/orchestr8r-cli",
 ]
 resolver = "2"
@@ -20,4 +21,5 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 crossterm = "0.28"
+ratatui = "0.29"
 tempfile = "3"
