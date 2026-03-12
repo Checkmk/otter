@@ -5,6 +5,40 @@ use std::sync::Mutex;
 
 use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
+/// Current schema version. Increment this and add a corresponding entry to `MIGRATIONS` when
+/// making schema changes.
+const SCHEMA_VERSION: u32 = 1;
+
+const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
+    // v0 -> v1: initial schema
+    |conn| {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_step INTEGER NOT NULL,
+                iteration INTEGER NOT NULL,
+                started_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS step_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                step_index INTEGER NOT NULL,
+                step_type TEXT NOT NULL,
+                stdout TEXT NOT NULL,
+                stderr TEXT NOT NULL,
+                exit_code INTEGER,
+                accepted INTEGER,
+                feedback TEXT,
+                timestamp TEXT NOT NULL
+            );",
+        )?;
+        Ok(())
+    },
+];
+
 pub struct SqliteStorage {
     pub(crate) conn: Mutex<Connection>,
 }
@@ -27,32 +61,21 @@ impl SqliteStorage {
 
     fn migrate(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS workflow_runs (
-                id TEXT PRIMARY KEY,
-                workflow_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                current_step INTEGER NOT NULL,
-                iteration INTEGER NOT NULL,
-                started_at TEXT NOT NULL
-            );
+        let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let target = SCHEMA_VERSION;
+        debug_assert_eq!(target, MIGRATIONS.len() as u32, "SCHEMA_VERSION must equal MIGRATIONS.len()");
 
-            CREATE TABLE IF NOT EXISTS step_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL,
-                iteration INTEGER NOT NULL,
-                step_index INTEGER NOT NULL,
-                step_type TEXT NOT NULL,
-                stdout TEXT NOT NULL,
-                stderr TEXT NOT NULL,
-                exit_code INTEGER,
-                accepted INTEGER,
-                feedback TEXT,
-                timestamp TEXT NOT NULL
-            );
-        ",
-        )?;
+        if current >= target {
+            return Ok(());
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        for (i, migration) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+            tracing::info!(version = i + 1, "running migration");
+            migration(&tx)?;
+        }
+        tx.pragma_update(None, "user_version", target)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -253,6 +276,13 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM step_logs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let storage = in_memory_storage();
+        // migrate() was already called by in_memory_storage(); calling again should be a no-op
+        storage.migrate().unwrap();
     }
 
     #[test]
