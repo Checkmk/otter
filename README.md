@@ -61,3 +61,35 @@ message = "Review the plan."
 ### Workflow kinds
 
 - **`indefinite`** — loops continuously; each iteration runs all steps, then starts over until shutdown or rejection
+- **`triggered`** — runs once per trigger event; waits idle between firings
+
+### Triggers
+
+| Type     | Description                                              | Required fields |
+| -------- | -------------------------------------------------------- | --------------- |
+| `manual` | Fired explicitly via the `trigger` subcommand            | —               |
+
+Triggered workflows define their trigger inline:
+
+```toml
+# trigger.toml
+
+name = "my-workflow"
+kind = "triggered"
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "shell"
+command = ["echo", "triggered!"]
+```
+
+#### Example usage
+
+```
+cargo run -- run trigger.toml
+cargo run -- trigger my-workflow
+```
+
+The running instance picks up the signal and executes the workflow steps once.

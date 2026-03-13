@@ -14,7 +14,7 @@ use orchestr8r_storage::SqliteStorage;
 #[derive(Parser)]
 #[command(name = "orchestr8r", about = "Workflow automation service")]
 struct Cli {
-    /// Path to the workflow TOML file (shorthand for `run <workflow>`)
+    /// Path to a workflow TOML file (shorthand for `run <workflow>`)
     workflow: Option<PathBuf>,
 
     /// Increase log verbosity (-v = debug, -vv = trace)
@@ -39,6 +39,11 @@ enum Commands {
     Run {
         /// Path to the workflow TOML file
         workflow: PathBuf,
+    },
+    /// Send a manual trigger signal to a running workflow
+    Trigger {
+        /// Name of the workflow to trigger
+        workflow: String,
     },
 }
 
@@ -77,27 +82,73 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let workflow_path = match (cli.command, cli.workflow) {
-        (Some(Commands::Run { workflow }), _) => workflow,
-        (None, Some(workflow)) => workflow,
-        (None, None) => {
-            eprintln!("Usage: orchestr8r <workflow.toml>  or  orchestr8r run <workflow.toml>");
-            std::process::exit(1);
+    match (cli.command, cli.workflow) {
+        (Some(Commands::Trigger { workflow }), _) => trigger_workflow(workflow),
+        (Some(Commands::Run { workflow }), _) | (None, Some(workflow)) => {
+            run_single_workflow(workflow, cli.no_tui).await
         }
-    };
-
-    run_workflow(workflow_path, cli.no_tui).await
+        (None, None) => run_all_workflows(cli.no_tui).await,
+    }
 }
 
-async fn run_workflow(workflow_path: PathBuf, no_tui: bool) -> anyhow::Result<()> {
+fn trigger_workflow(workflow_name: String) -> anyhow::Result<()> {
+    let trigger_dir = dirs_data_dir().join("triggers");
+    std::fs::create_dir_all(&trigger_dir)
+        .context("Failed to create trigger directory")?;
+    let signal_path = trigger_dir.join(&workflow_name);
+    std::fs::write(&signal_path, "")
+        .with_context(|| format!("Failed to write trigger signal for '{}'", workflow_name))?;
+    println!("Trigger signal sent for workflow: {}", workflow_name);
+    Ok(())
+}
+
+async fn run_all_workflows(no_tui: bool) -> anyhow::Result<()> {
+    let workflows_dir = dirs_config_dir().join("workflows");
+    if !workflows_dir.exists() {
+        eprintln!(
+            "No workflows directory found at {:?}. Create it and add workflow TOML files.",
+            workflows_dir
+        );
+        std::process::exit(1);
+    }
+
+    let mut workflow_files: Vec<PathBuf> = std::fs::read_dir(&workflows_dir)
+        .with_context(|| format!("Failed to read workflows directory: {:?}", workflows_dir))?
+        .filter_map(|entry| entry.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .collect();
+
+    workflow_files.sort();
+
+    if workflow_files.is_empty() {
+        eprintln!("No workflow TOML files found in {:?}", workflows_dir);
+        std::process::exit(1);
+    }
+
+    let mut workflows = Vec::new();
+    for path in &workflow_files {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read workflow file: {:?}", path))?;
+        let def: WorkflowDef = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse workflow TOML: {:?}", path))?;
+        info!(workflow = %def.name, "Loaded workflow definition");
+        workflows.push(def);
+    }
+
+    run_workflows(workflows, no_tui).await
+}
+
+async fn run_single_workflow(workflow_path: PathBuf, no_tui: bool) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(&workflow_path)
         .with_context(|| format!("Failed to read workflow file: {:?}", workflow_path))?;
-
     let workflow_def: WorkflowDef = toml::from_str(&content)
         .with_context(|| format!("Failed to parse workflow TOML: {:?}", workflow_path))?;
-
     info!(workflow = %workflow_def.name, "Loaded workflow definition");
+    run_workflows(vec![workflow_def], no_tui).await
+}
 
+async fn run_workflows(workflows: Vec<WorkflowDef>, no_tui: bool) -> anyhow::Result<()> {
     let data_dir = dirs_data_dir();
     let db_path = data_dir.join("state.db");
     let scratch_base = data_dir.join("runs");
@@ -118,31 +169,41 @@ async fn run_workflow(workflow_path: PathBuf, no_tui: bool) -> anyhow::Result<()
         shutdown_clone.store(true, Ordering::Relaxed);
     });
 
-    let engine = Engine::new(storage, scratch_base, Arc::new(ClaudeCodeRunner));
+    let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(256);
 
-    if no_tui {
-        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(256);
-        let handler = tokio::task::spawn_blocking(move || run_stdin_checkpoint_handler(ui_rx));
-        engine.run(&workflow_def, shutdown, Some(ui_tx)).await?;
-        handler.await??;
-    } else {
-        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(256);
+    // Spawn one engine task per workflow
+    let mut engine_handles = Vec::new();
+    for workflow_def in workflows {
+        let engine = Engine::new(storage.clone(), scratch_base.clone(), Arc::new(ClaudeCodeRunner));
         let shutdown_for_engine = shutdown.clone();
-        let shutdown_for_tui = shutdown.clone();
+        let ui_tx_for_engine = ui_tx.clone();
 
-        let engine_handle = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             engine
-                .run(&workflow_def, shutdown_for_engine, Some(ui_tx))
+                .run(&workflow_def, shutdown_for_engine, Some(ui_tx_for_engine))
                 .await
         });
+        engine_handles.push(handle);
+    }
+    drop(ui_tx); // drop the original so the channel closes when all engines finish
 
+    if no_tui {
+        let handler = tokio::task::spawn_blocking(move || run_stdin_checkpoint_handler(ui_rx));
+        for handle in engine_handles {
+            handle.await??;
+        }
+        handler.await??;
+    } else {
+        let shutdown_for_tui = shutdown.clone();
         tokio::task::spawn_blocking(move || orchestr8r_tui::run(ui_rx, shutdown_for_tui))
             .await??;
 
-        engine_handle.await??;
+        for handle in engine_handles {
+            handle.await??;
+        }
     }
 
-    info!("Workflow stopped cleanly");
+    info!("All workflows stopped cleanly");
     Ok(())
 }
 
@@ -243,5 +304,18 @@ fn dirs_data_dir() -> PathBuf {
             .join(".local")
             .join("share")
             .join("orchestr8r")
+    }
+}
+
+fn dirs_config_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(base).join("orchestr8r")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".config").join("orchestr8r")
     }
 }

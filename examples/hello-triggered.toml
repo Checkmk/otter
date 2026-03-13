@@ -1,0 +1,9 @@
+name = "hello-triggered"
+kind = "triggered"
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "shell"
+command = ["echo", "triggered workflow ran!"]

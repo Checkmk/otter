@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub struct WorkflowDef {
     pub name: String,
     pub kind: WorkflowKind,
+    #[serde(default)]
+    pub trigger: Option<TriggerDef>,
     pub steps: Vec<StepDef>,
 }
 
@@ -14,6 +16,31 @@ pub struct WorkflowDef {
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowKind {
     Indefinite,
+    Triggered,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TriggerDef {
+    #[serde(rename = "type")]
+    pub trigger_type: TriggerType,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TriggerType {
+    Manual,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerEvent {
+    pub source: String,
+    pub payload: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TriggerError {
+    #[error("trigger error: {0}")]
+    Failed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -226,6 +253,29 @@ mod tests {
         assert_eq!(cmd, &["echo", "hi"]);
         assert_eq!(def.steps[1].step_type, StepType::Checkpoint);
         assert_eq!(def.steps[1].message.as_deref(), Some("ok?"));
+    }
+
+    #[test]
+    fn manual_trigger_deserializes_from_toml() {
+        // GIVEN
+        let toml_str = r#"
+            name = "on-demand"
+            kind = "triggered"
+
+            [trigger]
+            type = "manual"
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "run"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        let trigger = def.trigger.unwrap();
+        assert_eq!(trigger.trigger_type, TriggerType::Manual);
     }
 
     #[test]
