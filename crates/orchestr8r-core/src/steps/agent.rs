@@ -105,7 +105,6 @@ mod tests {
             command: Some(vec!["agent".into()]),
             message: Some("do work".into()),
             path: None,
-            output_file: None,
             session: None,
             notify: None,
         };

@@ -73,7 +73,6 @@ pub struct StepDef {
     pub command: Option<Vec<String>>,
     pub message: Option<String>,
     pub path: Option<String>,
-    pub output_file: Option<String>,
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
 }
@@ -349,24 +348,4 @@ mod tests {
         assert_eq!(trigger.trigger_type, TriggerType::Manual);
     }
 
-    #[test]
-    fn step_def_deserializes_output_file() {
-        // GIVEN
-        let toml_str = r#"
-            name = "test"
-            kind = "indefinite"
-
-            [[steps]]
-            type = "agent"
-            command = ["claude", "--print"]
-            message = "do something"
-            output_file = "plan.md"
-        "#;
-
-        // WHEN
-        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
-
-        // THEN
-        assert_eq!(def.steps[0].output_file.as_deref(), Some("plan.md"));
-    }
 }

@@ -8,7 +8,6 @@ path = "."
 [[steps]]
 type = "agent"
 command = ["claude", "--allowed-tools", "Write,Read"]
-output_file = "plan.md"
 message = "Save the final plan to plan.md (overwriting it if required): Review README.md, TARGET_ARCHITECTURE.md and the current code. Identify the best next step to align them and create an implementation plan."
 
 [[steps]]

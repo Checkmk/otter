@@ -89,7 +89,6 @@ mod tests {
             command: None,
             message: Some("deployment complete".to_string()),
             path: None,
-            output_file: None,
             session: None,
             notify: None,
         };
@@ -113,7 +112,6 @@ mod tests {
             command: None,
             message: None,
             path: None,
-            output_file: None,
             session: None,
             notify: None,
         };
