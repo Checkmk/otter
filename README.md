@@ -41,17 +41,16 @@ orchestr8r start <name>         # start a dormant workflow
 orchestr8r pause <name>         # pause a running indefinite workflow
 orchestr8r resume <name>        # resume a paused workflow
 orchestr8r stop <name>          # stop a running workflow
-orchestr8r run <name>           # alias for start
 ```
 
 ### Open the management console
 
 ```
-orchestr8r ui                   # TUI dashboard (connects to running daemon)
-orchestr8r ui --no-tui          # stdin/stdout console (for checkpoints + logs)
+orchestr8r manage               # TUI dashboard (connects to running daemon)
+
 ```
 
-The `ui` command connects to the daemon via the Unix socket. It fails immediately if no daemon is running.
+The `manage` command connects to the daemon via the Unix socket. It fails immediately if no daemon is running.
 
 ### Workflow definition
 
@@ -116,5 +115,3 @@ Starting a triggered workflow fires one immediate run:
 ```
 orchestr8r start my-workflow
 ```
-
-> **Note:** `orchestr8r trigger <name>` still works but prints a deprecation warning.

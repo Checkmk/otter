@@ -29,11 +29,7 @@ enum Commands {
     /// Start the headless background daemon (default when no subcommand is given)
     Daemon,
     /// Connect to the running daemon and open the management console
-    Ui {
-        /// Use stdin/stdout instead of the TUI
-        #[arg(long)]
-        no_tui: bool,
-    },
+    Manage,
     /// Start a dormant workflow
     Start { name: String },
     /// Pause a running indefinite workflow between iterations
@@ -44,10 +40,6 @@ enum Commands {
     Resume { name: String },
     /// Print the status of all registered workflows
     Status,
-    /// Alias for start
-    Run { name: String },
-    /// (Deprecated) Alias for start
-    Trigger { workflow: String },
 }
 
 #[tokio::main]
@@ -71,8 +63,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None | Some(Commands::Daemon) => daemon::run_daemon().await,
-        Some(Commands::Ui { no_tui }) => client::run_ui(no_tui).await,
-        Some(Commands::Start { name }) | Some(Commands::Run { name }) => {
+        Some(Commands::Manage) => client::run_ui().await,
+        Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
         }
         Some(Commands::Pause { name }) => {
@@ -85,10 +77,6 @@ async fn main() -> anyhow::Result<()> {
             client::send_command_print(DaemonCommand::Resume { name }).await
         }
         Some(Commands::Status) => client::print_status().await,
-        Some(Commands::Trigger { workflow }) => {
-            eprintln!("'trigger' is deprecated; use 'start'");
-            client::send_command_print(DaemonCommand::Start { name: workflow }).await
-        }
     }
 }
 

@@ -6,12 +6,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use orchestr8r_core::types::{
-    CheckpointAction, DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus,
+    DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus,
 };
 
 use crate::socket_path;
 
-pub async fn run_ui(no_tui: bool) -> anyhow::Result<()> {
+pub async fn run_ui() -> anyhow::Result<()> {
     let stream = connect_to_daemon()
         .await
         .context("Failed to connect to daemon — is it running?")?;
@@ -54,97 +54,8 @@ pub async fn run_ui(no_tui: bool) -> anyhow::Result<()> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    if no_tui {
-        tokio::task::spawn_blocking(move || run_stdin_event_handler(event_rx, cmd_tx)).await??;
-    } else {
-        let shutdown_clone = shutdown.clone();
-        tokio::task::spawn_blocking(move || {
-            orchestr8r_tui::run(event_rx, cmd_tx, shutdown_clone)
-        })
+    tokio::task::spawn_blocking(move || orchestr8r_tui::run(event_rx, cmd_tx, shutdown))
         .await??;
-    }
-
-    Ok(())
-}
-
-/// Blocking stdin-based event handler for `orchestr8r ui --no-tui`.
-fn run_stdin_event_handler(
-    mut event_rx: mpsc::Receiver<DaemonEvent>,
-    cmd_tx: mpsc::Sender<DaemonCommand>,
-) -> anyhow::Result<()> {
-    use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-    use crossterm::terminal;
-    use std::io::{self, BufRead, Write};
-
-    let handle = tokio::runtime::Handle::current();
-
-    loop {
-        let ev = match handle.block_on(event_rx.recv()) {
-            Some(ev) => ev,
-            None => break,
-        };
-
-        match ev {
-            DaemonEvent::LogAppended(entry) => {
-                if !entry.stdout.is_empty() {
-                    print!("{}", entry.stdout);
-                }
-                if !entry.stderr.is_empty() {
-                    eprint!("{}", entry.stderr);
-                }
-            }
-            DaemonEvent::CheckpointPending {
-                run_id,
-                message,
-                feedback_available,
-                ..
-            } => {
-                println!("\n[CHECKPOINT] {message}");
-                if feedback_available {
-                    print!("(c)ontinue, (s)top, or give (f)eedback: ");
-                } else {
-                    print!("(c)ontinue or (s)top: ");
-                }
-                io::stdout().flush()?;
-
-                terminal::enable_raw_mode().map_err(|e| io::Error::other(e))?;
-                while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                    let _ = event::read();
-                }
-                let action_char = loop {
-                    if let Ok(Event::Key(KeyEvent { code, modifiers, .. })) = event::read() {
-                        if modifiers.contains(KeyModifiers::CONTROL)
-                            && code == KeyCode::Char('c')
-                        {
-                            break None;
-                        }
-                        match code {
-                            KeyCode::Char('c') => break Some('c'),
-                            KeyCode::Char('s') => break Some('s'),
-                            KeyCode::Char('f') if feedback_available => break Some('f'),
-                            _ => {}
-                        }
-                    }
-                };
-                terminal::disable_raw_mode().map_err(|e| io::Error::other(e))?;
-                println!();
-
-                let action = match action_char {
-                    Some('c') => CheckpointAction::Continue,
-                    Some('f') => {
-                        print!("Feedback: ");
-                        io::stdout().flush()?;
-                        let mut line = String::new();
-                        io::stdin().lock().read_line(&mut line)?;
-                        CheckpointAction::Feedback(line.trim().to_string())
-                    }
-                    _ => CheckpointAction::Stop,
-                };
-                let _ = cmd_tx.try_send(DaemonCommand::CheckpointRespond { run_id, action });
-            }
-            _ => {}
-        }
-    }
 
     Ok(())
 }
