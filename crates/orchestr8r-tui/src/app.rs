@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowKind, WorkflowRun};
+use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowKind, WorkflowRun, WorkflowState};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ pub struct PendingCheckpoint {
 
 pub struct App {
     pub runs: Vec<WorkflowRun>,
-    pub registered: Vec<(String, WorkflowKind)>,
+    pub registered: Vec<(String, WorkflowKind, WorkflowState)>,
     pub selected_run: usize,
     pub logs: HashMap<Uuid, Vec<LogEntry>>,
     pub pending_checkpoints: Vec<PendingCheckpoint>,
@@ -64,6 +64,10 @@ impl App {
         self.registered.len().max(self.runs.len())
     }
 
+    pub fn selected_workflow(&self) -> Option<&(String, WorkflowKind, WorkflowState)> {
+        self.registered.get(self.selected_run)
+    }
+
     pub fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
             DaemonEvent::RunUpdated(run) => {
@@ -77,8 +81,8 @@ impl App {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
             DaemonEvent::WorkflowRegistered { name, kind } => {
-                if !self.registered.iter().any(|(n, _)| n == &name) {
-                    self.registered.push((name, kind));
+                if !self.registered.iter().any(|(n, _, _)| n == &name) {
+                    self.registered.push((name, kind, WorkflowState::Dormant));
                 }
             }
             DaemonEvent::CheckpointPending {
@@ -93,9 +97,32 @@ impl App {
                     feedback_available,
                 });
             }
-            DaemonEvent::WorkflowStateChanged { .. } => {
-                // Phase 4 will handle TUI state updates; ignore for now.
+            DaemonEvent::WorkflowStateChanged { name, state } => {
+                if let Some(entry) = self.registered.iter_mut().find(|(n, _, _)| n == &name) {
+                    entry.2 = state;
+                }
             }
+        }
+    }
+
+    pub fn start_selected(&mut self) {
+        if let Some((name, _, _)) = self.selected_workflow() {
+            let name = name.clone();
+            let _ = self.cmd_tx.try_send(DaemonCommand::Start { name });
+        }
+    }
+
+    pub fn pause_selected(&mut self) {
+        if let Some((name, _, _)) = self.selected_workflow() {
+            let name = name.clone();
+            let _ = self.cmd_tx.try_send(DaemonCommand::Pause { name });
+        }
+    }
+
+    pub fn stop_selected(&mut self) {
+        if let Some((name, _, _)) = self.selected_workflow() {
+            let name = name.clone();
+            let _ = self.cmd_tx.try_send(DaemonCommand::Stop { name });
         }
     }
 
@@ -115,6 +142,14 @@ impl App {
         } else {
             self.runs.get(self.selected_run).map(|r| r.id)
         }
+    }
+
+    pub fn selected_workflow_state(&self) -> Option<WorkflowState> {
+        self.registered.get(self.selected_run).map(|(_, _, s)| s.clone())
+    }
+
+    pub fn selected_workflow_kind(&self) -> Option<&WorkflowKind> {
+        self.registered.get(self.selected_run).map(|(_, k, _)| k)
     }
 
     pub fn selected_logs(&self) -> &[LogEntry] {

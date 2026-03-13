@@ -163,6 +163,18 @@ async fn handle_connection(
     match cmd {
         DaemonCommand::Subscribe => {
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
+            // Replay current workflow state before streaming live events
+            let current = manager.lock().await.status();
+            for wf in current {
+                let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
+                    name: wf.name.clone(),
+                    kind: wf.kind,
+                }).await;
+                let _ = write_json(&mut writer, &DaemonEvent::WorkflowStateChanged {
+                    name: wf.name,
+                    state: wf.state,
+                }).await;
+            }
             subscribers.lock().unwrap().push(sub_tx);
             while let Some(ev) = sub_rx.recv().await {
                 if write_json(&mut writer, &ev).await.is_err() {

@@ -1,4 +1,4 @@
-use orchestr8r_core::types::RunStatus;
+use orchestr8r_core::types::{RunStatus, WorkflowKind, WorkflowState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -29,14 +29,17 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if !app.registered.is_empty() {
         app.registered
             .iter()
-            .map(|(name, _kind)| {
+            .map(|(name, _kind, state)| {
                 let run = app.runs.iter().rev().find(|r| &r.workflow_name == name);
-                let icon = match run.map(|r| &r.status) {
-                    Some(RunStatus::Running) => ">",
-                    Some(RunStatus::WaitingCheckpoint) => "~",
-                    Some(RunStatus::Completed) => "+",
-                    Some(RunStatus::Failed) => "!",
-                    None => "\u{00B7}",
+                let icon = match state {
+                    WorkflowState::Paused => "=",
+                    WorkflowState::Dormant => "\u{00B7}",
+                    WorkflowState::Running => match run.map(|r| &r.status) {
+                        Some(RunStatus::WaitingCheckpoint) => "~",
+                        Some(RunStatus::Completed) => "+",
+                        Some(RunStatus::Failed) => "!",
+                        _ => ">",
+                    },
                 };
                 ListItem::new(format!("{} {}", icon, name))
             })
@@ -125,7 +128,26 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     )
                 }
             } else {
-                "[q] Quit  [Up/Down] Navigate".to_string()
+                let mut hints = vec!["[q] Quit", "[Up/Down] Navigate"];
+                if let (Some(state), Some(kind)) = (
+                    app.selected_workflow_state(),
+                    app.selected_workflow_kind(),
+                ) {
+                    match state {
+                        WorkflowState::Dormant => hints.push("[s] Start"),
+                        WorkflowState::Running => {
+                            if matches!(kind, WorkflowKind::Indefinite) {
+                                hints.push("[p] Pause");
+                            }
+                            hints.push("[x] Stop");
+                        }
+                        WorkflowState::Paused => {
+                            hints.push("[s] Resume");
+                            hints.push("[x] Stop");
+                        }
+                    }
+                }
+                hints.join("  ")
             }
         }
     };

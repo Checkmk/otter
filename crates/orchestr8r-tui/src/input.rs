@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use orchestr8r_core::types::CheckpointAction;
+use orchestr8r_core::types::{CheckpointAction, WorkflowKind, WorkflowState};
 
 use crate::app::{App, Mode};
 
@@ -16,6 +16,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_normal(app: &mut App, key: KeyEvent) {
+    // Checkpoint actions take priority when a checkpoint is active
+    let has_checkpoint = app.active_checkpoint().is_some();
+
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
@@ -34,16 +37,53 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.selected_checkpoint = (app.selected_checkpoint + 1) % n;
             }
         }
-        KeyCode::Char('c') => app.respond_checkpoint(CheckpointAction::Continue),
-        KeyCode::Char('s') => app.respond_checkpoint(CheckpointAction::Stop),
-        KeyCode::Char('f') => {
-            if app
-                .active_checkpoint()
-                .map_or(false, |cp| cp.feedback_available)
-            {
+        KeyCode::Char('c') if has_checkpoint => {
+            app.respond_checkpoint(CheckpointAction::Continue)
+        }
+        KeyCode::Char('f') if has_checkpoint => {
+            if app.active_checkpoint().map_or(false, |cp| cp.feedback_available) {
                 app.mode = Mode::FeedbackInput;
                 app.feedback_input.clear();
             }
+        }
+        // Workflow management keybindings (only when no checkpoint is pending)
+        KeyCode::Char('s') if !has_checkpoint => {
+            let state = app.selected_workflow_state();
+            match state {
+                Some(WorkflowState::Dormant) => app.start_selected(),
+                Some(WorkflowState::Paused) => {
+                    if let Some((name, _, _)) = app.selected_workflow() {
+                        let name = name.clone();
+                        let _ = app.cmd_tx.try_send(
+                            orchestr8r_core::types::DaemonCommand::Resume { name }
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Char('p') if !has_checkpoint => {
+            if matches!(
+                app.selected_workflow_state(),
+                Some(WorkflowState::Running)
+            ) && matches!(
+                app.selected_workflow_kind(),
+                Some(WorkflowKind::Indefinite)
+            ) {
+                app.pause_selected();
+            }
+        }
+        KeyCode::Char('x') if !has_checkpoint => {
+            if matches!(
+                app.selected_workflow_state(),
+                Some(WorkflowState::Running) | Some(WorkflowState::Paused)
+            ) {
+                app.stop_selected();
+            }
+        }
+        // When checkpoint is active, 's' stops the checkpoint
+        KeyCode::Char('s') if has_checkpoint => {
+            app.respond_checkpoint(CheckpointAction::Stop)
         }
         _ => {}
     }
