@@ -23,9 +23,35 @@ Automate multi-step AI agent tasks triggered by real-world events.
 
 ## Usage
 
+Workflows are loaded from `~/.config/orchestr8r/workflows/*.toml` when the daemon starts.
+
+### Start the daemon
+
 ```
-cargo run -- <workflow.toml>
+orchestr8r          # or: orchestr8r daemon
 ```
+
+The daemon starts headless — all workflows are dormant until explicitly started. A Unix socket at `~/.local/share/orchestr8r/orchestr8r.sock` is the only control interface.
+
+### Manage workflows
+
+```
+orchestr8r status               # list all workflows and their state
+orchestr8r start <name>         # start a dormant workflow
+orchestr8r pause <name>         # pause a running indefinite workflow
+orchestr8r resume <name>        # resume a paused workflow
+orchestr8r stop <name>          # stop a running workflow
+orchestr8r run <name>           # alias for start
+```
+
+### Open the management console
+
+```
+orchestr8r ui                   # TUI dashboard (connects to running daemon)
+orchestr8r ui --no-tui          # stdin/stdout console (for checkpoints + logs)
+```
+
+The `ui` command connects to the daemon via the Unix socket. It fails immediately if no daemon is running.
 
 ### Workflow definition
 
@@ -65,9 +91,9 @@ message = "Review the plan."
 
 ### Triggers
 
-| Type     | Description                                              | Required fields |
-| -------- | -------------------------------------------------------- | --------------- |
-| `manual` | Fired explicitly via the `trigger` subcommand            | —               |
+| Type     | Description                                        | Required fields |
+| -------- | -------------------------------------------------- | --------------- |
+| `manual` | Fired explicitly via `orchestr8r start <name>`     | —               |
 
 Triggered workflows define their trigger inline:
 
@@ -85,11 +111,10 @@ type = "shell"
 command = ["echo", "triggered!"]
 ```
 
-#### Example usage
+Starting a triggered workflow fires one immediate run:
 
 ```
-cargo run -- run trigger.toml
-cargo run -- trigger my-workflow
+orchestr8r start my-workflow
 ```
 
-The running instance picks up the signal and executes the workflow steps once.
+> **Note:** `orchestr8r trigger <name>` still works but prints a deprecation warning.

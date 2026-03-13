@@ -11,12 +11,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::{event, execute, terminal};
-use orchestr8r_core::types::EngineEvent;
+use orchestr8r_core::types::{DaemonCommand, DaemonEvent};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 pub fn run(
-    mut ui_rx: mpsc::Receiver<EngineEvent>,
+    mut event_rx: mpsc::Receiver<DaemonEvent>,
+    cmd_tx: mpsc::Sender<DaemonCommand>,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     terminal::enable_raw_mode().context("enable raw mode")?;
@@ -26,12 +27,12 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
-    let mut app = app::App::new();
+    let mut app = app::App::new(cmd_tx);
 
     loop {
-        // Drain pending engine events
-        while let Ok(ev) = ui_rx.try_recv() {
-            app.handle_engine_event(ev);
+        // Drain pending daemon events
+        while let Ok(ev) = event_rx.try_recv() {
+            app.handle_daemon_event(ev);
         }
 
         terminal.draw(|f| ui::render(f, &app))?;

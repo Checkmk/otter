@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use orchestr8r_core::types::CheckpointResponse;
+use orchestr8r_core::types::CheckpointAction;
 
 use crate::app::{App, Mode};
 
@@ -34,16 +34,8 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.selected_checkpoint = (app.selected_checkpoint + 1) % n;
             }
         }
-        KeyCode::Char('c') => {
-            if let Some(cp) = app.take_selected_checkpoint() {
-                let _ = cp.response_tx.send(CheckpointResponse::Continue);
-            }
-        }
-        KeyCode::Char('s') => {
-            if let Some(cp) = app.take_selected_checkpoint() {
-                let _ = cp.response_tx.send(CheckpointResponse::Stop);
-            }
-        }
+        KeyCode::Char('c') => app.respond_checkpoint(CheckpointAction::Continue),
+        KeyCode::Char('s') => app.respond_checkpoint(CheckpointAction::Stop),
         KeyCode::Char('f') => {
             if app
                 .active_checkpoint()
@@ -62,9 +54,7 @@ fn handle_feedback(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             let text = app.feedback_input.drain(..).collect::<String>();
             app.mode = Mode::Normal;
-            if let Some(cp) = app.take_selected_checkpoint() {
-                let _ = cp.response_tx.send(CheckpointResponse::Feedback(text));
-            }
+            app.respond_checkpoint(CheckpointAction::Feedback(text));
         }
         KeyCode::Esc => {
             app.mode = Mode::Normal;

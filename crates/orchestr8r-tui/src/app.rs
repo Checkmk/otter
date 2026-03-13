@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use orchestr8r_core::types::{CheckpointResponse, LogEntry, EngineEvent, WorkflowKind, WorkflowRun};
-use tokio::sync::oneshot;
+use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowKind, WorkflowRun};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq)]
@@ -11,9 +11,9 @@ pub enum Mode {
 }
 
 pub struct PendingCheckpoint {
+    pub run_id: Uuid,
     pub message: String,
     pub feedback_available: bool,
-    pub response_tx: oneshot::Sender<CheckpointResponse>,
 }
 
 pub struct App {
@@ -26,10 +26,11 @@ pub struct App {
     pub feedback_input: String,
     pub mode: Mode,
     pub should_quit: bool,
+    pub cmd_tx: mpsc::Sender<DaemonCommand>,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(cmd_tx: mpsc::Sender<DaemonCommand>) -> Self {
         Self {
             runs: Vec::new(),
             registered: Vec::new(),
@@ -40,6 +41,7 @@ impl App {
             feedback_input: String::new(),
             mode: Mode::Normal,
             should_quit: false,
+            cmd_tx,
         }
     }
 
@@ -62,38 +64,47 @@ impl App {
         self.registered.len().max(self.runs.len())
     }
 
-    pub fn handle_engine_event(&mut self, event: EngineEvent) {
+    pub fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
-            EngineEvent::RunUpdated(run) => {
+            DaemonEvent::RunUpdated(run) => {
                 if let Some(existing) = self.runs.iter_mut().find(|r| r.id == run.id) {
                     *existing = run;
                 } else {
                     self.runs.push(run);
                 }
             }
-            EngineEvent::LogAppended(entry) => {
+            DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            EngineEvent::WorkflowRegistered { name, kind } => {
+            DaemonEvent::WorkflowRegistered { name, kind } => {
                 if !self.registered.iter().any(|(n, _)| n == &name) {
                     self.registered.push((name, kind));
                 }
             }
-            EngineEvent::CheckpointPending {
+            DaemonEvent::CheckpointPending {
+                run_id,
                 message,
                 feedback_available,
-                response_tx,
                 ..
             } => {
                 self.pending_checkpoints.push(PendingCheckpoint {
+                    run_id,
                     message,
                     feedback_available,
-                    response_tx,
                 });
             }
-            EngineEvent::WorkflowStateChanged { .. } => {
+            DaemonEvent::WorkflowStateChanged { .. } => {
                 // Phase 4 will handle TUI state updates; ignore for now.
             }
+        }
+    }
+
+    pub fn respond_checkpoint(&mut self, action: CheckpointAction) {
+        if let Some(cp) = self.take_selected_checkpoint() {
+            let _ = self.cmd_tx.try_send(DaemonCommand::CheckpointRespond {
+                run_id: cp.run_id,
+                action,
+            });
         }
     }
 

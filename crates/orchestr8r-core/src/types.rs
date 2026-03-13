@@ -218,13 +218,31 @@ pub enum CheckpointAction {
     Feedback(String),
 }
 
+/// Serializable event broadcast to connected UI clients over the daemon socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DaemonEvent {
+    LogAppended(LogEntry),
+    RunUpdated(WorkflowRun),
+    WorkflowRegistered { name: String, kind: WorkflowKind },
+    WorkflowStateChanged { name: String, state: WorkflowState },
+    CheckpointPending {
+        run_id: Uuid,
+        step_index: usize,
+        message: String,
+        feedback_available: bool,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonCommand {
     Start { name: String },
     Pause { name: String },
     Stop { name: String },
+    Resume { name: String },
     Status,
-    CheckpointRespond { workflow: String, action: CheckpointAction },
+    /// Persistent subscription: server streams DaemonEvent JSON lines until disconnect.
+    Subscribe,
+    CheckpointRespond { run_id: Uuid, action: CheckpointAction },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
