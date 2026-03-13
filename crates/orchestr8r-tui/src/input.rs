@@ -31,12 +31,6 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.selected_run += 1;
             }
         }
-        KeyCode::Tab => {
-            let n = app.pending_checkpoints.len();
-            if n > 1 {
-                app.selected_checkpoint = (app.selected_checkpoint + 1) % n;
-            }
-        }
         KeyCode::Char('c') if has_checkpoint => {
             app.respond_checkpoint(CheckpointAction::Continue)
         }

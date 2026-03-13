@@ -105,26 +105,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::FeedbackInput => format!("Feedback: {}_", app.feedback_input),
         Mode::Normal => {
             if let Some(cp) = app.active_checkpoint() {
-                let count = app.pending_checkpoints.len();
-                let index_label = if count > 1 {
-                    format!(
-                        " ({}/{})",
-                        app.selected_checkpoint + 1,
-                        count
-                    )
-                } else {
-                    String::new()
-                };
-                let nav = if count > 1 { "  [Tab] Next" } else { "" };
                 if cp.feedback_available {
                     format!(
-                        "CHECKPOINT{}: {}  [c] Continue  [s] Stop  [f] Feedback{}",
-                        index_label, cp.message, nav
+                        "CHECKPOINT: {}  [c] Continue  [s] Stop  [f] Feedback",
+                        cp.message
                     )
                 } else {
                     format!(
-                        "CHECKPOINT{}: {}  [c] Continue  [s] Stop{}",
-                        index_label, cp.message, nav
+                        "CHECKPOINT: {}  [c] Continue  [s] Stop",
+                        cp.message
                     )
                 }
             } else {
@@ -146,6 +135,17 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             hints.push("[x] Stop");
                         }
                     }
+                }
+                let other = app.other_checkpoint_count();
+                let other_label = (other > 0).then(|| {
+                    if other == 1 {
+                        "\u{00b7} 1 other workflow waiting".to_string()
+                    } else {
+                        format!("\u{00b7} {} other workflows waiting", other)
+                    }
+                });
+                if let Some(ref s) = other_label {
+                    hints.push(s.as_str());
                 }
                 hints.join("  ")
             }

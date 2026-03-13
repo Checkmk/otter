@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowKind, WorkflowRun, WorkflowState};
-use tokio::sync::mpsc;
 use uuid::Uuid;
+use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
@@ -21,8 +21,7 @@ pub struct App {
     pub registered: Vec<(String, WorkflowKind, WorkflowState)>,
     pub selected_run: usize,
     pub logs: HashMap<Uuid, Vec<LogEntry>>,
-    pub pending_checkpoints: Vec<PendingCheckpoint>,
-    pub selected_checkpoint: usize,
+    pub pending_checkpoints: HashMap<Uuid, PendingCheckpoint>,
     pub feedback_input: String,
     pub mode: Mode,
     pub should_quit: bool,
@@ -36,8 +35,7 @@ impl App {
             registered: Vec::new(),
             selected_run: 0,
             logs: HashMap::new(),
-            pending_checkpoints: Vec::new(),
-            selected_checkpoint: 0,
+            pending_checkpoints: HashMap::new(),
             feedback_input: String::new(),
             mode: Mode::Normal,
             should_quit: false,
@@ -46,18 +44,21 @@ impl App {
     }
 
     pub fn active_checkpoint(&self) -> Option<&PendingCheckpoint> {
-        self.pending_checkpoints.get(self.selected_checkpoint)
+        let run_id = self.selected_run_id()?;
+        self.pending_checkpoints.get(&run_id)
     }
 
     pub fn take_selected_checkpoint(&mut self) -> Option<PendingCheckpoint> {
-        if self.pending_checkpoints.is_empty() {
-            return None;
-        }
-        let cp = self.pending_checkpoints.remove(self.selected_checkpoint);
-        if self.selected_checkpoint >= self.pending_checkpoints.len() {
-            self.selected_checkpoint = self.pending_checkpoints.len().saturating_sub(1);
-        }
-        Some(cp)
+        let run_id = self.selected_run_id()?;
+        self.pending_checkpoints.remove(&run_id)
+    }
+
+    pub fn other_checkpoint_count(&self) -> usize {
+        let selected_run_id = self.selected_run_id();
+        self.pending_checkpoints
+            .keys()
+            .filter(|id| Some(**id) != selected_run_id)
+            .count()
     }
 
     pub fn workflow_count(&self) -> usize {
@@ -91,7 +92,7 @@ impl App {
                 feedback_available,
                 ..
             } => {
-                self.pending_checkpoints.push(PendingCheckpoint {
+                self.pending_checkpoints.insert(run_id, PendingCheckpoint {
                     run_id,
                     message,
                     feedback_available,

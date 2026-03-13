@@ -13,13 +13,20 @@ use uuid::Uuid;
 use orchestr8r_core::agent_runner::ClaudeCodeRunner;
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    WorkflowDef,
+    WorkflowDef, WorkflowRun,
 };
 use orchestr8r_core::WorkflowManager;
 use orchestr8r_notify::{DesktopNotifier, Notifier};
 use orchestr8r_storage::SqliteStorage;
 
 use crate::{dirs_config_dir, dirs_data_dir, socket_path};
+
+struct PendingEntry {
+    response_tx: tokio::sync::oneshot::Sender<CheckpointResponse>,
+    step_index: usize,
+    message: String,
+    feedback_available: bool,
+}
 
 pub async fn run_daemon() -> anyhow::Result<()> {
     let data_dir = dirs_data_dir();
@@ -52,10 +59,13 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         }
     }
 
-    // run_id → oneshot sender for pending checkpoints
-    let pending_checkpoints: Arc<
-        std::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<CheckpointResponse>>>,
-    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    // run_id → pending checkpoint metadata + oneshot sender
+    let pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    // run_id → most recent run snapshot for replay on Subscribe
+    let recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     // Broadcast channels for Subscribe connections
     let subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>> =
@@ -63,12 +73,16 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     // Fan-out task: translate EngineEvents → DaemonEvents, route checkpoint senders
     let pending_cp_fanout = pending_checkpoints.clone();
+    let recent_runs_fanout = recent_runs.clone();
     let subscribers_fanout = subscribers.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             let daemon_ev = match ev {
                 EngineEvent::LogAppended(e) => DaemonEvent::LogAppended(e),
-                EngineEvent::RunUpdated(r) => DaemonEvent::RunUpdated(r),
+                EngineEvent::RunUpdated(r) => {
+                    recent_runs_fanout.lock().unwrap().insert(r.id, r.clone());
+                    DaemonEvent::RunUpdated(r)
+                }
                 EngineEvent::WorkflowRegistered { name, kind } => {
                     DaemonEvent::WorkflowRegistered { name, kind }
                 }
@@ -82,7 +96,15 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     feedback_available,
                     response_tx,
                 } => {
-                    pending_cp_fanout.lock().unwrap().insert(run_id, response_tx);
+                    pending_cp_fanout.lock().unwrap().insert(
+                        run_id,
+                        PendingEntry {
+                            response_tx,
+                            step_index,
+                            message: message.clone(),
+                            feedback_available,
+                        },
+                    );
                     DaemonEvent::CheckpointPending {
                         run_id,
                         step_index,
@@ -120,8 +142,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
             Ok(Ok((stream, _addr))) => {
                 let mgr = manager.clone();
                 let pending = pending_checkpoints.clone();
+                let runs = recent_runs.clone();
                 let subs = subscribers.clone();
-                tokio::spawn(handle_connection(stream, mgr, pending, subs));
+                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs));
             }
             Ok(Err(e)) => {
                 tracing::error!("accept error: {}", e);
@@ -139,9 +162,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 async fn handle_connection(
     stream: UnixStream,
     manager: Arc<Mutex<WorkflowManager>>,
-    pending_checkpoints: Arc<
-        std::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<CheckpointResponse>>>,
-    >,
+    pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>>,
+    recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
 ) {
     let (reader, mut writer) = stream.into_split();
@@ -175,6 +197,36 @@ async fn handle_connection(
                     state: wf.state,
                 }).await;
             }
+            // Replay run snapshots (sorted by started_at so the UI sees them in order)
+            let mut runs: Vec<WorkflowRun> = recent_runs
+                .lock()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect();
+            runs.sort_by_key(|r| r.started_at);
+            for run in runs {
+                let _ = write_json(&mut writer, &DaemonEvent::RunUpdated(run)).await;
+            }
+            // Replay any pending checkpoints so the UI can display a prompt
+            let checkpoints: Vec<(Uuid, usize, String, bool)> = pending_checkpoints
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(&id, e)| (id, e.step_index, e.message.clone(), e.feedback_available))
+                .collect();
+            for (run_id, step_index, message, feedback_available) in checkpoints {
+                let _ = write_json(
+                    &mut writer,
+                    &DaemonEvent::CheckpointPending {
+                        run_id,
+                        step_index,
+                        message,
+                        feedback_available,
+                    },
+                )
+                .await;
+            }
             subscribers.lock().unwrap().push(sub_tx);
             while let Some(ev) = sub_rx.recv().await {
                 if write_json(&mut writer, &ev).await.is_err() {
@@ -203,9 +255,9 @@ async fn handle_connection(
             let _ = write_json(&mut writer, &DaemonResponse::StatusResponse { workflows }).await;
         }
         DaemonCommand::CheckpointRespond { run_id, action } => {
-            let sender = pending_checkpoints.lock().unwrap().remove(&run_id);
-            let resp = if let Some(tx) = sender {
-                let _ = tx.send(action_to_checkpoint_response(action));
+            let entry = pending_checkpoints.lock().unwrap().remove(&run_id);
+            let resp = if let Some(PendingEntry { response_tx, .. }) = entry {
+                let _ = response_tx.send(action_to_checkpoint_response(action));
                 DaemonResponse::Ok
             } else {
                 DaemonResponse::Error {
