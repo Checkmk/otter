@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use orchestr8r_core::types::{CheckpointResponse, LogEntry, EngineEvent, WorkflowRun};
+use orchestr8r_core::types::{CheckpointResponse, LogEntry, EngineEvent, WorkflowKind, WorkflowRun};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ pub struct PendingCheckpoint {
 
 pub struct App {
     pub runs: Vec<WorkflowRun>,
+    pub registered: Vec<(String, WorkflowKind)>,
     pub selected_run: usize,
     pub logs: HashMap<Uuid, Vec<LogEntry>>,
     pub pending_checkpoints: Vec<PendingCheckpoint>,
@@ -31,6 +32,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             runs: Vec::new(),
+            registered: Vec::new(),
             selected_run: 0,
             logs: HashMap::new(),
             pending_checkpoints: Vec::new(),
@@ -56,6 +58,10 @@ impl App {
         Some(cp)
     }
 
+    pub fn workflow_count(&self) -> usize {
+        self.registered.len().max(self.runs.len())
+    }
+
     pub fn handle_engine_event(&mut self, event: EngineEvent) {
         match event {
             EngineEvent::RunUpdated(run) => {
@@ -67,6 +73,11 @@ impl App {
             }
             EngineEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
+            }
+            EngineEvent::WorkflowRegistered { name, kind } => {
+                if !self.registered.iter().any(|(n, _)| n == &name) {
+                    self.registered.push((name, kind));
+                }
             }
             EngineEvent::CheckpointPending {
                 message,
@@ -84,7 +95,12 @@ impl App {
     }
 
     pub fn selected_run_id(&self) -> Option<Uuid> {
-        self.runs.get(self.selected_run).map(|r| r.id)
+        if !self.registered.is_empty() {
+            let name = &self.registered.get(self.selected_run)?.0;
+            self.runs.iter().rev().find(|r| &r.workflow_name == name).map(|r| r.id)
+        } else {
+            self.runs.get(self.selected_run).map(|r| r.id)
+        }
     }
 
     pub fn selected_logs(&self) -> &[LogEntry] {

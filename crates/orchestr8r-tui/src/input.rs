@@ -24,7 +24,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.selected_run + 1 < app.runs.len() {
+            if app.selected_run + 1 < app.workflow_count() {
                 app.selected_run += 1;
             }
         }

@@ -13,7 +13,7 @@ pub struct WorkflowDef {
     pub steps: Vec<StepDef>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowKind {
     Indefinite,
@@ -144,6 +144,7 @@ pub enum CheckpointResponse {
 pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
+    WorkflowRegistered { name: String, kind: WorkflowKind },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,

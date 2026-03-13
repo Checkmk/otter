@@ -26,22 +26,38 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_runs(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .runs
-        .iter()
-        .map(|r| {
-            let icon = match r.status {
-                RunStatus::Running => ">",
-                RunStatus::WaitingCheckpoint => "~",
-                RunStatus::Completed => "+",
-                RunStatus::Failed => "!",
-            };
-            ListItem::new(format!("{} {}", icon, r.workflow_name))
-        })
-        .collect();
+    let items: Vec<ListItem> = if !app.registered.is_empty() {
+        app.registered
+            .iter()
+            .map(|(name, _kind)| {
+                let run = app.runs.iter().rev().find(|r| &r.workflow_name == name);
+                let icon = match run.map(|r| &r.status) {
+                    Some(RunStatus::Running) => ">",
+                    Some(RunStatus::WaitingCheckpoint) => "~",
+                    Some(RunStatus::Completed) => "+",
+                    Some(RunStatus::Failed) => "!",
+                    None => "\u{00B7}",
+                };
+                ListItem::new(format!("{} {}", icon, name))
+            })
+            .collect()
+    } else {
+        app.runs
+            .iter()
+            .map(|r| {
+                let icon = match r.status {
+                    RunStatus::Running => ">",
+                    RunStatus::WaitingCheckpoint => "~",
+                    RunStatus::Completed => "+",
+                    RunStatus::Failed => "!",
+                };
+                ListItem::new(format!("{} {}", icon, r.workflow_name))
+            })
+            .collect()
+    };
 
     let mut state = ListState::default();
-    if !app.runs.is_empty() {
+    if app.workflow_count() > 0 {
         state.select(Some(app.selected_run));
     }
 

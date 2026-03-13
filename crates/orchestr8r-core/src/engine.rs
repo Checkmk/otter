@@ -86,6 +86,7 @@ impl Engine {
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<()> {
+        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.kind.clone() });
         let mut run = WorkflowRun::new(workflow.name.clone());
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         std::fs::create_dir_all(&scratch_dir)?;
@@ -163,6 +164,7 @@ impl Engine {
 
         let mut queued: VecDeque<TriggerEvent> = VecDeque::new();
 
+        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.kind.clone() });
         info!(
             workflow = %workflow.name,
             "Waiting for trigger events"
