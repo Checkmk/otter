@@ -22,6 +22,7 @@ pub struct Engine {
     scratch_base: std::path::PathBuf,
     agent_runner: Arc<dyn AgentRunner>,
     notifier: Arc<dyn Notifier>,
+    paused: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -37,6 +38,7 @@ impl Engine {
             scratch_base,
             agent_runner,
             notifier,
+            paused: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -52,7 +54,14 @@ impl Engine {
             scratch_base,
             agent_runner,
             notifier: Arc::new(NoOpNotifier),
+            paused: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Returns a clone of the pause flag. Set to `true` to pause an indefinite workflow
+    /// between iterations; clear to resume.
+    pub fn paused_flag(&self) -> Arc<AtomicBool> {
+        self.paused.clone()
     }
 
     fn find_executor(&self, step_type: StepType) -> Option<&dyn StepExecutor> {
@@ -101,6 +110,16 @@ impl Engine {
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current iteration");
+                break;
+            }
+
+            while self.paused.load(Ordering::Relaxed) {
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            if shutdown.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -1004,5 +1023,102 @@ mod tests {
 
         // Cleanup
         shutdown.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn pause_halts_iterations_and_resume_continues() {
+        // GIVEN an indefinite workflow with a fast shell step
+        let storage = Arc::new(InMemoryStorage::new());
+        let engine = Engine::new(
+            storage.clone(),
+            std::env::temp_dir().join("orchestr8r-tests-pause"),
+            Arc::new(NoOpAgentRunner),
+            Arc::new(orchestr8r_notify::NoOpNotifier),
+        );
+        let paused_flag = engine.paused_flag();
+        let wf = workflow(
+            "test-pause",
+            WorkflowKind::Indefinite,
+            vec![StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "iter".to_string()]),
+                ..step_def(StepType::Shell)
+            }],
+        );
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        let storage_clone = storage.clone();
+        let handle = tokio::spawn(async move {
+            engine.run(&wf, shutdown_clone, None).await.unwrap();
+            storage_clone
+        });
+
+        // Let it run for a bit, then pause
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        paused_flag.store(true, Ordering::Relaxed);
+        // Allow any in-flight iteration to finish writing its logs before snapshotting
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let count_while_paused = storage.logs().len();
+
+        // Wait to confirm no new iterations happen while paused
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let count_after_wait = storage.logs().len();
+        assert_eq!(
+            count_while_paused, count_after_wait,
+            "no new logs should be produced while paused"
+        );
+
+        // Resume and confirm iterations restart
+        paused_flag.store(false, Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let count_after_resume = storage.logs().len();
+        assert!(
+            count_after_resume > count_after_wait,
+            "iterations should resume after unpausing"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_while_paused_exits_cleanly() {
+        // GIVEN a paused engine
+        let storage = Arc::new(InMemoryStorage::new());
+        let engine = Engine::new(
+            storage.clone(),
+            std::env::temp_dir().join("orchestr8r-tests-pause-shutdown"),
+            Arc::new(NoOpAgentRunner),
+            Arc::new(orchestr8r_notify::NoOpNotifier),
+        );
+        let paused_flag = engine.paused_flag();
+        let wf = workflow(
+            "test-pause-shutdown",
+            WorkflowKind::Indefinite,
+            vec![StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "x".to_string()]),
+                ..step_def(StepType::Shell)
+            }],
+        );
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        let handle = tokio::spawn(async move { engine.run(&wf, shutdown_clone, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        paused_flag.store(true, Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // WHEN shutdown while paused
+        shutdown.store(true, Ordering::Relaxed);
+
+        // THEN engine exits without hanging
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("engine should exit within timeout")
+            .unwrap()
+            .unwrap();
     }
 }

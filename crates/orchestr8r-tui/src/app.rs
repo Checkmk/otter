@@ -91,6 +91,9 @@ impl App {
                     response_tx,
                 });
             }
+            EngineEvent::WorkflowStateChanged { .. } => {
+                // Phase 4 will handle TUI state updates; ignore for now.
+            }
         }
     }
 

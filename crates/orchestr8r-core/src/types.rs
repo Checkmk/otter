@@ -13,7 +13,7 @@ pub struct WorkflowDef {
     pub steps: Vec<StepDef>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowKind {
     Indefinite,
@@ -145,6 +145,7 @@ pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
     WorkflowRegistered { name: String, kind: WorkflowKind },
+    WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,
@@ -194,6 +195,43 @@ pub struct LogEntry {
     pub accepted: Option<bool>,
     pub feedback: Option<String>,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WorkflowState {
+    Dormant,
+    Running,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStatus {
+    pub name: String,
+    pub kind: WorkflowKind,
+    pub state: WorkflowState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CheckpointAction {
+    Continue,
+    Stop,
+    Feedback(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DaemonCommand {
+    Start { name: String },
+    Pause { name: String },
+    Stop { name: String },
+    Status,
+    CheckpointRespond { workflow: String, action: CheckpointAction },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DaemonResponse {
+    Ok,
+    Error { message: String },
+    StatusResponse { workflows: Vec<WorkflowStatus> },
 }
 
 pub trait StorageBackend: Send + Sync {
