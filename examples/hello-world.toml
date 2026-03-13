@@ -1,10 +1,10 @@
 name = "hello-world"
-kind = "indefinite"
+kind = "triggered"
 
 [[steps]]
 type = "shell"
 command = ["echo", "Hello from orchestr8r!"]
 
 [[steps]]
-type = "checkpoint"
-message = "Continue to next iteration?"
+type = "notify"
+message = "orchestr8r said hello."

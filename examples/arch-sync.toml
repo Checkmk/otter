@@ -9,7 +9,7 @@ path = "."
 type = "agent"
 command = ["claude", "--allowed-tools", "Write,Read"]
 output_file = "plan.md"
-message = "Save the final plan to plan.md: Review README.md and TARGET_ARCHITECTURE.md and the current code. Identify the most crucial difference and create an implementation plan."
+message = "Save the final plan to plan.md (overwriting it if required): Review README.md, TARGET_ARCHITECTURE.md and the current code. Identify the best next step to align them and create an implementation plan."
 
 [[steps]]
 type = "checkpoint"
