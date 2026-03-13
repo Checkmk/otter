@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowDef {
     pub name: String,
     pub kind: WorkflowKind,
@@ -20,13 +20,13 @@ pub enum WorkflowKind {
     Triggered,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TriggerDef {
     #[serde(rename = "type")]
     pub trigger_type: TriggerType,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerType {
     Manual,
@@ -66,7 +66,7 @@ impl std::fmt::Display for StepType {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct StepDef {
     #[serde(rename = "type")]
     pub step_type: StepType,
