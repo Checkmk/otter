@@ -10,7 +10,7 @@ use orchestr8r_core::types::DaemonCommand;
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "orchestr8r", about = "Workflow automation service")]
+#[command(name = "orchestr8r", about = "Workflow automation dashboard — connects to the running daemon")]
 struct Cli {
     /// Increase log verbosity (-v = debug, -vv = trace)
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -26,10 +26,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the headless background daemon (default when no subcommand is given)
+    /// Launch the headless background daemon
     Daemon,
-    /// Connect to the running daemon and open the management console
-    Manage,
     /// Start a dormant workflow
     Start { name: String },
     /// Pause a running indefinite workflow between iterations
@@ -62,8 +60,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        None | Some(Commands::Daemon) => daemon::run_daemon().await,
-        Some(Commands::Manage) => client::run_ui().await,
+        None => client::run_ui().await,
+        Some(Commands::Daemon) => daemon::run_daemon().await,
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
         }

@@ -12,9 +12,16 @@ use orchestr8r_core::types::{
 use crate::socket_path;
 
 pub async fn run_ui() -> anyhow::Result<()> {
-    let stream = connect_to_daemon()
-        .await
-        .context("Failed to connect to daemon — is it running?")?;
+    let stream = match connect_to_daemon().await {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("The orchestr8r daemon is not running.\n");
+            eprintln!("Start it first (e.g. in a separate terminal):\n");
+            eprintln!("    orchestr8r daemon\n");
+            eprintln!("Then run `orchestr8r` again to open the dashboard.");
+            std::process::exit(1);
+        }
+    };
 
     let (sub_reader, mut sub_writer) = stream.into_split();
     let subscribe_line = serde_json::to_string(&DaemonCommand::Subscribe)? + "\n";

@@ -43,19 +43,19 @@ cargo build --release
    message = "Continue to next iteration?"
    ```
 
-3. **Start the daemon:**
+3. **Start the daemon** (in a separate terminal or as a background service):
+
+   ```
+   orchestr8r daemon
+   ```
+
+4. **Open the dashboard:**
 
    ```
    orchestr8r
    ```
 
-4. **In another terminal, open the dashboard and start the workflow:**
-
-   ```
-   orchestr8r manage
-   ```
-
-   or if you prefer to start the workflow directly:
+   or start a workflow directly:
 
    ```
    orchestr8r start hello-world
@@ -68,38 +68,32 @@ cargo build --release
 Workflows are loaded from `~/.config/orchestr8r/workflows/*.toml` when
 the daemon starts.
 
-```
-# See all available commands
-orchestr8r help
-```
-
-
 ### Start the daemon
 
 ```
-orchestr8r          # or: orchestr8r daemon
+orchestr8r daemon
 ```
 
 The daemon starts headless — all workflows are dormant until explicitly started. A Unix socket at `~/.local/share/orchestr8r/orchestr8r.sock` is the only control interface.
 
-### Control workflows
+### Open the dashboard
 
 ```
+orchestr8r
+```
+
+The dashboard connects to the daemon via the Unix socket. It shows workflow states, live step output, and checkpoint prompts. Prints a helpful error with instructions if no daemon is running.
+
+### Control workflows via CLI
+
+```
+orchestr8r help                 # show all commands
 orchestr8r status               # list all workflows and their state
 orchestr8r start <name>         # start a dormant workflow
 orchestr8r pause <name>         # pause a running indefinite workflow between iterations
 orchestr8r resume <name>        # resume a paused workflow
 orchestr8r stop <name>          # stop a running workflow
 ```
-
-### Open the management console
-
-```
-orchestr8r manage               # TUI dashboard (connects to running daemon)
-```
-
-The dashboard connects to the daemon via the Unix socket. It shows workflow states, live step output, and checkpoint prompts. It fails immediately if no daemon is running.
-
 ---
 
 ## Workflow definition
@@ -189,13 +183,6 @@ type = "checkpoint"
 message = "Review the implementation."
 ```
 
-Run it:
-
-```
-orchestr8r start arch-sync
-orchestr8r manage
-```
-
 At each checkpoint the TUI shows **Continue**, **Stop**, or **Feedback** — choosing Feedback lets you type a correction that is passed back to the agent before continuing.
 
 ### Triggered workflow (manual)
@@ -212,12 +199,6 @@ type = "manual"
 [[steps]]
 type = "shell"
 command = ["echo", "triggered workflow ran!"]
-```
-
-Fire it:
-
-```
-orchestr8r start hello-triggered
 ```
 
 ---
@@ -242,13 +223,3 @@ type = "manual"
 type = "shell"
 command = ["echo", "hello"]
 ```
-
----
-
-## How it works
-
-1. The **daemon** loads all `*.toml` files from `~/.config/orchestr8r/workflows/` at startup.
-2. Each workflow starts **dormant**. Run `orchestr8r start <name>` to activate it.
-3. The daemon communicates over a Unix socket (`~/.local/share/orchestr8r/orchestr8r.sock`) using newline-delimited JSON messages.
-4. Workflow run history and logs are stored in a local SQLite database (`~/.local/share/orchestr8r/orchestr8r.db`).
-5. The **TUI** (`orchestr8r manage`) connects to the running daemon and renders live state.
