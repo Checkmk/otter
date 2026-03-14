@@ -1,9 +1,6 @@
 name = "arch-sync"
 kind = "indefinite"
-
-[[steps]]
-type = "workspace"
-path = "."
+workspace = "."
 
 [[steps]]
 type = "agent"

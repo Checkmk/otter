@@ -5,7 +5,7 @@ Automate multi-step tasks (with AI support) triggered by real-world events.
 - **Workflows** are TOML-defined series of steps — either **indefinite** (loops) or **triggered** (event-driven)
 - **Agent steps** drive Claude, Copilot or any AI CLI across steps
 - **Checkpoints** pause for human review and feedback
-- **Workspace** isolates agents in per-run scratch directories unless explicitly shared via a `workspace` step
+- **Workspace** isolates agents in per-run scratch directories unless explicitly configured via a `workspace` flag
 - **TUI dashboard** monitors workflows, views logs, and controls execution
 
 ## Build

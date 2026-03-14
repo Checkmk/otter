@@ -104,7 +104,6 @@ mod tests {
             step_type: StepType::Agent,
             command: None,
             message: Some("do work".into()),
-            path: None,
             session: None,
             notify: None,
             agent: crate::types::AgentConfig { provider: Some("claude".into()), ..Default::default() },

@@ -10,6 +10,8 @@ pub struct WorkflowDef {
     pub kind: WorkflowKind,
     #[serde(default)]
     pub trigger: Option<TriggerDef>,
+    #[serde(default)]
+    pub workspace: Option<String>,
     pub steps: Vec<StepDef>,
 }
 
@@ -50,7 +52,6 @@ pub enum StepType {
     Shell,
     Checkpoint,
     Agent,
-    Workspace,
     Notify,
 }
 
@@ -60,7 +61,6 @@ impl std::fmt::Display for StepType {
             StepType::Shell => write!(f, "shell"),
             StepType::Checkpoint => write!(f, "checkpoint"),
             StepType::Agent => write!(f, "agent"),
-            StepType::Workspace => write!(f, "workspace"),
             StepType::Notify => write!(f, "notify"),
         }
     }
@@ -79,7 +79,6 @@ pub struct StepDef {
     pub step_type: StepType,
     pub command: Option<Vec<String>>,
     pub message: Option<String>,
-    pub path: Option<String>,
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
     #[serde(flatten)]

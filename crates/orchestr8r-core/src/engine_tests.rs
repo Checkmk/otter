@@ -14,7 +14,6 @@ fn step_def(step_type: StepType) -> StepDef {
         step_type,
         command: None,
         message: None,
-        path: None,
         session: None,
         notify: None,
         agent: Default::default(),
@@ -26,6 +25,7 @@ fn workflow(name: &str, kind: WorkflowKind, steps: Vec<StepDef>) -> WorkflowDef 
         name: name.to_string(),
         kind,
         trigger: None,
+        workspace: None,
         steps,
     }
 }
@@ -42,7 +42,6 @@ async fn shell_step_runs_and_logs() {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "hello".to_string()]),
             message: None,
-            path: None,
             session: None,
             notify: None,
             agent: Default::default(),
@@ -95,7 +94,6 @@ async fn failed_shell_command_marks_run_failed() {
             step_type: StepType::Shell,
             command: Some(vec!["false".to_string()]),
             message: None,
-            path: None,
             session: None,
             notify: None,
             agent: Default::default(),
@@ -119,30 +117,21 @@ async fn workspace_step_sets_working_dir_for_shell() {
 
     let storage = Arc::new(InMemoryStorage::new());
     let engine = make_engine(storage.clone());
-    let wf = workflow(
+    let mut wf = workflow(
         "test-workspace",
         WorkflowKind::Indefinite,
         vec![
             StepDef {
-                step_type: StepType::Workspace,
-                command: None,
-                message: None,
-                path: Some(workspace.path().to_string_lossy().to_string()),
-                session: None,
-                notify: None,
-                agent: Default::default(),
-            },
-            StepDef {
                 step_type: StepType::Shell,
                 command: Some(vec!["touch".to_string(), "marker.txt".to_string()]),
                 message: None,
-                path: None,
                 session: None,
                 notify: None,
                 agent: Default::default(),
             },
         ],
     );
+    wf.workspace = Some(workspace.path().to_string_lossy().to_string());
 
     // WHEN
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -460,6 +449,7 @@ async fn triggered_workflow_runs_once_per_event() {
         trigger: Some(TriggerDef {
             trigger_type: TriggerType::Manual,
         }),
+        workspace: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "triggered".to_string()]),

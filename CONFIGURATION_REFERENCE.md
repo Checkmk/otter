@@ -17,6 +17,7 @@ Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow def
 ```toml
 name = "my-workflow"
 kind = "indefinite"  # or "triggered"
+workspace = "/home/user/my-project"  # optional
 
 [trigger]  # optional; required if kind = "triggered"
 type = "manual"
@@ -29,6 +30,10 @@ command = ["echo", "Step 1"]
 type = "checkpoint"
 message = "Review output?"
 ```
+
+**Workspace behavior:**
+- `workspace`: (optional) Absolute or relative path. All steps execute in this directory. Relative paths are resolved relative to the daemon's working directory.
+- If `workspace` is omitted, all steps execute in the run's isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
 
 ---
 
@@ -186,33 +191,6 @@ message = "Fix the bug in main.rs"
 - Agent output (stdout) is captured and logged
 - Checkpoint feedback is sent to the active agent session as a follow-up message
 - The agent's response to feedback is presented in the checkpoint again until the user continues or stops
-
----
-
-### `workspace`
-
-Sets the working directory for subsequent steps. All steps following this step (until the next `workspace` step) execute with this directory as the working directory.
-
-**Fields:**
-- `path` (required): Absolute or relative path to the working directory
-
-**Example:**
-```toml
-[[steps]]
-type = "workspace"
-path = "/home/user/my-project"
-
-[[steps]]
-type = "shell"
-command = ["ls", "-la"]  # runs in /home/user/my-project
-```
-
-**Behavior:**
-- Changes the working directory for all subsequent steps in the workflow
-- If multiple `workspace` steps are used, each one overrides the previous
-- Relative paths are resolved relative to the current working directory when the daemon started (typically the user's home directory)
-- Container and agent steps receive the workspace as a bind-mounted volume or working directory
-- If no `workspace` step is defined in the workflow, all steps execute in the run's scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`)
 
 ---
 

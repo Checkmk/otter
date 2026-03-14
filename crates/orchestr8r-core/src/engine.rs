@@ -99,7 +99,19 @@ impl Engine {
         info!(run_id = %run.id, workflow = %workflow.name, "Starting indefinite workflow run");
 
         let session_manager = Arc::new(AgentSessionManager::new());
-        let mut workspace_dir: Option<std::path::PathBuf> = None;
+
+        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
+            Some(path) => {
+                let resolved = std::fs::canonicalize(path).map_err(|e| {
+                    anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
+                })?;
+                if !resolved.is_dir() {
+                    return Err(anyhow::anyhow!("workspace path '{}' is not a directory", resolved.display()));
+                }
+                Some(resolved)
+            }
+            None => None,
+        };
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -124,7 +136,7 @@ impl Engine {
                     workflow,
                     &mut run,
                     &scratch_dir,
-                    &mut workspace_dir,
+                    workspace_dir.as_deref(),
                     &session_manager,
                     &shutdown,
                     &ui_tx,
@@ -236,14 +248,26 @@ impl Engine {
         info!(run_id = %run.id, workflow = %workflow.name, "Starting triggered workflow run");
 
         let session_manager = Arc::new(AgentSessionManager::new());
-        let mut workspace_dir: Option<std::path::PathBuf> = None;
+
+        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
+            Some(path) => {
+                let resolved = std::fs::canonicalize(path).map_err(|e| {
+                    anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
+                })?;
+                if !resolved.is_dir() {
+                    return Err(anyhow::anyhow!("workspace path '{}' is not a directory", resolved.display()));
+                }
+                Some(resolved)
+            }
+            None => None,
+        };
 
         let stop = self
             .execute_steps(
                 workflow,
                 &mut run,
                 &scratch_dir,
-                &mut workspace_dir,
+                workspace_dir.as_deref(),
                 &session_manager,
                 &shutdown,
                 &ui_tx,
@@ -267,7 +291,7 @@ impl Engine {
         workflow: &WorkflowDef,
         run: &mut WorkflowRun,
         scratch_dir: &std::path::PathBuf,
-        workspace_dir: &mut Option<std::path::PathBuf>,
+        workspace_dir: Option<&std::path::Path>,
         session_manager: &Arc<AgentSessionManager>,
         shutdown: &Arc<AtomicBool>,
         ui_tx: &Option<mpsc::Sender<EngineEvent>>,
@@ -293,7 +317,7 @@ impl Engine {
                 iteration: run.iteration,
                 step_index: i,
                 scratch_dir: scratch_dir.clone(),
-                workspace_dir: workspace_dir.clone(),
+                workspace_dir: workspace_dir.map(|p| p.to_owned()),
                 checkpoint_tx: ui_tx.clone(),
                 session_manager: Some(session_manager.clone()),
                 notifier: self.notifier.clone(),
@@ -345,13 +369,6 @@ impl Engine {
                     };
                     self.storage.append_log(entry.clone())?;
                     Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-
-                    if step_def.step_type == StepType::Workspace {
-                        let resolved = output.stdout.trim().to_string();
-                        if !resolved.is_empty() {
-                            *workspace_dir = Some(std::path::PathBuf::from(&resolved));
-                        }
-                    }
 
                     info!(step = i, "Step completed successfully");
                 }

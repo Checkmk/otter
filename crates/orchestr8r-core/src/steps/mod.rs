@@ -2,7 +2,6 @@ pub mod agent;
 pub mod checkpoint;
 pub mod notify;
 pub mod shell;
-pub mod workspace;
 
 use crate::types::{StepContext, StepError, StepOutput, StepType};
 use async_trait::async_trait;
@@ -21,7 +20,6 @@ pub fn registry() -> Vec<Box<dyn StepExecutor>> {
     vec![
         Box::new(shell::ShellExecutor),
         Box::new(checkpoint::CheckpointExecutor),
-        Box::new(workspace::WorkspaceExecutor),
         Box::new(agent::AgentExecutor),
         Box::new(notify::NotifyExecutor),
     ]
