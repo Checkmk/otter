@@ -241,7 +241,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         WorkflowState::Dormant => {
                             spans.extend([
                                 Span::styled("  ", base_style()),
-                                Span::styled("[s]", key),
+                                Span::styled("[Enter]", key),
                                 Span::styled(" Start", dim),
                             ]);
                         }
@@ -262,7 +262,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         WorkflowState::Paused => {
                             spans.extend([
                                 Span::styled("  ", base_style()),
-                                Span::styled("[s]", key),
+                                Span::styled("[Enter]", key),
                                 Span::styled(" Resume", dim),
                                 Span::styled("  ", base_style()),
                                 Span::styled("[x]", key),

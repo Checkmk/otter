@@ -41,7 +41,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             }
         }
         // Workflow management keybindings (only when no checkpoint is pending)
-        KeyCode::Char('s') if !has_checkpoint => {
+        KeyCode::Enter if !has_checkpoint => {
             let state = app.selected_workflow_state();
             match state {
                 Some(WorkflowState::Dormant) => app.start_selected(),
