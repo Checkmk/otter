@@ -1,0 +1,20 @@
+name = "polling-debug"
+kind = "triggered"
+
+[trigger]
+type = "polling"
+# Path is relative to daemon's working directory (usually repo root when running with cargo)
+command = ["examples/polling-simple.sh"]
+interval_secs = 5
+
+[[steps]]
+type = "shell"
+command = ["ls", "-la", "trigger-context/"]
+
+[[steps]]
+type = "shell"
+command = ["cat", "trigger-context/metadata.txt"]
+
+[[steps]]
+type = "notify"
+message = "Polling test completed successfully!"

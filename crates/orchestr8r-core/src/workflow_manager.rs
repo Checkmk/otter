@@ -9,7 +9,8 @@ use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
 use crate::types::{
-    EngineEvent, StorageBackend, WorkflowDef, WorkflowKind, WorkflowState, WorkflowStatus,
+    EngineEvent, StorageBackend, WorkflowDef, WorkflowKind,
+    WorkflowState, WorkflowStatus,
 };
 use orchestr8r_notify::Notifier;
 
@@ -70,52 +71,63 @@ impl WorkflowManager {
     /// Start a dormant workflow. For indefinite workflows this begins the continuous loop;
     /// for triggered workflows this fires one immediate run.
     pub async fn start(&mut self, name: &str) -> anyhow::Result<()> {
-        let handle = self
-            .handles
-            .get_mut(name)
-            .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
+        // Check workflow exists and is dormant, extract def early
+        let (def, _is_triggered) = {
+            let handle = self
+                .handles
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
 
-        {
-            let state = handle.state.lock().unwrap();
-            if *state != WorkflowState::Dormant {
-                bail!(
-                    "workflow '{}' is not dormant (current state: {:?})",
-                    name,
-                    *state
-                );
+            {
+                let state = handle.state.lock().unwrap();
+                if *state != WorkflowState::Dormant {
+                    bail!(
+                        "workflow '{}' is not dormant (current state: {:?})",
+                        name,
+                        *state
+                    );
+                }
             }
-        }
 
-        // Reset per-run flags.
-        handle.paused.store(false, Ordering::Relaxed);
-        handle.shutdown.store(false, Ordering::Relaxed);
+            // Reset per-run flags.
+            handle.paused.store(false, Ordering::Relaxed);
+            handle.shutdown.store(false, Ordering::Relaxed);
 
+            let def = handle.def.clone();
+            let is_triggered = matches!(def.kind, WorkflowKind::Triggered);
+            (def, is_triggered)
+        };
+
+        // Now that we've released the mutable borrow, we can call methods on self
         let engine = Engine::new(
             self.storage.clone(),
             self.data_dir.join("runs"),
             self.notifier.clone(),
         );
 
+        // Re-acquire mutable borrow to update handle
+        let handle = self.handles.get_mut(name).unwrap();
+
         // Share the engine's paused flag so pause()/resume() can control it.
         let paused_flag = engine.paused_flag();
         handle.paused = paused_flag;
 
-        let def = handle.def.clone();
         let shutdown = handle.shutdown.clone();
         let event_tx = self.event_tx.clone();
         let state = handle.state.clone();
-        let is_triggered = matches!(def.kind, WorkflowKind::Triggered);
 
         let task = tokio::spawn(async move {
-            let result = if is_triggered {
-                // "start" for a triggered workflow = fire one immediate run.
-                engine.run_once(&def, shutdown, Some(event_tx.clone())).await
-            } else {
-                engine.run(&def, shutdown, Some(event_tx.clone())).await
-            };
-
-            if let Err(e) = result {
-                tracing::error!(workflow = %def.name, error = ?e, "Engine error");
+            match &def.kind {
+                crate::types::WorkflowKind::Indefinite => {
+                    if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
+                        tracing::error!(workflow = %def.name, error = ?e, "Engine error");
+                    }
+                }
+                crate::types::WorkflowKind::Triggered => {
+                    if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
+                        tracing::error!(workflow = %def.name, error = ?e, "Engine error");
+                    }
+                }
             }
 
             *state.lock().unwrap() = WorkflowState::Dormant;

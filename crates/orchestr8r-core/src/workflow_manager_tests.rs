@@ -1,7 +1,8 @@
 use super::*;
 use crate::storage::InMemoryStorage;
-use crate::types::{StepDef, StepType, WorkflowKind};
+use crate::types::{StepDef, StepType, TriggerDef, WorkflowKind};
 use orchestr8r_notify::NoOpNotifier;
+use std::fs;
 
 fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
     let storage = Arc::new(InMemoryStorage::new());
@@ -36,6 +37,26 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
         name: name.to_string(),
         kind: WorkflowKind::Triggered,
         trigger: None,
+        workspace: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["true".to_string()]),
+            message: None,
+            session: None,
+            notify: None,
+            agent: Default::default(),
+        }],
+    }
+}
+
+fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
+    WorkflowDef {
+        name: name.to_string(),
+        kind: WorkflowKind::Triggered,
+        trigger: Some(TriggerDef::Polling {
+            command,
+            interval_secs: 3600, // Very long interval (1 hour)
+        }),
         workspace: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
@@ -232,4 +253,151 @@ async fn paused_engine_loop_actually_pauses() {
 
     // cleanup
     manager.stop("counter").await.unwrap();
+}
+
+#[tokio::test]
+async fn polling_trigger_fires_immediately_when_manually_started() {
+    // GIVEN — a polling workflow with a very long interval (1 hour),
+    // with a mock polling script that returns one hash
+    let temp_dir = std::env::temp_dir().join(format!(
+        "orchestr8r-polling-immediate-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let cmd_path = temp_dir.join("mock-poller.sh");
+    fs::write(
+        &cmd_path,
+        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"test-hash\"]'; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel(64);
+    let storage = Arc::new(InMemoryStorage::new());
+    let data_dir = temp_dir.clone();
+    let mut manager = WorkflowManager::new(
+        storage.clone(),
+        data_dir,
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+
+    let workflow = polling_workflow(
+        "poller",
+        vec![cmd_path.to_string_lossy().to_string()],
+    );
+    manager.register(workflow);
+
+    // WHEN — manually start the workflow
+    let start_time = std::time::Instant::now();
+    manager.start("poller").await.unwrap();
+
+    // Give the trigger time to fire and execute
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let elapsed = start_time.elapsed();
+
+    // THEN — workflow should fire quickly (not wait for 3600 second interval)
+    assert!(
+        elapsed.as_millis() < 1000,
+        "polling trigger should fire immediately, not wait for 3600s interval. elapsed: {elapsed:?}"
+    );
+
+    // AND — the workflow should be running (listening for more events)
+    assert_eq!(manager.status()[0].state, WorkflowState::Running);
+
+    // AND — a run should have been created
+    assert!(
+        !storage.runs().is_empty(),
+        "a workflow run should have been created"
+    );
+
+    // WHEN — stop the workflow
+    manager.stop("poller").await.unwrap();
+
+    // Give it time to actually stop
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // THEN — it should be dormant
+    assert_eq!(manager.status()[0].state, WorkflowState::Dormant);
+
+    // cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn polling_trigger_executes_all_events_from_single_poll() {
+    // GIVEN — a polling workflow that returns 3 hashes from a single poll
+    let temp_dir = std::env::temp_dir().join(format!(
+        "orchestr8r-polling-multi-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let cmd_path = temp_dir.join("mock-poller.sh");
+    fs::write(
+        &cmd_path,
+        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"hash1\", \"hash2\", \"hash3\"]'; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel(64);
+    let storage = Arc::new(InMemoryStorage::new());
+    let data_dir = temp_dir.clone();
+    let mut manager = WorkflowManager::new(
+        storage.clone(),
+        data_dir,
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+
+    let workflow = polling_workflow(
+        "multi-poller",
+        vec![cmd_path.to_string_lossy().to_string()],
+    );
+    manager.register(workflow);
+
+    // WHEN — manually start the workflow
+    manager.start("multi-poller").await.unwrap();
+
+    // Give the trigger time to fire and execute all events
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // THEN — all 3 trigger events should result in separate runs
+    let runs = storage.runs();
+    assert_eq!(
+        runs.len(),
+        3,
+        "polling trigger should execute all 3 events; got {} runs",
+        runs.len()
+    );
+
+    // AND — workflow should be running (listening for more events)
+    assert_eq!(manager.status()[0].state, WorkflowState::Running);
+
+    // WHEN — stop the workflow
+    manager.stop("multi-poller").await.unwrap();
+
+    // Give it time to actually stop
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // THEN — it should be dormant
+    assert_eq!(manager.status()[0].state, WorkflowState::Dormant);
+
+    // cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }

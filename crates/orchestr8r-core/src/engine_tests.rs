@@ -432,7 +432,7 @@ async fn sessions_cleaned_up_at_run_end() {
 #[tokio::test]
 async fn triggered_workflow_runs_once_per_event() {
     // GIVEN a triggered workflow with a ManualTrigger
-    use crate::types::{TriggerDef, TriggerType};
+    use crate::types::TriggerDef;
 
     let storage = Arc::new(InMemoryStorage::new());
     let scratch = tempfile::tempdir().unwrap();
@@ -446,9 +446,7 @@ async fn triggered_workflow_runs_once_per_event() {
     let wf = WorkflowDef {
         name: "my-workflow".to_string(),
         kind: WorkflowKind::Triggered,
-        trigger: Some(TriggerDef {
-            trigger_type: TriggerType::Manual,
-        }),
+        trigger: Some(TriggerDef::Manual),
         workspace: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
@@ -462,7 +460,7 @@ async fn triggered_workflow_runs_once_per_event() {
     let storage_clone = storage.clone();
 
     let handle = tokio::spawn(async move {
-        engine.run_once(&wf, shutdown_clone, None).await.unwrap();
+        engine.run_once(&wf, None, shutdown_clone, None).await.unwrap();
         storage_clone
     });
 
@@ -479,6 +477,72 @@ async fn triggered_workflow_runs_once_per_event() {
 
     // Cleanup
     shutdown.store(true, Ordering::Relaxed);
+}
+
+#[tokio::test]
+async fn polling_trigger_shuts_down_cleanly() {
+    // GIVEN a polling trigger workflow
+    use crate::types::TriggerDef;
+    use std::fs;
+    use std::time::Duration;
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let scratch = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+
+    // Create a simple polling script that returns new events
+    let script_path = script_dir.path().join("poller.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"event1\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi",
+    ).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let engine = Engine::new(
+        storage.clone(),
+        scratch.path().to_path_buf(),
+        Arc::new(orchestr8r_notify::NoOpNotifier),
+    );
+
+    let wf = WorkflowDef {
+        name: "polling-workflow".to_string(),
+        kind: WorkflowKind::Triggered,
+        trigger: Some(TriggerDef::Polling {
+            command: vec![script_path.to_string_lossy().to_string()],
+            interval_secs: 1,
+        }),
+        workspace: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "triggered".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    // WHEN we run the triggered workflow and then shut it down quickly
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await
+    });
+
+    // Give it a moment to start the polling trigger
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Set shutdown flag
+    shutdown.store(true, Ordering::Relaxed);
+
+    // Wait for the engine to shut down
+    let result = handle.await;
+
+    // THEN the engine should shut down cleanly (not panic or error)
+    assert!(result.is_ok(), "Engine should shut down cleanly");
+    assert!(result.unwrap().is_ok(), "Engine run should complete without error");
 }
 
 #[tokio::test]

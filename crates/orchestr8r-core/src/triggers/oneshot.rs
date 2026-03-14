@@ -23,13 +23,18 @@ impl TriggerSource for OneShotTrigger {
         &self.name
     }
 
-    async fn subscribe(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError> {
+    async fn fire_once(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError> {
         tx.send(TriggerEvent {
             source: self.name.clone(),
             payload: String::new(),
+            preallocated_run_id: None,
         })
         .await
         .map_err(|_| TriggerError::Failed("receiver dropped".to_string()))
+    }
+
+    async fn subscribe(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError> {
+        self.fire_once(tx).await
     }
 }
 
@@ -51,5 +56,19 @@ mod tests {
         let event = rx.recv().await.expect("expected one event");
         assert_eq!(event.source, "oneshot");
         assert!(rx.recv().await.is_none(), "channel should be empty after one event");
+    }
+
+    #[tokio::test]
+    async fn fire_once_emits_one_event() {
+        // GIVEN
+        let trigger = OneShotTrigger::new("oneshot");
+        let (tx, mut rx) = mpsc::channel(8);
+
+        // WHEN
+        trigger.fire_once(tx).await.unwrap();
+
+        // THEN
+        assert!(rx.recv().await.is_some(), "expected one event");
+        assert!(rx.recv().await.is_none(), "should only emit one event");
     }
 }

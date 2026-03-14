@@ -23,21 +23,25 @@ pub enum WorkflowKind {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TriggerDef {
-    #[serde(rename = "type")]
-    pub trigger_type: TriggerType,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TriggerDef {
+    Manual,
+    Polling {
+        command: Vec<String>,
+        #[serde(default = "default_poll_interval")]
+        interval_secs: u64,
+    },
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum TriggerType {
-    Manual,
+fn default_poll_interval() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone)]
 pub struct TriggerEvent {
     pub source: String,
     pub payload: String,
+    pub preallocated_run_id: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -353,7 +357,68 @@ mod tests {
 
         // THEN
         let trigger = def.trigger.unwrap();
-        assert_eq!(trigger.trigger_type, TriggerType::Manual);
+        matches!(trigger, TriggerDef::Manual);
+    }
+
+    #[test]
+    fn polling_trigger_deserializes_with_defaults() {
+        // GIVEN
+        let toml_str = r#"
+            name = "poll-jira"
+            kind = "triggered"
+
+            [trigger]
+            type = "polling"
+            command = ["jira-poller.sh"]
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "review"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        let trigger = def.trigger.unwrap();
+        match trigger {
+            TriggerDef::Polling { command, interval_secs } => {
+                assert_eq!(command, vec!["jira-poller.sh".to_string()]);
+                assert_eq!(interval_secs, 600);
+            }
+            _ => panic!("expected polling trigger"),
+        }
+    }
+
+    #[test]
+    fn polling_trigger_deserializes_with_custom_interval() {
+        // GIVEN
+        let toml_str = r#"
+            name = "poll-jira"
+            kind = "triggered"
+
+            [trigger]
+            type = "polling"
+            command = ["jira-poller.py"]
+            interval_secs = 300
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "issue"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        let trigger = def.trigger.unwrap();
+        match trigger {
+            TriggerDef::Polling { command, interval_secs } => {
+                assert_eq!(command, vec!["jira-poller.py".to_string()]);
+                assert_eq!(interval_secs, 300);
+            }
+            _ => panic!("expected polling trigger"),
+        }
     }
 
 }

@@ -254,6 +254,78 @@ Or click "Start" in the TUI dashboard.
 
 ---
 
+### `polling`
+
+Polls an external event source on a configurable interval. Uses a user-supplied script that adheres to a two-command interface for fetching event hashes and writing trigger-specific context.
+
+**Fields:**
+- `type` (required): `"polling"`
+- `command` (required): Array of strings; the command to invoke. The command must support two modes:
+  - `<command> --poll` → stdout: JSON array of strings (event identifiers), exit 0 on success
+  - `<command> --context <hash> <context-dir>` → writes trigger context files to `<context-dir>`, exit 0 on success
+- `interval_secs` (optional, default: 600): Polling interval in seconds
+
+**Example:**
+```toml
+name = "jira-ticket"
+kind = "triggered"
+
+[trigger]
+type = "polling"
+command = ["poll-jira"]
+interval_secs = 600
+
+[[steps]]
+type = "shell"
+command = ["cat", "trigger-context/issue.json"]
+
+[[steps]]
+type = "agent"
+provider = "claude"
+message = "Implement the JIRA issue described in trigger-context/issue.json."
+```
+
+**Context directory location (adaptive):**
+- **No workspace configured** → Trigger pre-allocates a run directory and creates `<run-dir>/trigger-context/`. Persists in `~/.local/share/orchestr8r/runs/<run-id>/trigger-context/`.
+- **Workspace configured** → Context is written to `<workspace>/trigger-context/` (stable across runs). Scripts may clean up if desired — orchestr8r does not remove context directories.
+
+**Seen-hash persistence:**
+- Hashes returned by `--poll` are stored at `<data-dir>/triggers/<workflow-name>-seen.json` as a sorted JSON array
+- Hashes are marked as seen immediately after polling; if the `--context` command fails, the hash is still considered seen (logged as a warning, not re-polled)
+- The seen-hash file survives daemon restarts
+
+**Behavior:**
+- Runs `<command> --poll` on the configured interval
+- Parses stdout as a JSON array of strings (event identifiers/hashes)
+- For each new hash (not in the seen-hash file):
+  1. Adds it to seen-hash file and persists immediately
+  2. Creates context directory and runs `<command> --context <hash> <context-dir>`
+  3. If context command exits non-zero, logs a warning and skips (hash remains marked seen)
+  4. Sends a `TriggerEvent` with the hash as payload
+- Each new hash fires exactly one workflow run; multiple hashes from one poll cycle fire multiple runs (queued sequentially)
+- Polling continues indefinitely; errors do not stop the trigger
+
+**Script contract:**
+
+The polling command must be executable and support these two modes:
+
+```bash
+# Mode 1: Poll for events
+$ <command> --poll
+# stdout: JSON array of strings (e.g., ["hash1", "hash2"])
+# exit 0 = success; non-zero = skip this poll cycle
+
+# Mode 2: Write context
+$ <command> --context <hash> <context-dir>
+# Creates files in <context-dir> with trigger-specific data
+# exit 0 = success; non-zero = skip this hash (already marked seen)
+```
+
+Example script is available in the [examples](examples/) directory:
+- `polling-simple.sh`
+
+---
+
 ## Examples
 
 Can be found in the [examples](examples/) directory.

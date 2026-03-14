@@ -177,11 +177,24 @@ impl Engine {
             .unwrap_or(&self.scratch_base)
             .to_path_buf();
 
-        let trigger = build_trigger(trigger_def, &workflow.name, &data_dir)?;
+        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
+            Some(path) => Some(std::fs::canonicalize(path).map_err(|e| {
+                anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
+            })?),
+            None => None,
+        };
+
+        let trigger = build_trigger(
+            trigger_def,
+            &workflow.name,
+            &data_dir,
+            &self.scratch_base,
+            workspace_dir.as_deref(),
+        )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
 
-        tokio::spawn(async move {
+        let trigger_handle = tokio::spawn(async move {
             if let Err(e) = trigger.subscribe(trigger_tx).await {
                 error!("Trigger subscribe error: {}", e);
             }
@@ -197,17 +210,28 @@ impl Engine {
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
+                info!(workflow = %workflow.name, "Shutdown flag set, exiting trigger loop");
+                trigger_handle.abort();
                 break;
+            }
+
+            // Always drain any pending events into the queue first
+            while let Ok(e) = trigger_rx.try_recv() {
+                queued.push_back(e);
             }
 
             let event = if let Some(e) = queued.pop_front() {
                 e
             } else {
+                // Queue is empty, wait for new events with timeout
                 tokio::select! {
                     maybe = trigger_rx.recv() => {
                         match maybe {
                             Some(e) => e,
-                            None => break,
+                            None => {
+                                info!(workflow = %workflow.name, "Trigger channel closed, exiting");
+                                break;
+                            }
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
@@ -222,7 +246,7 @@ impl Engine {
                 "Trigger fired, starting run"
             );
 
-            self.run_once(workflow, shutdown.clone(), ui_tx.clone()).await?;
+            self.run_once(workflow, Some(&event), shutdown.clone(), ui_tx.clone()).await?;
 
             // Collect events that arrived during the run
             while let Ok(e) = trigger_rx.try_recv() {
@@ -236,10 +260,13 @@ impl Engine {
     pub async fn run_once(
         &self,
         workflow: &WorkflowDef,
+        event: Option<&TriggerEvent>,
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<()> {
+        let run_id = event.and_then(|e| e.preallocated_run_id).unwrap_or_else(uuid::Uuid::new_v4);
         let mut run = WorkflowRun::new(workflow.name.clone());
+        run.id = run_id;
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         std::fs::create_dir_all(&scratch_dir)?;
 
