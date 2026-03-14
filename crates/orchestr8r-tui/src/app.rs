@@ -25,6 +25,7 @@ pub struct App {
     pub feedback_input: String,
     pub mode: Mode,
     pub should_quit: bool,
+    pub tick: u64,
     pub cmd_tx: mpsc::Sender<DaemonCommand>,
 }
 
@@ -39,6 +40,7 @@ impl App {
             feedback_input: String::new(),
             mode: Mode::Normal,
             should_quit: false,
+            tick: 0,
             cmd_tx,
         }
     }
