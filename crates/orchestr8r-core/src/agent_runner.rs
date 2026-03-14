@@ -27,6 +27,8 @@ pub struct AgentOutput {
 pub enum AgentError {
     #[error("agent failed: {0}")]
     Failed(String),
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -68,10 +70,7 @@ impl AgentRunner for ClaudeCodeRunner {
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(AgentError::Failed(format!(
-                    "agent exited with code {code}: {}",
-                    output.stderr
-                )));
+                return Err(classify_agent_error(code, &output));
             }
         }
 
@@ -91,10 +90,7 @@ impl AgentRunner for ClaudeCodeRunner {
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(AgentError::Failed(format!(
-                    "agent exited with code {code}: {}",
-                    output.stderr
-                )));
+                return Err(classify_agent_error(code, &output));
             }
         }
 
@@ -104,6 +100,25 @@ impl AgentRunner for ClaudeCodeRunner {
     async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
         Ok(())
     }
+}
+
+fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentError {
+    let combined = format!("{} {}", output.stdout, output.stderr);
+    if combined.contains("out of extra usage")
+        || combined.contains("rate limit")
+        || combined.contains("Rate limit")
+        || combined.contains("429")
+    {
+        let msg = output.stdout.trim().to_string();
+        return AgentError::RateLimited(if msg.is_empty() { output.stderr.trim().to_string() } else { msg });
+    }
+    let detail = match (output.stdout.trim(), output.stderr.trim()) {
+        ("", "") => String::new(),
+        ("", err) => format!(" stderr: {err}"),
+        (out, "") => format!(" stdout: {out}"),
+        (out, err) => format!(" stdout: {out} | stderr: {err}"),
+    };
+    AgentError::Failed(format!("agent exited with code {code}{detail}"))
 }
 
 async fn run_subprocess(
