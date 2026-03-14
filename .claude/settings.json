@@ -1,8 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo build)",
-      "Bash(cargo test)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
       "Bash(git log *)",
       "Bash(git show *)",
       "Bash(git diff *)"
