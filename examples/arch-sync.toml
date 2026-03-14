@@ -7,7 +7,8 @@ path = "."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--allowed-tools", "Write,Read"]
+provider = "claude"
+allowed_tools = ["Write", "Read"]
 message = "Save the final plan to plan.md (overwriting it if required): Review README.md, TARGET_ARCHITECTURE.md and the current code. Identify the best next step to align them and create an implementation plan."
 
 [[steps]]
@@ -16,7 +17,8 @@ message = "Review the agent's plan."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--permission-mode", "acceptEdits"]
+provider = "claude"
+permission_mode = "acceptEdits"
 message = "Read plan.md and implement it."
 
 [[steps]]

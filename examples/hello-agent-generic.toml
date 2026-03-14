@@ -1,0 +1,10 @@
+name = "hello-agent"
+kind = "triggered"
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "agent"
+command = ["claude", "--print"]
+message = "Say hello in one sentence."

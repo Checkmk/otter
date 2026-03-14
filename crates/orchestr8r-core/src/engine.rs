@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::agent_runner::AgentRunner;
 use crate::session::AgentSessionManager;
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
@@ -20,7 +19,6 @@ pub struct Engine {
     executors: Vec<Box<dyn StepExecutor>>,
     storage: Arc<dyn StorageBackend>,
     scratch_base: std::path::PathBuf,
-    agent_runner: Arc<dyn AgentRunner>,
     notifier: Arc<dyn Notifier>,
     paused: Arc<AtomicBool>,
 }
@@ -29,14 +27,12 @@ impl Engine {
     pub fn new(
         storage: Arc<dyn StorageBackend>,
         scratch_base: std::path::PathBuf,
-        agent_runner: Arc<dyn AgentRunner>,
         notifier: Arc<dyn Notifier>,
     ) -> Self {
         Self {
             executors: crate::steps::registry(),
             storage,
             scratch_base,
-            agent_runner,
             notifier,
             paused: Arc::new(AtomicBool::new(false)),
         }
@@ -45,14 +41,12 @@ impl Engine {
     pub fn with_executors(
         storage: Arc<dyn StorageBackend>,
         scratch_base: std::path::PathBuf,
-        agent_runner: Arc<dyn AgentRunner>,
         executors: Vec<Box<dyn StepExecutor>>,
     ) -> Self {
         Self {
             executors,
             storage,
             scratch_base,
-            agent_runner,
             notifier: Arc::new(NoOpNotifier),
             paused: Arc::new(AtomicBool::new(false)),
         }
@@ -104,7 +98,7 @@ impl Engine {
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         info!(run_id = %run.id, workflow = %workflow.name, "Starting indefinite workflow run");
 
-        let session_manager = Arc::new(AgentSessionManager::new(self.agent_runner.clone()));
+        let session_manager = Arc::new(AgentSessionManager::new());
         let mut workspace_dir: Option<std::path::PathBuf> = None;
 
         loop {
@@ -241,7 +235,7 @@ impl Engine {
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         info!(run_id = %run.id, workflow = %workflow.name, "Starting triggered workflow run");
 
-        let session_manager = Arc::new(AgentSessionManager::new(self.agent_runner.clone()));
+        let session_manager = Arc::new(AgentSessionManager::new());
         let mut workspace_dir: Option<std::path::PathBuf> = None;
 
         let stop = self

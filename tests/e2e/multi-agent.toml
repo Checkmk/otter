@@ -1,0 +1,17 @@
+name = "multi-agent"
+kind = "triggered"
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "agent"
+provider = "copilot"
+allowed_tools = ["read", "write"]
+message = "Save the final plan to plan.md: How to implement fizzbuzz?"
+
+[[steps]]
+type = "agent"
+provider = "claude"
+permission_mode = "acceptEdits"
+message = "Implement plan.md"

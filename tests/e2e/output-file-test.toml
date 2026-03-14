@@ -3,7 +3,8 @@ kind = "indefinite"
 
 [[steps]]
 type = "agent"
-command = ["claude", "--print", "--allowed-tools", "Write,Read"]
+provider = "claude"
+allowed_tools = ["Write", "Read"]
 message = "Create file foo.txt with content 'bar' and output 'done' when finished."
 
 [[steps]]
@@ -12,5 +13,5 @@ message = "foo.txt should exist in the scratch dir."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--print"]
+provider = "claude"
 message = "Output content of foo.txt"

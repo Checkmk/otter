@@ -10,7 +10,6 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 use uuid::Uuid;
 
-use orchestr8r_core::agent_runner::ClaudeCodeRunner;
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
     WorkflowDef, WorkflowRun,
@@ -48,7 +47,6 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         storage,
         data_dir.clone(),
         event_tx,
-        Arc::new(ClaudeCodeRunner),
         notifier,
     )));
 

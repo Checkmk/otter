@@ -72,6 +72,7 @@ mod tests {
             path: path.map(String::from),
             session: None,
             notify: None,
+            agent: Default::default(),
         }
     }
 

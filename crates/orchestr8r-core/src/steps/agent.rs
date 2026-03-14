@@ -33,6 +33,7 @@ impl StepExecutor for AgentExecutor {
         let output = manager
             .run_step(
                 step_def.session.as_deref(),
+                &step_def.agent,
                 step_def.command.as_deref(),
                 message,
                 working_dir,
@@ -59,7 +60,6 @@ impl StepExecutor for AgentExecutor {
 mod tests {
     use super::*;
     use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
-    use crate::session::AgentSessionManager;
     use crate::types::StepType;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -70,7 +70,7 @@ mod tests {
     impl AgentRunner for FixedRunner {
         async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
-                AgentSessionHandle { id: "s".into(), command: spec.command, working_dir: spec.working_dir.clone() },
+                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone() },
                 AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -88,7 +88,7 @@ mod tests {
     async fn execute_writes_output_to_scratch_dir() {
         // GIVEN
         let scratch = tempfile::tempdir().unwrap();
-        let manager = Arc::new(AgentSessionManager::new(Arc::new(FixedRunner)));
+        let manager = Arc::new(crate::session::AgentSessionManager::new_with_runner_override(Arc::new(FixedRunner)));
         let ctx = StepContext {
             run_id: Uuid::new_v4(),
             workflow_name: "test".into(),
@@ -102,11 +102,12 @@ mod tests {
         };
         let step_def = StepDef {
             step_type: StepType::Agent,
-            command: Some(vec!["agent".into()]),
+            command: None,
             message: Some("do work".into()),
             path: None,
             session: None,
             notify: None,
+            agent: crate::types::AgentConfig { provider: Some("claude".into()), ..Default::default() },
         };
 
         // WHEN

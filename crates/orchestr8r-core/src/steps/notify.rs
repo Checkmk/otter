@@ -91,6 +91,7 @@ mod tests {
             path: None,
             session: None,
             notify: None,
+            agent: Default::default(),
         };
 
         // WHEN
@@ -114,6 +115,7 @@ mod tests {
             path: None,
             session: None,
             notify: None,
+            agent: Default::default(),
         };
 
         // WHEN

@@ -66,6 +66,13 @@ impl std::fmt::Display for StepType {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentConfig {
+    pub provider: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub permission_mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StepDef {
     #[serde(rename = "type")]
@@ -75,6 +82,8 @@ pub struct StepDef {
     pub path: Option<String>,
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub agent: AgentConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

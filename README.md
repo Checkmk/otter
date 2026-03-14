@@ -110,26 +110,38 @@ Workflows are TOML files with a name, a kind, and a list of steps.
 | Type         | Description                                                               | Fields                               |
 | ------------ | ------------------------------------------------------------------------- | ------------------------------------ |
 | `workspace`  | Sets the working directory for subsequent steps                           | `path` (required)                    |
-| `agent`      | Runs an AI CLI tool with a message; supports named persistent sessions    | `command`, `message` (required); `session` (optional) |
+| `agent`      | Runs an AI CLI tool with a message; supports named persistent sessions    | `provider` or `command`, `message` (required) |
 | `shell`      | Runs an arbitrary shell command; fails the workflow on non-zero exit      | `command` (required)                 |
 | `checkpoint` | Pauses for human review; TUI presents continue / stop / feedback actions | `message` (optional)                 |
 | `notify`     | Sends a desktop notification and continues                               | `message` (optional)                 |
 
-#### `agent` sessions
+#### `agent` steps
 
-The optional `session` field on `agent` steps groups steps into a shared conversation within a single run. Steps with the same session name share context — the `command` value is only required on the first step that creates the session. Steps without a `session` get an isolated per-step session.
+Agent steps drive an AI CLI (Claude or Copilot) with a message. Use `provider` to select the built-in runner, or `command` as an escape hatch for any other CLI.
+
+| Field | Description |
+|-------|-------------|
+| `provider` | `"claude"` or `"copilot"`. Mutually exclusive with `command`. |
+| `command` | Escape hatch: arbitrary CLI command array. Mutually exclusive with `provider`. |
+| `allowed_tools` | List of tools the agent may use. Claude: maps to `--allowed-tools Write,Read`. Copilot: maps to `--allow-tool=<t>` per entry. |
+| `permission_mode` | Claude-only. Maps to `--permission-mode <value>` (e.g. `"acceptEdits"`). |
+| `message` | Prompt sent to the agent. |
+| `session` | Optional session name. Steps sharing the same name resume the same conversation within a run. |
 
 ```toml
+# Copilot example:
 [[steps]]
 type = "agent"
-command = ["claude", "--print"]
-session = "planner"
-message = "Read plan.md and create an implementation plan."
+provider = "copilot"
+allowed_tools = ["read_file", "create_file"]
+message = "Implement the plan"
 
+# Claude example
 [[steps]]
 type = "agent"
-session = "planner"           # resumes the same session — no command needed
-message = "Summarise the plan in one sentence."
+provider = "claude"
+permission_mode = "acceptEdits"
+message = "Implement the plan"
 ```
 
 ---
@@ -166,7 +178,8 @@ path = "."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--allowed-tools", "Write,Read"]
+provider = "claude"
+allowed_tools = ["Write", "Read"]
 message = "Save the final plan to plan.md (overwriting it if required): Review README.md, TARGET_ARCHITECTURE.md and the current code. Identify the best next step to align them and create an implementation plan."
 
 [[steps]]
@@ -175,7 +188,8 @@ message = "Review the agent's plan."
 
 [[steps]]
 type = "agent"
-command = ["claude", "--permission-mode", "acceptEdits"]
+provider = "claude"
+permission_mode = "acceptEdits"
 message = "Read plan.md and implement it."
 
 [[steps]]

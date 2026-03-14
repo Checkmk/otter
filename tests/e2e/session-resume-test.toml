@@ -4,7 +4,7 @@ kind = "indefinite"
 [[steps]]
 type = "agent"
 session = "planner"
-command = ["claude", "--print"]
+provider = "claude"
 message = "Remember the secret word: PINEAPPLE. Respond only with 'Acknowledged.'"
 
 [[steps]]

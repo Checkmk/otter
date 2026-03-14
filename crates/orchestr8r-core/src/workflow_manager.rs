@@ -7,7 +7,6 @@ use anyhow::bail;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::agent_runner::AgentRunner;
 use crate::engine::Engine;
 use crate::types::{
     EngineEvent, StorageBackend, WorkflowDef, WorkflowKind, WorkflowState, WorkflowStatus,
@@ -28,7 +27,6 @@ pub struct WorkflowManager {
     event_tx: mpsc::Sender<EngineEvent>,
     storage: Arc<dyn StorageBackend>,
     data_dir: PathBuf,
-    agent_runner: Arc<dyn AgentRunner>,
     notifier: Arc<dyn Notifier>,
 }
 
@@ -37,7 +35,6 @@ impl WorkflowManager {
         storage: Arc<dyn StorageBackend>,
         data_dir: PathBuf,
         event_tx: mpsc::Sender<EngineEvent>,
-        agent_runner: Arc<dyn AgentRunner>,
         notifier: Arc<dyn Notifier>,
     ) -> Self {
         Self {
@@ -45,7 +42,6 @@ impl WorkflowManager {
             event_tx,
             storage,
             data_dir,
-            agent_runner,
             notifier,
         }
     }
@@ -97,7 +93,6 @@ impl WorkflowManager {
         let engine = Engine::new(
             self.storage.clone(),
             self.data_dir.join("runs"),
-            self.agent_runner.clone(),
             self.notifier.clone(),
         );
 
@@ -237,47 +232,9 @@ impl WorkflowManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
     use crate::storage::InMemoryStorage;
     use crate::types::{StepDef, StepType, WorkflowKind};
     use orchestr8r_notify::NoOpNotifier;
-
-    struct NoOpAgentRunner;
-
-    #[async_trait::async_trait]
-    impl AgentRunner for NoOpAgentRunner {
-        async fn start(
-            &self,
-            spec: AgentSpec,
-        ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-            Ok((
-                AgentSessionHandle {
-                    id: "noop".to_string(),
-                    command: spec.command,
-                    working_dir: spec.working_dir,
-                },
-                AgentOutput {
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            ))
-        }
-        async fn prompt(
-            &self,
-            _session: &AgentSessionHandle,
-            _message: &str,
-        ) -> Result<AgentOutput, AgentError> {
-            Ok(AgentOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            })
-        }
-        async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
-            Ok(())
-        }
-    }
 
     fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
         let storage = Arc::new(InMemoryStorage::new());
@@ -286,7 +243,6 @@ mod tests {
             storage,
             data_dir,
             event_tx,
-            Arc::new(NoOpAgentRunner),
             Arc::new(NoOpNotifier),
         )
     }
@@ -303,6 +259,7 @@ mod tests {
                 path: None,
                 session: None,
                 notify: None,
+                agent: Default::default(),
             }],
         }
     }
@@ -319,6 +276,7 @@ mod tests {
                 path: None,
                 session: None,
                 notify: None,
+                agent: Default::default(),
             }],
         }
     }
@@ -485,7 +443,6 @@ mod tests {
             storage.clone(),
             data_dir,
             tx,
-            Arc::new(NoOpAgentRunner),
             Arc::new(NoOpNotifier),
         );
         manager.register(indefinite_workflow("counter"));

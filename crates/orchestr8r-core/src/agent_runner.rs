@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct AgentSpec {
-    pub command: Vec<String>,
     pub message: String,
     pub working_dir: PathBuf,
 }
@@ -12,7 +12,6 @@ pub struct AgentSpec {
 #[derive(Debug, Clone)]
 pub struct AgentSessionHandle {
     pub id: String,
-    pub command: Vec<String>,
     pub working_dir: PathBuf,
 }
 
@@ -46,10 +45,27 @@ pub trait AgentRunner: Send + Sync {
 
 /// Agent runner targeting the Claude Code CLI.
 ///
-/// - `start()` spawns `command --session-id <uuid>` with the message on stdin.
-/// - `prompt()` spawns `command --resume <id>` with the new message on stdin.
+/// - `start()` runs `claude [base_args] --session-id <uuid>` with the message on stdin.
+/// - `prompt()` runs `claude [base_args] --resume <id>` with the message on stdin.
 /// - `stop()` is a no-op — the CLI manages its own session cleanup.
-pub struct ClaudeCodeRunner;
+pub struct ClaudeCodeRunner {
+    base_args: Vec<String>,
+}
+
+impl ClaudeCodeRunner {
+    pub fn new(allowed_tools: Option<Vec<String>>, permission_mode: Option<String>) -> Self {
+        let mut base_args = Vec::new();
+        if let Some(tools) = allowed_tools {
+            base_args.push("--allowed-tools".to_string());
+            base_args.push(tools.join(","));
+        }
+        if let Some(mode) = permission_mode {
+            base_args.push("--permission-mode".to_string());
+            base_args.push(mode);
+        }
+        Self { base_args }
+    }
+}
 
 #[async_trait]
 impl AgentRunner for ClaudeCodeRunner {
@@ -58,15 +74,15 @@ impl AgentRunner for ClaudeCodeRunner {
 
         let handle = AgentSessionHandle {
             id: session_id.clone(),
-            command: spec.command.clone(),
-            working_dir: spec.working_dir,
+            working_dir: spec.working_dir.clone(),
         };
 
-        let mut cmd_args = spec.command.clone();
+        let mut cmd_args = vec!["claude".to_string()];
+        cmd_args.extend(self.base_args.clone());
         cmd_args.push("--session-id".to_string());
         cmd_args.push(session_id);
 
-        let output = run_subprocess(&cmd_args, &handle.working_dir, &spec.message).await?;
+        let output = run_subprocess(&cmd_args, &spec.working_dir, &spec.message).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -82,7 +98,8 @@ impl AgentRunner for ClaudeCodeRunner {
         session: &AgentSessionHandle,
         message: &str,
     ) -> Result<AgentOutput, AgentError> {
-        let mut cmd_args = session.command.clone();
+        let mut cmd_args = vec!["claude".to_string()];
+        cmd_args.extend(self.base_args.clone());
         cmd_args.push("--resume".to_string());
         cmd_args.push(session.id.clone());
 
@@ -99,6 +116,154 @@ impl AgentRunner for ClaudeCodeRunner {
 
     async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
         Ok(())
+    }
+}
+
+/// Agent runner targeting the GitHub Copilot CLI.
+///
+/// - `start()` pre-generates a UUID and runs `copilot [base_args] --resume=<uuid> -p <message>`.
+///   Copilot treats `--resume=<unknown-uuid>` as "start new session with this UUID".
+/// - `prompt()` runs `copilot [base_args] --resume=<uuid> -p <message>` to resume.
+/// - `stop()` is a no-op.
+pub struct CopilotRunner {
+    base_args: Vec<String>,
+}
+
+impl CopilotRunner {
+    pub fn new(allowed_tools: Option<Vec<String>>) -> Self {
+        let mut base_args = Vec::new();
+        if let Some(tools) = allowed_tools {
+            for tool in tools {
+                base_args.push(format!("--allow-tool={tool}"));
+            }
+        }
+        Self { base_args }
+    }
+}
+
+#[async_trait]
+impl AgentRunner for CopilotRunner {
+    async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+        let session_id = Uuid::new_v4().to_string();
+
+        let handle = AgentSessionHandle {
+            id: session_id.clone(),
+            working_dir: spec.working_dir.clone(),
+        };
+
+        let mut cmd_args = vec!["copilot".to_string()];
+        cmd_args.extend(self.base_args.clone());
+        cmd_args.push(format!("--resume={session_id}"));
+        cmd_args.push("-p".to_string());
+        cmd_args.push(spec.message.clone());
+
+        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir).await?;
+
+        if let Some(code) = output.exit_code {
+            if code != 0 {
+                return Err(classify_agent_error(code, &output));
+            }
+        }
+
+        Ok((handle, output))
+    }
+
+    async fn prompt(
+        &self,
+        session: &AgentSessionHandle,
+        message: &str,
+    ) -> Result<AgentOutput, AgentError> {
+        let mut cmd_args = vec!["copilot".to_string()];
+        cmd_args.extend(self.base_args.clone());
+        cmd_args.push(format!("--resume={}", session.id));
+        cmd_args.push("-p".to_string());
+        cmd_args.push(message.to_string());
+
+        let output = run_subprocess_no_stdin(&cmd_args, &session.working_dir).await?;
+
+        if let Some(code) = output.exit_code {
+            if code != 0 {
+                return Err(classify_agent_error(code, &output));
+            }
+        }
+
+        Ok(output)
+    }
+
+    async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
+        Ok(())
+    }
+}
+
+/// Wraps an arbitrary command. No session resumption — each start/prompt runs a fresh
+/// subprocess with the message on stdin. Used by the `command` escape hatch in step defs.
+pub struct CustomRunner {
+    command: Vec<String>,
+}
+
+impl CustomRunner {
+    pub fn new(command: Vec<String>) -> Self {
+        Self { command }
+    }
+}
+
+#[async_trait]
+impl AgentRunner for CustomRunner {
+    async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+        let handle = AgentSessionHandle {
+            id: Uuid::new_v4().to_string(),
+            working_dir: spec.working_dir.clone(),
+        };
+
+        let output = run_subprocess(&self.command, &spec.working_dir, &spec.message).await?;
+
+        if let Some(code) = output.exit_code {
+            if code != 0 {
+                return Err(classify_agent_error(code, &output));
+            }
+        }
+
+        Ok((handle, output))
+    }
+
+    async fn prompt(
+        &self,
+        session: &AgentSessionHandle,
+        message: &str,
+    ) -> Result<AgentOutput, AgentError> {
+        let output = run_subprocess(&self.command, &session.working_dir, message).await?;
+
+        if let Some(code) = output.exit_code {
+            if code != 0 {
+                return Err(classify_agent_error(code, &output));
+            }
+        }
+
+        Ok(output)
+    }
+
+    async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
+        Ok(())
+    }
+}
+
+/// Build an `AgentRunner` from a provider name and optional config.
+///
+/// Returns an error for unknown provider names.
+pub fn build_runner(
+    provider: &str,
+    allowed_tools: Option<&[String]>,
+    permission_mode: Option<&str>,
+) -> Result<Arc<dyn AgentRunner>, AgentError> {
+    match provider {
+        "claude" => Ok(Arc::new(ClaudeCodeRunner::new(
+            allowed_tools.map(|t| t.to_vec()),
+            permission_mode.map(str::to_string),
+        ))),
+        "copilot" => Ok(Arc::new(CopilotRunner::new(
+            allowed_tools.map(|t| t.to_vec()),
+        ))),
+        other => Err(AgentError::Failed(format!("unknown agent provider: {other}"))),
     }
 }
 
@@ -144,6 +309,29 @@ async fn run_subprocess(
     }
 
     let output = child.wait_with_output().await?;
+
+    Ok(AgentOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code(),
+    })
+}
+
+async fn run_subprocess_no_stdin(
+    cmd_args: &[String],
+    working_dir: &std::path::Path,
+) -> Result<AgentOutput, AgentError> {
+    if cmd_args.is_empty() {
+        return Err(AgentError::Failed("empty command".to_string()));
+    }
+
+    let output = tokio::process::Command::new(&cmd_args[0])
+        .args(&cmd_args[1..])
+        .current_dir(working_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await?;
 
     Ok(AgentOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
