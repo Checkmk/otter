@@ -5,7 +5,7 @@ type = "looping"
 type = "agent"
 session = "planner"
 provider = "claude"
-message = "Remember the secret word: PINEAPPLE. Respond only with 'Acknowledged.'"
+message = "Remember 'PINEAPPLE' and repeat this if someone asks. Respond only with 'Acknowledged.'"
 
 [[steps]]
 type = "checkpoint"
@@ -14,7 +14,7 @@ message = "Agent should have acknowledged. Continue to test session resume."
 [[steps]]
 type = "agent"
 session = "planner"
-message = "What was the secret word I told you earlier? Respond with only the word."
+message = "What should you remember? Respond with only the word."
 
 [[steps]]
 type = "checkpoint"

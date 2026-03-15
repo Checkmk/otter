@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::Utc;
 use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, TriggerDef, WorkflowType, WorkflowRun, WorkflowState};
 use uuid::Uuid;
 use tokio::sync::mpsc;
@@ -122,10 +123,28 @@ impl App {
             }
             DaemonEvent::CheckpointPending {
                 run_id,
+                step_index,
                 message,
                 feedback_available,
-                ..
             } => {
+                // Inject checkpoint message as a synthetic log entry
+                let iteration = self.logs.get(&run_id)
+                    .and_then(|l| l.last())
+                    .map(|e| e.iteration)
+                    .unwrap_or(0);
+                self.logs.entry(run_id).or_default().push(LogEntry {
+                    run_id,
+                    iteration,
+                    step_index,
+                    step_type: "checkpoint".to_string(),
+                    stdout: message.clone(),
+                    stderr: String::new(),
+                    exit_code: None,
+                    accepted: None,
+                    feedback: None,
+                    timestamp: Utc::now(),
+                });
+
                 self.pending_checkpoints.insert(run_id, PendingCheckpoint {
                     run_id,
                     message,

@@ -5,80 +5,40 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::{App, Mode, CursorTarget};
+use crate::input_field::InputField;
 use crate::scroll::scroll_text;
-
-// ─── Palette ─────────────────────────────────────────────────────────────────
-const BG:     Color = Color::Rgb(0x33, 0x35, 0x43);
-const PEACH:  Color = Color::Rgb(0xfb, 0xc9, 0x97);
-const TAN:    Color = Color::Rgb(0xb7, 0x87, 0x60);
-const GOLD:   Color = Color::Rgb(0xc8, 0x99, 0x31);
-const ROSE:   Color = Color::Rgb(0xec, 0x84, 0x99);
-const PURPLE: Color = Color::Rgb(0xa4, 0x59, 0xb7);
-const GREEN:  Color = Color::Rgb(0x61, 0x8b, 0x50);
-const BLUE:   Color = Color::Rgb(0x5b, 0x64, 0xc5);
-const RED:    Color = Color::Rgb(0xff, 0x56, 0x38);
-
-// ─── Semantic color mapping ───────────────────────────────────────────────────
-fn c_background()      -> Color { BG     }
-fn c_foreground()      -> Color { PEACH  }
-fn c_dim()             -> Color { TAN    }
-fn c_border()          -> Color { BLUE   }
-fn c_running()         -> Color { GREEN  }
-fn c_completed()       -> Color { GREEN  }
-fn c_failed()          -> Color { RED    }
-fn c_paused()          -> Color { GOLD   }
-fn c_dormant()         -> Color { TAN    }
-fn c_waiting_cp()      -> Color { GOLD   }
-fn c_action_continue() -> Color { GREEN  }
-fn c_action_stop()     -> Color { RED    }
-fn c_action_feedback() -> Color { ROSE   }
-fn c_notice_waiting()  -> Color { GOLD   }
-fn c_step_agent()      -> Color { PURPLE }
-fn c_step_shell()      -> Color { BLUE   }
-fn c_step_checkpoint() -> Color { GOLD   }
-fn c_step_notify()     -> Color { ROSE   }
-fn c_step_other()      -> Color { TAN    }
-
-fn step_color(step_type: &str) -> Color {
-    match step_type {
-        "agent"      => c_step_agent(),
-        "shell"      => c_step_shell(),
-        "checkpoint" => c_step_checkpoint(),
-        "notify"     => c_step_notify(),
-        _            => c_step_other(),
-    }
-}
-
-// ─── Spinner ─────────────────────────────────────────────────────────────────
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn spinner_frame(tick: u64) -> &'static str {
-    SPINNER[(tick / 6) as usize % SPINNER.len()]
-}
-
-fn base_style() -> Style {
-    Style::default().fg(c_foreground()).bg(c_background())
-}
-
-fn panel(title: &str) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(c_border()).bg(c_background()))
-        .title_style(Style::default().fg(c_foreground()).bg(c_background()).add_modifier(Modifier::BOLD))
-        .title(title.to_string())
-        .style(base_style())
-}
+use crate::styles::{
+    base_style, c_action_continue, c_action_feedback, c_action_stop, c_background, c_completed,
+    c_dim, c_dormant, c_failed, c_foreground, c_notice_waiting, c_paused, c_running,
+    c_waiting_cp, panel, spinner_frame, step_color,
+};
 
 pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new("").style(base_style()), f.area());
 
+    let status_bar_height = if app.mode == Mode::FeedbackInput {
+        let panel_width = f.area().width as usize;
+        let overhead = 15;
+        let available_width = panel_width.saturating_sub(overhead);
+        let actual_width = available_width.max(20);
+        let input_lines = if app.feedback_input.is_empty() {
+            1
+        } else {
+            let wrapped = wrap_into_chunks(&app.feedback_input, actual_width);
+            wrapped.len()
+        };
+        (2 + input_lines).min(7) as u16
+    } else {
+        3
+    };
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([Constraint::Min(3), Constraint::Length(status_bar_height)])
         .split(f.area());
 
     let main = Layout::default()
@@ -120,7 +80,6 @@ fn workflow_state_color(
 }
 
 fn render_runs(f: &mut Frame, app: &App, area: Rect) {
-    // inner width = panel minus two border columns, icon occupies 1 column on the right
     let inner_width = area.width.saturating_sub(2) as usize;
     let name_width  = inner_width.saturating_sub(1);
     let tick = app.tick;
@@ -145,20 +104,17 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         ]))
     };
 
-    // Build a flat list of all items (workflows and their runs)
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_index: Option<usize> = None;
 
     for (wi, entry) in app.workflows.iter().enumerate() {
         let current_index = items.len();
 
-        // Determine if this is the selected cursor position
         let is_workflow_selected = app.cursor == CursorTarget::Workflow(wi);
         if is_workflow_selected {
             selected_index = Some(current_index);
         }
 
-        // Workflow row: show expand/collapse indicator and state icon
         let expand_char = if !entry.runs.is_empty() {
             if entry.expanded { "▼ " } else { "▶ " }
         } else {
@@ -167,7 +123,6 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), Some(&entry.kind), entry.trigger.as_ref(), app.tick);
         items.push(make_item(&expand_char, &entry.name, state_icon, state_color, is_workflow_selected));
 
-        // If expanded, show run rows
         if entry.expanded {
             for (ri, run) in entry.runs.iter().enumerate() {
                 let is_run_selected = app.cursor == CursorTarget::Run(wi, ri);
@@ -175,7 +130,6 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     selected_index = Some(items.len());
                 }
 
-                // Run row: show date/time, trigger hash (if triggered), status
                 let datetime = run.started_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
                 let trigger_info = run.trigger_payload.as_ref()
                     .map(|p| format!("  {}", &p[..p.len().min(8)]))
@@ -204,7 +158,7 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn wrap_into_chunks(s: &str, width: usize) -> Vec<String> {
+pub fn wrap_into_chunks(s: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![s.to_string()];
     }
@@ -229,18 +183,12 @@ fn wrap_into_chunks(s: &str, width: usize) -> Vec<String> {
     chunks
 }
 
-// ─── Log layout ──────────────────────────────────────────────────────────────
-
 #[derive(Debug, PartialEq)]
 enum WrappedLogLine {
-    /// The first screen line for an entry: carries the timestamp and step type.
     Header { time: String, step_type: String, text: String },
-    /// A continuation line (wrapped or from a multi-line message body).
     Continuation { text: String },
 }
 
-/// Pure function: split a single log entry into the screen lines it occupies
-/// given a panel content width (borders already excluded).
 fn format_log_entry(
     time: &str,
     step_type: &str,
@@ -250,7 +198,7 @@ fn format_log_entry(
     // "[HH:MM:SS] step_type: " — chars consumed by the header prefix
     let prefix_len = 1 + time.len() + 2 + step_type.len() + 2;
     let first_width = panel_width.saturating_sub(prefix_len);
-    let cont_width  = panel_width.saturating_sub(2); // 2-space indent
+    let cont_width  = panel_width.saturating_sub(2);
 
     let mut result: Vec<WrappedLogLine> = Vec::new();
     let mut header_emitted = false;
@@ -296,14 +244,12 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width.saturating_sub(2) as usize;
 
     let lines: Vec<Line> = if logs.is_empty() {
-        // No logs selected; show placeholder
         vec![Line::from(Span::styled(
             "Select a run to view logs",
             Style::default().fg(c_dim()).bg(c_background()),
         ))]
     } else {
-        logs
-            .iter()
+        logs.iter()
             .flat_map(|entry| {
                 let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
                 let text = if !entry.stdout.is_empty() {
@@ -346,19 +292,16 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(c_dim()).bg(c_background());
     let key = Style::default().fg(c_foreground()).bg(c_background()).add_modifier(Modifier::BOLD);
 
-    let line = match app.mode {
-        Mode::FeedbackInput => Line::from(vec![
-            Span::styled(" Feedback ", Style::default().fg(c_background()).bg(c_action_feedback()).add_modifier(Modifier::BOLD)),
-            Span::styled("  ", base_style()),
-            Span::styled(app.feedback_input.clone(), base_style()),
-            Span::styled("_", Style::default().fg(c_action_feedback()).bg(c_background()).add_modifier(Modifier::SLOW_BLINK)),
-        ]),
+    let content = match app.mode {
+        Mode::FeedbackInput => {
+            let overhead = 15;
+            let available_width = (area.width as usize).saturating_sub(overhead);
+            InputField::render(" Feedback ", &app.feedback_input, available_width, app.tick)
+        }
         Mode::Normal => {
             if let Some(cp) = app.active_checkpoint() {
                 let mut spans = vec![
                     Span::styled(" CHECKPOINT ", Style::default().fg(c_background()).bg(c_waiting_cp()).add_modifier(Modifier::BOLD)),
-                    Span::styled("  ", base_style()),
-                    Span::styled(cp.message.clone(), base_style()),
                     Span::styled("  ", base_style()),
                     Span::styled("[c]", Style::default().fg(c_action_continue()).bg(c_background()).add_modifier(Modifier::BOLD)),
                     Span::styled(" Continue", Style::default().fg(c_action_continue()).bg(c_background())),
@@ -373,7 +316,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" Feedback", Style::default().fg(c_action_feedback()).bg(c_background())),
                     ]);
                 }
-                Line::from(spans)
+                vec![Line::from(spans)]
             } else {
                 let mut spans: Vec<Span> = vec![
                     Span::styled("[q]", key),
@@ -383,7 +326,6 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" Navigate", dim),
                 ];
 
-                // Show expand/collapse hint when cursor is on a workflow
                 if matches!(app.cursor, CursorTarget::Workflow(_)) {
                     spans.extend([
                         Span::styled("  ", base_style()),
@@ -392,7 +334,6 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     ]);
                 }
 
-                // Show delete hint when cursor is on a run
                 if matches!(app.cursor, CursorTarget::Run(_, _)) {
                     spans.extend([
                         Span::styled("  ", base_style()),
@@ -448,12 +389,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     };
                     spans.push(Span::styled(msg, Style::default().fg(c_notice_waiting()).bg(c_background())));
                 }
-                Line::from(spans)
+                vec![Line::from(spans)]
             }
         }
     };
 
-    let para = Paragraph::new(line).block(panel(""));
+    let para = Paragraph::new(content).block(panel(""));
     f.render_widget(para, area);
 }
 

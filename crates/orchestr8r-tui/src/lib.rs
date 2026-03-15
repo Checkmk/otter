@@ -1,6 +1,8 @@
 mod app;
 mod input;
+mod input_field;
 mod scroll;
+mod styles;
 mod ui;
 
 use std::io::stdout;
