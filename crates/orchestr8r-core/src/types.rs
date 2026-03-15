@@ -421,4 +421,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unknown_step_type_fails_deserialization() {
+        // GIVEN
+        let toml_str = r#"
+            name = "bad"
+            kind = "indefinite"
+            [[steps]]
+            type = "nonexistent"
+        "#;
+
+        // WHEN / THEN
+        assert!(toml::from_str::<WorkflowDef>(toml_str).is_err());
+    }
+
 }

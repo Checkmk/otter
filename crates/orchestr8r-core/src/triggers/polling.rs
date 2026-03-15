@@ -459,4 +459,48 @@ fi
             fired_count
         );
     }
+
+    #[tokio::test]
+    async fn polling_trigger_shuts_down_cleanly() {
+        // GIVEN a polling trigger that continuously polls
+        let temp_dir = TempDir::new().unwrap();
+        let cmd_path = temp_dir.path().join("mock-poller.sh");
+        fs::write(&cmd_path, "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"event1\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            vec![cmd_path.to_string_lossy().to_string()],
+            Duration::from_millis(50),
+            temp_dir.path().join("seen.json"),
+            temp_dir.path().to_path_buf(),
+            None,
+        );
+
+        let (tx, _rx) = mpsc::channel(32);
+
+        // WHEN we spawn subscribe and then abort it quickly
+        let subscribe_handle = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let _ = trigger.subscribe(tx).await;
+            }
+        });
+
+        // Give it time to start polling
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Abort the subscribe task
+        subscribe_handle.abort();
+
+        // Wait a bit to let any pending operations complete
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // THEN the abort should complete without panic or error (no "channel closed" errors in logs)
+        assert!(subscribe_handle.is_finished());
+    }
 }

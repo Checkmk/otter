@@ -274,4 +274,37 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("not both"));
     }
+
+    #[tokio::test]
+    async fn anonymous_sessions_are_single_use() {
+        // GIVEN two anonymous (unnamed) sessions using a mock runner
+        let runner = MockRunner::new();
+        let manager = manager_with_mock(runner.clone());
+        let dir = std::path::PathBuf::from("/tmp");
+
+        // WHEN
+        manager.run_step(None, &claude(), None, "task one", &dir).await.unwrap();
+        manager.run_step(None, &claude(), None, "task two", &dir).await.unwrap();
+
+        // THEN — two separate start calls (each anonymous session is independent)
+        let calls = runner.calls();
+        let starts = calls.iter().filter(|c| c.starts_with("start:")).count();
+        assert_eq!(starts, 2, "each anonymous session should start independently");
+    }
+
+    #[tokio::test]
+    async fn sessions_cleaned_up_at_end() {
+        // GIVEN a named session
+        let runner = MockRunner::new();
+        let manager = manager_with_mock(runner.clone());
+        let dir = std::path::PathBuf::from("/tmp");
+
+        // WHEN
+        manager.run_step(Some("worker"), &claude(), None, "do work", &dir).await.unwrap();
+        manager.cleanup().await;
+
+        // THEN
+        let calls = runner.calls();
+        assert!(calls.iter().any(|c| c == "stop"), "cleanup should call stop");
+    }
 }
