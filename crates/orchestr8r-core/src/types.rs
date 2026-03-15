@@ -146,6 +146,9 @@ pub struct StepContext {
     pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
     pub session_manager: Option<Arc<crate::session::AgentSessionManager>>,
     pub notifier: Arc<dyn orchestr8r_notify::Notifier>,
+    /// Called by step executors to persist and broadcast a log entry immediately,
+    /// rather than waiting until the step's execute() returns.
+    pub log_fn: Option<Arc<dyn Fn(LogEntry) + Send + Sync>>,
 }
 
 #[derive(Debug)]
@@ -170,29 +173,20 @@ pub enum EngineEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct SubStepLog {
-    pub step_type: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<i32>,
-}
-
-#[derive(Debug, Clone)]
 pub struct StepOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub accepted: Option<bool>,
-    pub extra_logs: Vec<SubStepLog>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
     #[error("step execution failed: {0}")]
     ExecutionFailed(String),
-    /// Checkpoint stopped by user. Carries any sub-step logs accumulated before the stop.
+    /// Checkpoint stopped by user.
     #[error("rejected at checkpoint")]
-    Rejected(Vec<SubStepLog>),
+    Rejected,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -13,7 +13,6 @@ pub enum Mode {
 
 pub struct PendingCheckpoint {
     pub run_id: Uuid,
-    pub message: String,
     pub feedback_available: bool,
 }
 
@@ -127,27 +126,29 @@ impl App {
                 message,
                 feedback_available,
             } => {
-                // Inject checkpoint message as a synthetic log entry
-                let iteration = self.logs.get(&run_id)
-                    .and_then(|l| l.last())
-                    .map(|e| e.iteration)
-                    .unwrap_or(0);
-                self.logs.entry(run_id).or_default().push(LogEntry {
-                    run_id,
-                    iteration,
-                    step_index,
-                    step_type: "checkpoint".to_string(),
-                    stdout: message.clone(),
-                    stderr: String::new(),
-                    exit_code: None,
-                    accepted: None,
-                    feedback: None,
-                    timestamp: Utc::now(),
-                });
+                // Inject checkpoint message as a synthetic log entry only on first presentation;
+                // feedback loops re-emit CheckpointPending for the same step, so skip if already pending.
+                if !self.pending_checkpoints.contains_key(&run_id) {
+                    let iteration = self.logs.get(&run_id)
+                        .and_then(|l| l.last())
+                        .map(|e| e.iteration)
+                        .unwrap_or(0);
+                    self.logs.entry(run_id).or_default().push(LogEntry {
+                        run_id,
+                        iteration,
+                        step_index,
+                        step_type: "checkpoint".to_string(),
+                        stdout: message.clone(),
+                        stderr: String::new(),
+                        exit_code: None,
+                        accepted: None,
+                        feedback: None,
+                        timestamp: Utc::now(),
+                    });
+                }
 
                 self.pending_checkpoints.insert(run_id, PendingCheckpoint {
                     run_id,
-                    message,
                     feedback_available,
                 });
             }
@@ -202,11 +203,17 @@ impl App {
     }
 
     pub fn respond_checkpoint(&mut self, action: CheckpointAction) {
-        if let Some(cp) = self.take_selected_checkpoint() {
-            let _ = self.cmd_tx.try_send(DaemonCommand::CheckpointRespond {
-                run_id: cp.run_id,
-                action,
-            });
+        // For Feedback, keep the checkpoint in pending_checkpoints so that when the engine
+        // re-presents the checkpoint after processing the feedback, the guard in
+        // handle_daemon_event fires and skips injecting a duplicate synthetic log entry.
+        let run_id = match &action {
+            CheckpointAction::Feedback(_) => self
+                .selected_run_id()
+                .filter(|id| self.pending_checkpoints.contains_key(id)),
+            _ => self.take_selected_checkpoint().map(|cp| cp.run_id),
+        };
+        if let Some(run_id) = run_id {
+            let _ = self.cmd_tx.try_send(DaemonCommand::CheckpointRespond { run_id, action });
         }
     }
 

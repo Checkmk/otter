@@ -95,6 +95,7 @@ pub fn step_color(step_type: &str) -> Color {
         "shell" => c_step_shell(),
         "checkpoint" => c_step_checkpoint(),
         "notify" => c_step_notify(),
+        "feedback" => c_action_feedback(),
         _ => c_step_other(),
     }
 }

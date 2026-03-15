@@ -48,7 +48,6 @@ impl StepExecutor for ShellExecutor {
             stderr,
             exit_code,
             accepted: None,
-            extra_logs: vec![],
         })
     }
 }

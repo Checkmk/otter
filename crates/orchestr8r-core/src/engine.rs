@@ -364,6 +364,14 @@ impl Engine {
             self.storage.update_workflow_run(run)?;
             Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
 
+            let storage_log = self.storage.clone();
+            let ui_tx_log = ui_tx.clone();
+            let log_fn: Arc<dyn Fn(crate::types::LogEntry) + Send + Sync> =
+                Arc::new(move |entry: crate::types::LogEntry| {
+                    let _ = storage_log.append_log(entry.clone());
+                    Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
+                });
+
             let ctx = StepContext {
                 run_id: run.id,
                 workflow_name: workflow.name.clone(),
@@ -374,6 +382,7 @@ impl Engine {
                 checkpoint_tx: ui_tx.clone(),
                 session_manager: Some(session_manager.clone()),
                 notifier: self.notifier.clone(),
+                log_fn: Some(log_fn),
             };
 
             info!(step = i, step_type = %step_def.step_type, "Executing step");
@@ -391,23 +400,6 @@ impl Engine {
 
             match executor.execute(step_def, &ctx).await {
                 Ok(output) => {
-                    for extra in &output.extra_logs {
-                        let entry = LogEntry {
-                            run_id: run.id,
-                            iteration: run.iteration,
-                            step_index: i,
-                            step_type: extra.step_type.clone(),
-                            stdout: extra.stdout.clone(),
-                            stderr: extra.stderr.clone(),
-                            exit_code: extra.exit_code,
-                            accepted: None,
-                            feedback: None,
-                            timestamp: Utc::now(),
-                        };
-                        self.storage.append_log(entry.clone())?;
-                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                    }
-
                     let entry = LogEntry {
                         run_id: run.id,
                         iteration: run.iteration,
@@ -425,30 +417,14 @@ impl Engine {
 
                     info!(step = i, "Step completed successfully");
                 }
-                Err(StepError::Rejected(extra)) => {
+                Err(StepError::Rejected) => {
                     warn!(step = i, iteration = run.iteration, "Step rejected — stopping workflow");
-                    for log in &extra {
-                        let entry = LogEntry {
-                            run_id: run.id,
-                            iteration: run.iteration,
-                            step_index: i,
-                            step_type: log.step_type.clone(),
-                            stdout: log.stdout.clone(),
-                            stderr: log.stderr.clone(),
-                            exit_code: log.exit_code,
-                            accepted: None,
-                            feedback: None,
-                            timestamp: Utc::now(),
-                        };
-                        self.storage.append_log(entry.clone())?;
-                        Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                    }
                     let entry = LogEntry {
                         run_id: run.id,
                         iteration: run.iteration,
                         step_index: i,
                         step_type: step_def.step_type.to_string(),
-                        stdout: String::new(),
+                        stdout: "Stopped".to_string(),
                         stderr: String::new(),
                         exit_code: None,
                         accepted: Some(false),

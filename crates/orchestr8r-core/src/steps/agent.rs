@@ -51,7 +51,6 @@ impl StepExecutor for AgentExecutor {
             stderr: output.stderr,
             exit_code: output.exit_code,
             accepted: None,
-            extra_logs: vec![],
         })
     }
 }
@@ -99,6 +98,7 @@ mod tests {
             checkpoint_tx: None,
             session_manager: Some(manager),
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
+            log_fn: None,
         };
         let step_def = StepDef {
             step_type: StepType::Agent,

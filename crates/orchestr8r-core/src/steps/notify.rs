@@ -25,7 +25,6 @@ impl StepExecutor for NotifyExecutor {
             stderr: String::new(),
             exit_code: Some(0),
             accepted: None,
-            extra_logs: vec![],
         })
     }
 }
@@ -76,6 +75,7 @@ mod tests {
             checkpoint_tx: None,
             session_manager: None,
             notifier,
+            log_fn: None,
         }
     }
 
