@@ -81,8 +81,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     recent_runs_fanout.lock().unwrap().insert(r.id, r.clone());
                     DaemonEvent::RunUpdated(r)
                 }
-                EngineEvent::WorkflowRegistered { name, kind } => {
-                    DaemonEvent::WorkflowRegistered { name, kind }
+                EngineEvent::WorkflowRegistered { name, kind, trigger } => {
+                    DaemonEvent::WorkflowRegistered { name, kind, trigger }
                 }
                 EngineEvent::WorkflowStateChanged { name, state } => {
                     DaemonEvent::WorkflowStateChanged { name, state }
@@ -191,6 +191,7 @@ async fn handle_connection(
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
                     name: wf.name.clone(),
                     kind: wf.kind,
+                    trigger: wf.trigger.clone(),
                 }).await;
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowStateChanged {
                     name: wf.name,

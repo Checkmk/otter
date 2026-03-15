@@ -1,5 +1,5 @@
 use chrono::Local;
-use orchestr8r_core::types::{RunStatus, WorkflowType, WorkflowState};
+use orchestr8r_core::types::{RunStatus, TriggerDef, WorkflowType, WorkflowState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -91,15 +91,30 @@ pub fn render(f: &mut Frame, app: &App) {
     render_status_bar(f, app, outer[1]);
 }
 
-fn workflow_state_color(state: &WorkflowState, run_status: Option<&RunStatus>, tick: u64) -> (String, Color) {
+fn workflow_state_color(
+    state: &WorkflowState,
+    run_status: Option<&RunStatus>,
+    kind: Option<&WorkflowType>,
+    trigger: Option<&TriggerDef>,
+    tick: u64,
+) -> (String, Color) {
     match state {
         WorkflowState::Paused  => ("=".to_string(), c_paused()),
         WorkflowState::Dormant => ("·".to_string(), c_dormant()),
         WorkflowState::Running => match run_status {
             Some(RunStatus::WaitingCheckpoint) => ("~".to_string(), c_waiting_cp()),
-            Some(RunStatus::Completed)         => ("✓".to_string(), c_completed()),
             Some(RunStatus::Failed)            => ("✗".to_string(), c_failed()),
-            _                                  => (spinner_frame(tick).to_string(), c_running()),
+            // Triggered workflow: engine alive but between trigger events
+            Some(RunStatus::Completed) | None
+                if matches!(kind, Some(WorkflowType::Triggered)) =>
+            {
+                match trigger {
+                    Some(TriggerDef::Polling { .. }) => ("⏲".to_string(), c_dormant()),
+                    _                                => ("·".to_string(), c_dormant()),
+                }
+            }
+            Some(RunStatus::Completed) => ("✓".to_string(), c_completed()),
+            _                          => (spinner_frame(tick).to_string(), c_running()),
         },
     }
 }
@@ -149,7 +164,7 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         } else {
             "  "
         };
-        let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), app.tick);
+        let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), Some(&entry.kind), entry.trigger.as_ref(), app.tick);
         items.push(make_item(&expand_char, &entry.name, state_icon, state_color, is_workflow_selected));
 
         // If expanded, show run rows
@@ -169,6 +184,8 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                 let (run_icon, run_color) = workflow_state_color(
                     &WorkflowState::Running,
                     Some(&run.status),
+                    None,
+                    None,
                     app.tick,
                 );
                 items.push(make_item("   ", &run_content, run_icon, run_color, is_run_selected));

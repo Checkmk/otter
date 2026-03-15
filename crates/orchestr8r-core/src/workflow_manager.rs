@@ -51,6 +51,7 @@ impl WorkflowManager {
     pub fn register(&mut self, def: WorkflowDef) {
         let name = def.name.clone();
         let kind = def.workflow_type.clone();
+        let trigger = def.trigger.clone();
         let handle = WorkflowHandle {
             def,
             state: Arc::new(Mutex::new(WorkflowState::Dormant)),
@@ -61,7 +62,7 @@ impl WorkflowManager {
         self.handles.insert(name.clone(), handle);
         let _ = self
             .event_tx
-            .try_send(EngineEvent::WorkflowRegistered { name: name.clone(), kind });
+            .try_send(EngineEvent::WorkflowRegistered { name: name.clone(), kind, trigger });
         let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
             name,
             state: WorkflowState::Dormant,
@@ -234,6 +235,7 @@ impl WorkflowManager {
                 name: h.def.name.clone(),
                 kind: h.def.workflow_type.clone(),
                 state: h.state.lock().unwrap().clone(),
+                trigger: h.def.trigger.clone(),
             })
             .collect();
         statuses.sort_by(|a, b| a.name.cmp(&b.name));

@@ -23,7 +23,7 @@ pub enum WorkflowType {
     Triggered,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum TriggerDef {
     Manual,
@@ -158,7 +158,7 @@ pub enum CheckpointResponse {
 pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType },
+    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef> },
     WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,
@@ -223,6 +223,7 @@ pub struct WorkflowStatus {
     pub name: String,
     pub kind: WorkflowType,
     pub state: WorkflowState,
+    pub trigger: Option<TriggerDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,7 +238,7 @@ pub enum CheckpointAction {
 pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType },
+    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef> },
     WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,

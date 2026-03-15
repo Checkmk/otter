@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowType, WorkflowRun, WorkflowState};
+use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, TriggerDef, WorkflowType, WorkflowRun, WorkflowState};
 use uuid::Uuid;
 use tokio::sync::mpsc;
 
@@ -22,6 +22,7 @@ pub struct WorkflowEntry {
     pub state: WorkflowState,
     pub runs: Vec<WorkflowRun>,
     pub expanded: bool,
+    pub trigger: Option<TriggerDef>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -107,7 +108,7 @@ impl App {
             DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            DaemonEvent::WorkflowRegistered { name, kind } => {
+            DaemonEvent::WorkflowRegistered { name, kind, trigger } => {
                 if !self.workflows.iter().any(|e| e.name == name) {
                     self.workflows.push(WorkflowEntry {
                         name,
@@ -115,6 +116,7 @@ impl App {
                         state: WorkflowState::Dormant,
                         runs: Vec::new(),
                         expanded: false,
+                        trigger,
                     });
                 }
             }
@@ -294,6 +296,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf2".to_string(),
@@ -301,6 +304,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
 
         // Start at first workflow
@@ -336,6 +340,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run2.clone(), run1.clone()], // newest first
             expanded: true,
+            trigger: None,
         });
 
         // Navigate through expanded workflow
@@ -371,6 +376,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run],
             expanded: false,
+            trigger: None,
         });
 
         // Select the workflow
@@ -396,6 +402,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run],
             expanded: true,
+            trigger: None,
         });
 
         // Start with cursor on the workflow (not on a run)
@@ -424,6 +431,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -443,6 +451,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run],
             expanded: true,
+            trigger: None,
         });
 
         app.cursor = CursorTarget::Run(0, 0);
@@ -463,6 +472,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run2.clone(), run1.clone()],
             expanded: true,
+            trigger: None,
         });
 
         // Handle RunDeleted event
@@ -483,6 +493,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
 
         // Add runs in non-chronological order
@@ -520,6 +531,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run2, run1],
             expanded: true,
+            trigger: None,
         });
 
         // Cursor on the last run
@@ -547,6 +559,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![run],
             expanded: true,
+            trigger: None,
         });
 
         // Cursor on the only run
@@ -571,6 +584,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
 
         // Add a new run without starting the workflow
@@ -591,6 +605,7 @@ mod tests {
             state: WorkflowState::Dormant,
             runs: vec![],
             expanded: false,
+            trigger: None,
         });
 
         // Start the workflow
