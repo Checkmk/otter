@@ -40,6 +40,8 @@ pub struct App {
     pub should_quit: bool,
     pub tick: u64,
     pub cmd_tx: mpsc::Sender<DaemonCommand>,
+    /// Name of workflow we just started; when a new run appears for it, auto-expand
+    pub pending_workflow_start: Option<String>,
 }
 
 impl App {
@@ -54,6 +56,7 @@ impl App {
             should_quit: false,
             tick: 0,
             cmd_tx,
+            pending_workflow_start: None,
         }
     }
 
@@ -93,6 +96,11 @@ impl App {
                         entry.runs.push(run);
                         // Sort by started_at descending (newest first)
                         entry.runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                        // Automatically expand workflow if we just started it
+                        if self.pending_workflow_start.as_ref() == Some(&entry.name) {
+                            entry.expanded = true;
+                            self.pending_workflow_start = None;
+                        }
                     }
                 }
             }
@@ -134,13 +142,26 @@ impl App {
                 }
                 self.logs.remove(&run_id);
                 self.pending_checkpoints.remove(&run_id);
+                self.ensure_cursor_valid();
             }
+        }
+    }
+
+    fn ensure_cursor_valid(&mut self) {
+        let flat = self.build_flat_list();
+        if flat.is_empty() {
+            self.cursor = CursorTarget::Workflow(0);
+            return;
+        }
+        if !flat.iter().any(|t| *t == self.cursor) {
+            self.cursor = flat[flat.len() - 1];
         }
     }
 
     pub fn start_selected(&mut self) {
         if let Some(entry) = self.selected_workflow() {
             let name = entry.name.clone();
+            self.pending_workflow_start = Some(name.clone());
             let _ = self.cmd_tx.try_send(DaemonCommand::Start { name });
         }
     }
@@ -206,29 +227,25 @@ impl App {
         list
     }
 
-    /// Navigate up one position in the unified flat list
+    /// Navigate up one position in the unified flat list (wraps to bottom)
     pub fn move_cursor_up(&mut self) {
         let flat = self.build_flat_list();
         if flat.is_empty() {
             return;
         }
         if let Some(current_pos) = flat.iter().position(|t| *t == self.cursor) {
-            if current_pos > 0 {
-                self.cursor = flat[current_pos - 1];
-            }
+            self.cursor = flat[(current_pos + flat.len() - 1) % flat.len()];
         }
     }
 
-    /// Navigate down one position in the unified flat list
+    /// Navigate down one position in the unified flat list (wraps to top)
     pub fn move_cursor_down(&mut self) {
         let flat = self.build_flat_list();
         if flat.is_empty() {
             return;
         }
         if let Some(current_pos) = flat.iter().position(|t| *t == self.cursor) {
-            if current_pos < flat.len() - 1 {
-                self.cursor = flat[current_pos + 1];
-            }
+            self.cursor = flat[(current_pos + 1) % flat.len()];
         }
     }
 
@@ -293,13 +310,13 @@ mod tests {
         app.move_cursor_down();
         assert_eq!(app.cursor, CursorTarget::Workflow(1));
 
-        // Move down again (should stay at last)
+        // Move down again (wraps to first)
         app.move_cursor_down();
-        assert_eq!(app.cursor, CursorTarget::Workflow(1));
-
-        // Move up
-        app.move_cursor_up();
         assert_eq!(app.cursor, CursorTarget::Workflow(0));
+
+        // Move up (wraps to last)
+        app.move_cursor_up();
+        assert_eq!(app.cursor, CursorTarget::Workflow(1));
     }
 
     #[test]
@@ -331,14 +348,16 @@ mod tests {
         app.move_cursor_down();
         assert_eq!(app.cursor, CursorTarget::Run(0, 1));
 
+        // Move down from last wraps to first
         app.move_cursor_down();
-        assert_eq!(app.cursor, CursorTarget::Run(0, 1)); // stay at last
+        assert_eq!(app.cursor, CursorTarget::Workflow(0));
+
+        // Move up from first wraps to last
+        app.move_cursor_up();
+        assert_eq!(app.cursor, CursorTarget::Run(0, 1));
 
         app.move_cursor_up();
         assert_eq!(app.cursor, CursorTarget::Run(0, 0));
-
-        app.move_cursor_up();
-        assert_eq!(app.cursor, CursorTarget::Workflow(0));
     }
 
     #[test]
@@ -484,5 +503,107 @@ mod tests {
         // Verify sorting: newest first
         assert_eq!(app.workflows[0].runs[0].id, run2.id);
         assert_eq!(app.workflows[0].runs[1].id, run1.id);
+    }
+
+    #[test]
+    fn deleting_selected_run_snaps_cursor_to_valid_position() {
+        let mut app = make_test_app();
+
+        let run1 = WorkflowRun::new("wf".to_string());
+        let run2 = WorkflowRun::new("wf".to_string());
+        let run1_id = run1.id;
+        let run2_id = run2.id;
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run2, run1],
+            expanded: true,
+        });
+
+        // Cursor on the last run
+        app.cursor = CursorTarget::Run(0, 1);
+        assert_eq!(app.selected_run_id(), Some(run1_id));
+
+        // Delete the selected run
+        app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run1_id });
+
+        // Cursor should snap to the remaining run
+        assert_eq!(app.cursor, CursorTarget::Run(0, 0));
+        assert_eq!(app.selected_run_id(), Some(run2_id));
+    }
+
+    #[test]
+    fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
+        let mut app = make_test_app();
+
+        let run = WorkflowRun::new("wf".to_string());
+        let run_id = run.id;
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run],
+            expanded: true,
+        });
+
+        // Cursor on the only run
+        app.cursor = CursorTarget::Run(0, 0);
+        assert_eq!(app.selected_run_id(), Some(run_id));
+
+        // Delete the run
+        app.handle_daemon_event(DaemonEvent::RunDeleted { run_id });
+
+        // Cursor should snap to the workflow row
+        assert_eq!(app.cursor, CursorTarget::Workflow(0));
+        assert_eq!(app.selected_run_id(), None);
+    }
+
+    #[test]
+    fn handle_daemon_event_run_updated_does_not_auto_expand_without_start() {
+        let mut app = make_test_app();
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+        });
+
+        // Add a new run without starting the workflow
+        let run = WorkflowRun::new("wf".to_string());
+        app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+
+        // Workflow should NOT be expanded
+        assert!(!app.workflows[0].expanded);
+    }
+
+    #[test]
+    fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
+        let mut app = make_test_app();
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+        });
+
+        // Start the workflow
+        app.cursor = CursorTarget::Workflow(0);
+        app.start_selected();
+
+        // Add a new run
+        let run = WorkflowRun::new("wf".to_string());
+        app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+
+        // Workflow should be expanded
+        assert!(app.workflows[0].expanded);
+        // pending_workflow_start should be cleared
+        assert!(app.pending_workflow_start.is_none());
     }
 }

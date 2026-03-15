@@ -57,6 +57,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                         );
                     }
                 }
+                Some(WorkflowState::Running) => app.stop_selected(),
                 _ => {}
             }
         }

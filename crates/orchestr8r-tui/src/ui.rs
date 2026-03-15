@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode, CursorTarget};
+use crate::scroll::scroll_text;
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const BG:     Color = Color::Rgb(0x33, 0x35, 0x43);
@@ -107,17 +108,24 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     // inner width = panel minus two border columns, icon occupies 1 column on the right
     let inner_width = area.width.saturating_sub(2) as usize;
     let name_width  = inner_width.saturating_sub(1);
+    let tick = app.tick;
 
-    let make_item = |text: &str, icon: String, icon_color: Color| {
-        let char_count = text.chars().count();
-        let padded = if char_count >= name_width {
-            let truncated: String = text.chars().take(name_width.saturating_sub(1)).collect();
-            format!("{}…", truncated)
+    let make_item = |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
+        let prefix_len = prefix.chars().count();
+        let available_for_content = name_width.saturating_sub(prefix_len);
+
+        let (display_content, padding) = scroll_text(content, available_for_content, tick);
+
+        let content_style = if is_selected {
+            Style::default().fg(c_background()).bg(c_foreground()).add_modifier(Modifier::BOLD)
         } else {
-            format!("{:<width$}", text, width = name_width)
+            Style::default().fg(c_foreground()).bg(c_background())
         };
+
         ListItem::new(Line::from(vec![
-            Span::styled(padded, Style::default().fg(c_foreground()).bg(c_background())),
+            Span::styled(prefix.to_string(), Style::default().fg(c_foreground()).bg(c_background())),
+            Span::styled(display_content, content_style),
+            Span::styled(padding, Style::default().fg(c_foreground()).bg(c_background())),
             Span::styled(icon,   Style::default().fg(icon_color).bg(c_background())),
         ]))
     };
@@ -130,23 +138,25 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         let current_index = items.len();
 
         // Determine if this is the selected cursor position
-        if app.cursor == CursorTarget::Workflow(wi) {
+        let is_workflow_selected = app.cursor == CursorTarget::Workflow(wi);
+        if is_workflow_selected {
             selected_index = Some(current_index);
         }
 
         // Workflow row: show expand/collapse indicator and state icon
-        let expand_char = if entry.expanded { "▼ " } else { "▶ " };
+        let expand_char = if !entry.runs.is_empty() {
+            if entry.expanded { "▼ " } else { "▶ " }
+        } else {
+            "  "
+        };
         let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), app.tick);
-        let workflow_label = format!("{}{} ({})", expand_char, &entry.name, match entry.kind {
-            WorkflowType::Looping => "looping",
-            WorkflowType::Triggered => "triggered",
-        });
-        items.push(make_item(&workflow_label, state_icon, state_color));
+        items.push(make_item(&expand_char, &entry.name, state_icon, state_color, is_workflow_selected));
 
         // If expanded, show run rows
         if entry.expanded {
             for (ri, run) in entry.runs.iter().enumerate() {
-                if app.cursor == CursorTarget::Run(wi, ri) {
+                let is_run_selected = app.cursor == CursorTarget::Run(wi, ri);
+                if is_run_selected {
                     selected_index = Some(items.len());
                 }
 
@@ -155,13 +165,13 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                 let trigger_info = run.trigger_payload.as_ref()
                     .map(|p| format!("  {}", &p[..p.len().min(8)]))
                     .unwrap_or_default();
-                let run_label = format!("  {}{}",datetime, trigger_info);
+                let run_content = format!("{}{}", datetime, trigger_info);
                 let (run_icon, run_color) = workflow_state_color(
                     &WorkflowState::Running,
                     Some(&run.status),
                     app.tick,
                 );
-                items.push(make_item(&run_label, run_icon, run_color));
+                items.push(make_item("   ", &run_content, run_icon, run_color, is_run_selected));
             }
         }
     }
@@ -172,10 +182,7 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let list = List::new(items)
-        .block(panel("Workflows"))
-        .highlight_style(
-            Style::default().fg(c_background()).bg(c_foreground()).add_modifier(Modifier::BOLD),
-        );
+        .block(panel("Workflows"));
 
     f.render_stateful_widget(list, area, &mut state);
 }
@@ -399,7 +406,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             }
                             spans.extend([
                                 Span::styled("  ", base_style()),
-                                Span::styled("[x]", key),
+                                Span::styled("[Enter]", key),
                                 Span::styled(" Stop", dim),
                             ]);
                         }
@@ -490,4 +497,5 @@ mod tests {
         let lines = format_log_entry("06:00:00", "shell", "ok\r", 80);
         assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text == "ok"));
     }
+
 }
