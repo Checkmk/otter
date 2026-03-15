@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
 use crate::types::{
-    EngineEvent, StorageBackend, WorkflowDef, WorkflowKind,
+    EngineEvent, StorageBackend, WorkflowDef, WorkflowType,
     WorkflowState, WorkflowStatus,
 };
 use orchestr8r_notify::Notifier;
@@ -50,7 +50,7 @@ impl WorkflowManager {
     /// Register a workflow definition. The workflow starts in Dormant state.
     pub fn register(&mut self, def: WorkflowDef) {
         let name = def.name.clone();
-        let kind = def.kind.clone();
+        let kind = def.workflow_type.clone();
         let handle = WorkflowHandle {
             def,
             state: Arc::new(Mutex::new(WorkflowState::Dormant)),
@@ -68,7 +68,7 @@ impl WorkflowManager {
         });
     }
 
-    /// Start a dormant workflow. For indefinite workflows this begins the continuous loop;
+    /// Start a dormant workflow. For looping workflows this begins the continuous loop;
     /// for triggered workflows this fires one immediate run.
     pub async fn start(&mut self, name: &str) -> anyhow::Result<()> {
         // Check workflow exists and is dormant, extract def early
@@ -94,7 +94,7 @@ impl WorkflowManager {
             handle.shutdown.store(false, Ordering::Relaxed);
 
             let def = handle.def.clone();
-            let is_triggered = matches!(def.kind, WorkflowKind::Triggered);
+            let is_triggered = matches!(def.workflow_type, WorkflowType::Triggered);
             (def, is_triggered)
         };
 
@@ -117,13 +117,13 @@ impl WorkflowManager {
         let state = handle.state.clone();
 
         let task = tokio::spawn(async move {
-            match &def.kind {
-                crate::types::WorkflowKind::Indefinite => {
+            match &def.workflow_type {
+                crate::types::WorkflowType::Looping => {
                     if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
                         tracing::error!(workflow = %def.name, error = ?e, "Engine error");
                     }
                 }
-                crate::types::WorkflowKind::Triggered => {
+                crate::types::WorkflowType::Triggered => {
                     if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
                         tracing::error!(workflow = %def.name, error = ?e, "Engine error");
                     }
@@ -147,7 +147,7 @@ impl WorkflowManager {
         Ok(())
     }
 
-    /// Pause a running indefinite workflow between iterations.
+    /// Pause a running looping workflow between iterations.
     /// Returns an error for triggered workflows (pause has no defined meaning there).
     pub fn pause(&mut self, name: &str) -> anyhow::Result<()> {
         let handle = self
@@ -155,7 +155,7 @@ impl WorkflowManager {
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
 
-        if matches!(handle.def.kind, WorkflowKind::Triggered) {
+        if matches!(handle.def.workflow_type, WorkflowType::Triggered) {
             bail!("cannot pause triggered workflow '{}'", name);
         }
 
@@ -176,7 +176,7 @@ impl WorkflowManager {
         Ok(())
     }
 
-    /// Resume a paused indefinite workflow.
+    /// Resume a paused looping workflow.
     pub fn resume(&mut self, name: &str) -> anyhow::Result<()> {
         let handle = self
             .handles
@@ -232,7 +232,7 @@ impl WorkflowManager {
             .values()
             .map(|h| WorkflowStatus {
                 name: h.def.name.clone(),
-                kind: h.def.kind.clone(),
+                kind: h.def.workflow_type.clone(),
                 state: h.state.lock().unwrap().clone(),
             })
             .collect();

@@ -1,5 +1,5 @@
 name = "arch-sync"
-kind = "indefinite"
+type = "looping"
 workspace = "."
 
 [[steps]]

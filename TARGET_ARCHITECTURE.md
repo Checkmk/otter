@@ -74,7 +74,7 @@ The trait boundaries are intentionally designed to allow dynamic loading to be i
 [[workflows]]
 name = "pr-review"
 trigger = "email-pr-review"    # references a trigger plugin
-kind = "triggered"             # or "indefinite"
+type = "triggered"             # or "looping"
 
 [[workflows.steps]]
 type = "container"
@@ -88,7 +88,7 @@ message = "Review the comments."
 notify = ["desktop"]
 ```
 
-- **Indefinite workflows** loop continuously; the next iteration begins only after the previous completes
+- **Looping workflows** loop continuously; the next iteration begins only after the previous completes
 - **Triggered workflows** start on an event and run to completion (or failure)
 - Exactly one instance of each workflow runs at a time; if a trigger fires while an instance is running, the event is **queued** and processed when the current run finishes
 

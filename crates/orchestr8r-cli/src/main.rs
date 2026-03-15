@@ -30,7 +30,7 @@ enum Commands {
     Daemon,
     /// Start a dormant workflow
     Start { name: String },
-    /// Pause a running indefinite workflow between iterations
+    /// Pause a running looping workflow between iterations
     Pause { name: String },
     /// Stop a running workflow
     Stop { name: String },

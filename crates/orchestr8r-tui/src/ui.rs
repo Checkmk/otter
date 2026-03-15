@@ -1,4 +1,4 @@
-use orchestr8r_core::types::{RunStatus, WorkflowKind, WorkflowState};
+use orchestr8r_core::types::{RunStatus, WorkflowType, WorkflowState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -341,7 +341,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             ]);
                         }
                         WorkflowState::Running => {
-                            if matches!(kind, WorkflowKind::Indefinite) {
+                            if matches!(kind, WorkflowType::Looping) {
                                 spans.extend([
                                     Span::styled("  ", base_style()),
                                     Span::styled("[p]", key),

@@ -1,5 +1,5 @@
 name = "hello-world"
-kind = "triggered"
+type = "triggered"
 
 [[steps]]
 type = "shell"

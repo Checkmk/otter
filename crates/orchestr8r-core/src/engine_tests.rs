@@ -1,6 +1,6 @@
 use super::*;
 use crate::storage::InMemoryStorage;
-use crate::types::{RunStatus, StepDef, StepType, WorkflowDef, WorkflowKind};
+use crate::types::{RunStatus, StepDef, StepType, WorkflowDef, WorkflowType};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -20,10 +20,10 @@ fn step_def(step_type: StepType) -> StepDef {
     }
 }
 
-fn workflow(name: &str, kind: WorkflowKind, steps: Vec<StepDef>) -> WorkflowDef {
+fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
-        kind,
+        workflow_type,
         trigger: None,
         workspace: None,
         steps,
@@ -53,7 +53,7 @@ async fn shell_step_runs_and_logs() {
     let engine = make_engine(storage.clone());
     let wf = workflow(
         "test-shell",
-        WorkflowKind::Indefinite,
+        WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "hello".to_string()]),
@@ -89,7 +89,7 @@ async fn failed_shell_command_marks_run_failed() {
     let engine = make_engine(storage.clone());
     let wf = workflow(
         "test-fail",
-        WorkflowKind::Indefinite,
+        WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["false".to_string()]),
@@ -116,7 +116,7 @@ async fn workspace_step_sets_working_dir_for_shell() {
     let engine = make_engine(storage.clone());
     let mut wf = workflow(
         "test-workspace",
-        WorkflowKind::Indefinite,
+        WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["touch".to_string(), "marker.txt".to_string()]),
@@ -171,7 +171,7 @@ async fn triggered_workflow_runs_once_per_event() {
 
     let wf = WorkflowDef {
         name: "my-workflow".to_string(),
-        kind: WorkflowKind::Triggered,
+        workflow_type: WorkflowType::Triggered,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
         steps: vec![StepDef {
@@ -207,7 +207,7 @@ async fn triggered_workflow_runs_once_per_event() {
 
 #[tokio::test]
 async fn pause_halts_iterations_and_resume_continues() {
-    // GIVEN an indefinite workflow with a fast shell step
+    // GIVEN an looping workflow with a fast shell step
     let storage = Arc::new(InMemoryStorage::new());
     let engine = Engine::new(
         storage.clone(),
@@ -217,7 +217,7 @@ async fn pause_halts_iterations_and_resume_continues() {
     let paused_flag = engine.paused_flag();
     let wf = workflow(
         "test-pause",
-        WorkflowKind::Indefinite,
+        WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "iter".to_string()]),
@@ -307,7 +307,7 @@ async fn shutdown_while_paused_exits_cleanly() {
     let paused_flag = engine.paused_flag();
     let wf = workflow(
         "test-pause-shutdown",
-        WorkflowKind::Indefinite,
+        WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "x".to_string()]),

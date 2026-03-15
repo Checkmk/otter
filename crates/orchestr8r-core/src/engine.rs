@@ -10,7 +10,7 @@ use crate::triggers::build_trigger;
 use crate::types::StepError;
 use crate::types::{
     EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
-    WorkflowDef, WorkflowKind, WorkflowRun,
+    WorkflowDef, WorkflowType, WorkflowRun,
 };
 use orchestr8r_notify::{NoOpNotifier, Notifier};
 use tokio::sync::mpsc;
@@ -52,7 +52,7 @@ impl Engine {
         }
     }
 
-    /// Returns a clone of the pause flag. Set to `true` to pause an indefinite workflow
+    /// Returns a clone of the pause flag. Set to `true` to pause a looping workflow
     /// between iterations; clear to resume.
     pub fn paused_flag(&self) -> Arc<AtomicBool> {
         self.paused.clone()
@@ -77,26 +77,26 @@ impl Engine {
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<()> {
-        match workflow.kind {
-            WorkflowKind::Indefinite => self.run_indefinite(workflow, shutdown, ui_tx).await,
-            WorkflowKind::Triggered => self.run_triggered(workflow, shutdown, ui_tx).await,
+        match workflow.workflow_type {
+            WorkflowType::Looping => self.run_looping(workflow, shutdown, ui_tx).await,
+            WorkflowType::Triggered => self.run_triggered(workflow, shutdown, ui_tx).await,
         }
     }
 
-    async fn run_indefinite(
+    async fn run_looping(
         &self,
         workflow: &WorkflowDef,
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<()> {
-        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.kind.clone() });
+        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.workflow_type.clone() });
         let mut run = WorkflowRun::new(workflow.name.clone());
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         std::fs::create_dir_all(&scratch_dir)?;
 
         self.storage.save_workflow_run(&run)?;
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-        info!(run_id = %run.id, workflow = %workflow.name, "Starting indefinite workflow run");
+        info!(run_id = %run.id, workflow = %workflow.name, "Starting looping workflow run");
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
@@ -202,7 +202,7 @@ impl Engine {
 
         let mut queued: VecDeque<TriggerEvent> = VecDeque::new();
 
-        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.kind.clone() });
+        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered { name: workflow.name.clone(), kind: workflow.workflow_type.clone() });
         info!(
             workflow = %workflow.name,
             "Waiting for trigger events"

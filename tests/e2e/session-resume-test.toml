@@ -1,5 +1,5 @@
 name = "session-resume-test"
-kind = "indefinite"
+type = "looping"
 
 [[steps]]
 type = "agent"

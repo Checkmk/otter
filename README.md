@@ -2,7 +2,7 @@
 
 Automate multi-step tasks (with AI support) triggered by real-world events.
 
-- **Workflows** are TOML-defined series of steps — either **indefinite** (loops) or **triggered** (event-driven)
+- **Workflows** are TOML-defined series of steps — either **looping** (loops) or **triggered** (event-driven)
 - **Agent steps** drive Claude, Copilot or any AI CLI across steps
 - **Checkpoints** pause for human review and feedback
 - **Workspace** isolates agents in per-run scratch directories unless explicitly configured via a `workspace` flag
@@ -34,7 +34,7 @@ cargo build --release
 
    ```toml
    name = "hello-world"
-   kind = "indefinite"
+   type = "looping"
 
    [[steps]]
    type = "shell"
@@ -73,7 +73,7 @@ orchestr8r help              # show all commands
 orchestr8r daemon            # start the background daemon
 orchestr8r status            # list all workflows and their state
 orchestr8r start <name>      # start a workflow
-orchestr8r pause <name>      # pause running indefinite workflow
+orchestr8r pause <name>      # pause running looping workflow
 orchestr8r resume <name>     # resume a paused workflow
 orchestr8r stop <name>       # stop a running workflow
 ```

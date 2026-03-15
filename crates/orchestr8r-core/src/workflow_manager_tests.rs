@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::InMemoryStorage;
 use crate::test_helpers::write_executable_script;
-use crate::types::{StepDef, StepType, TriggerDef, WorkflowKind};
+use crate::types::{StepDef, StepType, TriggerDef, WorkflowType};
 use orchestr8r_notify::NoOpNotifier;
 
 fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
@@ -15,10 +15,10 @@ fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
     )
 }
 
-fn indefinite_workflow(name: &str) -> WorkflowDef {
+fn looping_workflow(name: &str) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
-        kind: WorkflowKind::Indefinite,
+        workflow_type: WorkflowType::Looping,
         trigger: None,
         workspace: None,
         steps: vec![StepDef {
@@ -35,7 +35,7 @@ fn indefinite_workflow(name: &str) -> WorkflowDef {
 fn triggered_workflow(name: &str) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
-        kind: WorkflowKind::Triggered,
+        workflow_type: WorkflowType::Triggered,
         trigger: None,
         workspace: None,
         steps: vec![StepDef {
@@ -52,7 +52,7 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
 fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
-        kind: WorkflowKind::Triggered,
+        workflow_type: WorkflowType::Triggered,
         trigger: Some(TriggerDef::Polling {
             command,
             interval_secs: 3600, // Very long interval (1 hour)
@@ -76,7 +76,7 @@ fn register_makes_workflow_dormant() {
     let mut manager = make_manager(tx);
 
     // WHEN
-    manager.register(indefinite_workflow("hello"));
+    manager.register(looping_workflow("hello"));
 
     // THEN
     let status = manager.status();
@@ -92,7 +92,7 @@ fn register_emits_registered_and_state_changed_events() {
     let mut manager = make_manager(tx);
 
     // WHEN
-    manager.register(indefinite_workflow("hello"));
+    manager.register(looping_workflow("hello"));
 
     // THEN
     let ev1 = rx.try_recv().expect("WorkflowRegistered");
@@ -108,7 +108,7 @@ async fn start_transitions_to_running_and_stop_returns_to_dormant() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(indefinite_workflow("hello"));
+    manager.register(looping_workflow("hello"));
 
     // WHEN
     manager.start("hello").await.unwrap();
@@ -128,7 +128,7 @@ async fn pause_and_resume_lifecycle() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(indefinite_workflow("hello"));
+    manager.register(looping_workflow("hello"));
     manager.start("hello").await.unwrap();
 
     // WHEN
@@ -167,7 +167,7 @@ async fn start_fails_if_already_running() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(indefinite_workflow("hello"));
+    manager.register(looping_workflow("hello"));
     manager.start("hello").await.unwrap();
 
     // WHEN / THEN
@@ -207,8 +207,8 @@ async fn status_reports_all_workflows_sorted() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(indefinite_workflow("beta"));
-    manager.register(indefinite_workflow("alpha"));
+    manager.register(looping_workflow("beta"));
+    manager.register(looping_workflow("alpha"));
 
     // WHEN
     let statuses = manager.status();
@@ -233,7 +233,7 @@ async fn paused_engine_loop_actually_pauses() {
         tx,
         Arc::new(NoOpNotifier),
     );
-    manager.register(indefinite_workflow("counter"));
+    manager.register(looping_workflow("counter"));
     manager.start("counter").await.unwrap();
 
     // Let it run for at least one iteration.

@@ -7,7 +7,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowDef {
     pub name: String,
-    pub kind: WorkflowKind,
+    #[serde(rename = "type")]
+    pub workflow_type: WorkflowType,
     #[serde(default)]
     pub trigger: Option<TriggerDef>,
     #[serde(default)]
@@ -17,8 +18,8 @@ pub struct WorkflowDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum WorkflowKind {
-    Indefinite,
+pub enum WorkflowType {
+    Looping,
     Triggered,
 }
 
@@ -155,7 +156,7 @@ pub enum CheckpointResponse {
 pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowKind },
+    WorkflowRegistered { name: String, kind: WorkflowType },
     WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,
@@ -218,7 +219,7 @@ pub enum WorkflowState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStatus {
     pub name: String,
-    pub kind: WorkflowKind,
+    pub kind: WorkflowType,
     pub state: WorkflowState,
 }
 
@@ -234,7 +235,7 @@ pub enum CheckpointAction {
 pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowKind },
+    WorkflowRegistered { name: String, kind: WorkflowType },
     WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,
@@ -313,7 +314,7 @@ mod tests {
         // GIVEN
         let toml_str = r#"
             name = "test"
-            kind = "indefinite"
+            type = "looping"
 
             [[steps]]
             type = "shell"
@@ -342,7 +343,7 @@ mod tests {
         // GIVEN
         let toml_str = r#"
             name = "on-demand"
-            kind = "triggered"
+            type = "triggered"
 
             [trigger]
             type = "manual"
@@ -365,7 +366,7 @@ mod tests {
         // GIVEN
         let toml_str = r#"
             name = "poll-jira"
-            kind = "triggered"
+            type = "triggered"
 
             [trigger]
             type = "polling"
@@ -395,7 +396,7 @@ mod tests {
         // GIVEN
         let toml_str = r#"
             name = "poll-jira"
-            kind = "triggered"
+            type = "triggered"
 
             [trigger]
             type = "polling"
@@ -426,7 +427,7 @@ mod tests {
         // GIVEN
         let toml_str = r#"
             name = "bad"
-            kind = "indefinite"
+            type = "looping"
             [[steps]]
             type = "nonexistent"
         "#;

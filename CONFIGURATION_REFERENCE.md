@@ -12,14 +12,14 @@
 
 ## Workflow Structure
 
-Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow defines a name, kind, optional trigger (for triggered workflows), and a sequence of steps.
+Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow defines a name, type, optional trigger (for triggered workflows), and a sequence of steps.
 
 ```toml
 name = "my-workflow"
-kind = "indefinite"  # or "triggered"
+type = "looping"  # or "triggered"
 workspace = "/home/user/my-project"  # optional
 
-[trigger]  # optional; required if kind = "triggered"
+[trigger]  # optional; required if type = "triggered"
 type = "manual"
 
 [[steps]]
@@ -37,15 +37,15 @@ message = "Review output?"
 
 ---
 
-## Workflow Kinds
+## Workflow Types
 
-### `indefinite`
+### `looping`
 
 Loops continuously while the daemon runs. After each iteration completes, the workflow restarts from the first step. Typically ends with a checkpoint to allow user control.
 
 ```toml
 name = "continuous-task"
-kind = "indefinite"
+type = "looping"
 
 [[steps]]
 type = "shell"
@@ -60,7 +60,7 @@ message = "Continue to next iteration?"
 - Runs all steps in order
 - After last step completes, immediately restarts (or waits if the last step is a checkpoint)
 - Use a checkpoint at the end to control when the next iteration starts
-- No trigger is used; the workflow runs indefinitely
+- No trigger is used; the workflow loops continuously
 
 ### `triggered`
 
@@ -68,7 +68,7 @@ Runs once per trigger event. After completing, the workflow waits idle until the
 
 ```toml
 name = "on-demand-task"
-kind = "triggered"
+type = "triggered"
 
 [trigger]
 type = "manual"
@@ -230,7 +230,7 @@ Triggered explicitly via CLI or TUI.
 **Example:**
 ```toml
 name = "on-demand"
-kind = "triggered"
+type = "triggered"
 
 [trigger]
 type = "manual"
@@ -268,7 +268,7 @@ Polls an external event source on a configurable interval. Uses a user-supplied 
 **Example:**
 ```toml
 name = "jira-ticket"
-kind = "triggered"
+type = "triggered"
 
 [trigger]
 type = "polling"

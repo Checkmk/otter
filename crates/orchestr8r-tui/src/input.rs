@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use orchestr8r_core::types::{CheckpointAction, WorkflowKind, WorkflowState};
+use orchestr8r_core::types::{CheckpointAction, WorkflowType, WorkflowState};
 
 use crate::app::{App, Mode};
 
@@ -62,7 +62,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 Some(WorkflowState::Running)
             ) && matches!(
                 app.selected_workflow_kind(),
-                Some(WorkflowKind::Indefinite)
+                Some(WorkflowType::Looping)
             ) {
                 app.pause_selected();
             }

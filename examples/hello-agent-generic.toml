@@ -1,5 +1,5 @@
 name = "hello-agent"
-kind = "triggered"
+type = "triggered"
 
 [trigger]
 type = "manual"

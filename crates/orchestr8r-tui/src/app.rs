@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowKind, WorkflowRun, WorkflowState};
+use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, WorkflowType, WorkflowRun, WorkflowState};
 use uuid::Uuid;
 use tokio::sync::mpsc;
 
@@ -18,7 +18,7 @@ pub struct PendingCheckpoint {
 
 pub struct App {
     pub runs: Vec<WorkflowRun>,
-    pub registered: Vec<(String, WorkflowKind, WorkflowState)>,
+    pub registered: Vec<(String, WorkflowType, WorkflowState)>,
     pub selected_run: usize,
     pub logs: HashMap<Uuid, Vec<LogEntry>>,
     pub pending_checkpoints: HashMap<Uuid, PendingCheckpoint>,
@@ -67,7 +67,7 @@ impl App {
         self.registered.len().max(self.runs.len())
     }
 
-    pub fn selected_workflow(&self) -> Option<&(String, WorkflowKind, WorkflowState)> {
+    pub fn selected_workflow(&self) -> Option<&(String, WorkflowType, WorkflowState)> {
         self.registered.get(self.selected_run)
     }
 
@@ -151,7 +151,7 @@ impl App {
         self.registered.get(self.selected_run).map(|(_, _, s)| s.clone())
     }
 
-    pub fn selected_workflow_kind(&self) -> Option<&WorkflowKind> {
+    pub fn selected_workflow_kind(&self) -> Option<&WorkflowType> {
         self.registered.get(self.selected_run).map(|(_, k, _)| k)
     }
 
