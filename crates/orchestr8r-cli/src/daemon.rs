@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    WorkflowDef, WorkflowRun,
+    StorageBackend, WorkflowDef, WorkflowRun,
 };
 use orchestr8r_core::WorkflowManager;
 use orchestr8r_notify::{DesktopNotifier, Notifier};
@@ -37,14 +37,14 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     let workflows = load_workflows_from_dir(&config_dir.join("workflows"))?;
 
-    let storage = Arc::new(
+    let storage: Arc<dyn StorageBackend> = Arc::new(
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
     let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
 
     let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(256);
     let manager = Arc::new(Mutex::new(WorkflowManager::new(
-        storage,
+        storage.clone(),
         data_dir.clone(),
         event_tx,
         notifier,
@@ -142,7 +142,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 let pending = pending_checkpoints.clone();
                 let runs = recent_runs.clone();
                 let subs = subscribers.clone();
-                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs));
+                let st = storage.clone();
+                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st));
             }
             Ok(Err(e)) => {
                 tracing::error!("accept error: {}", e);
@@ -163,6 +164,7 @@ async fn handle_connection(
     pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>>,
     recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
+    storage: Arc<dyn StorageBackend>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -195,16 +197,20 @@ async fn handle_connection(
                     state: wf.state,
                 }).await;
             }
-            // Replay run snapshots (sorted by started_at so the UI sees them in order)
-            let mut runs: Vec<WorkflowRun> = recent_runs
-                .lock()
-                .unwrap()
-                .values()
-                .cloned()
-                .collect();
-            runs.sort_by_key(|r| r.started_at);
-            for run in runs {
-                let _ = write_json(&mut writer, &DaemonEvent::RunUpdated(run)).await;
+            // Replay all historical runs from storage for each workflow
+            let current = manager.lock().await.status();
+            for wf in current {
+                if let Ok(runs) = storage.load_workflow_runs(&wf.name) {
+                    for run in runs {
+                        let run_id = run.id;
+                        let _ = write_json(&mut writer, &DaemonEvent::RunUpdated(run)).await;
+                        if let Ok(logs) = storage.load_run_logs(run_id) {
+                            for log in logs {
+                                let _ = write_json(&mut writer, &DaemonEvent::LogAppended(log)).await;
+                            }
+                        }
+                    }
+                }
             }
             // Replay any pending checkpoints so the UI can display a prompt
             let checkpoints: Vec<(Uuid, usize, String, bool)> = pending_checkpoints
@@ -260,6 +266,31 @@ async fn handle_connection(
             } else {
                 DaemonResponse::Error {
                     message: format!("no pending checkpoint for run_id {run_id}"),
+                }
+            };
+            let _ = write_json(&mut writer, &resp).await;
+        }
+        DaemonCommand::DeleteRun { run_id } => {
+            // Delete from storage
+            let storage_result = storage.delete_run(run_id);
+            // Delete scratch directory
+            let scratch_dir = std::path::PathBuf::from(dirs_data_dir()).join("runs").join(run_id.to_string());
+            let dir_result = if scratch_dir.exists() {
+                std::fs::remove_dir_all(&scratch_dir)
+            } else {
+                Ok(())
+            };
+            let resp = match (storage_result, dir_result) {
+                (Ok(()), Ok(())) => {
+                    recent_runs.lock().unwrap().remove(&run_id);
+                    // Broadcast the RunDeleted event to all subscribers
+                    let event = DaemonEvent::RunDeleted { run_id };
+                    let mut subs = subscribers.lock().unwrap();
+                    subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+                    DaemonResponse::Ok
+                }
+                _ => DaemonResponse::Error {
+                    message: "Failed to delete run".to_string(),
                 }
             };
             let _ = write_json(&mut writer, &resp).await;

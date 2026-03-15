@@ -2,6 +2,7 @@ use anyhow::Context;
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
@@ -19,7 +20,8 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
                 status TEXT NOT NULL,
                 current_step INTEGER NOT NULL,
                 iteration INTEGER NOT NULL,
-                started_at TEXT NOT NULL
+                started_at TEXT NOT NULL,
+                trigger_payload TEXT
             );
             CREATE TABLE IF NOT EXISTS step_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,8 +86,8 @@ impl StorageBackend for SqliteStorage {
     fn save_workflow_run(&self, run: &WorkflowRun) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO workflow_runs (id, workflow_name, status, current_step, iteration, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO workflow_runs (id, workflow_name, status, current_step, iteration, started_at, trigger_payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 run.id.to_string(),
                 run.workflow_name,
@@ -93,6 +95,7 @@ impl StorageBackend for SqliteStorage {
                 run.current_step as i64,
                 run.iteration as i64,
                 run.started_at.to_rfc3339(),
+                &run.trigger_payload,
             ],
         )?;
         Ok(())
@@ -136,7 +139,7 @@ impl StorageBackend for SqliteStorage {
     fn load_latest_run(&self, workflow_name: &str) -> anyhow::Result<Option<WorkflowRun>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workflow_name, status, current_step, iteration, started_at
+            "SELECT id, workflow_name, status, current_step, iteration, started_at, trigger_payload
              FROM workflow_runs WHERE workflow_name=?1
              ORDER BY started_at DESC LIMIT 1",
         )?;
@@ -159,11 +162,91 @@ impl StorageBackend for SqliteStorage {
                 current_step: row.get::<_, i64>(3)? as usize,
                 iteration: row.get::<_, i64>(4)? as u64,
                 started_at: started_at_str.parse().context("invalid datetime in DB")?,
+                trigger_payload: row.get(6)?,
             };
             Ok(Some(run))
         } else {
             Ok(None)
         }
+    }
+
+    fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, workflow_name, status, current_step, iteration, started_at, trigger_payload
+             FROM workflow_runs WHERE workflow_name=?1
+             ORDER BY started_at DESC",
+        )?;
+
+        let mut runs = Vec::new();
+        let mut rows = stmt.query(params![workflow_name])?;
+        while let Some(row) = rows.next()? {
+            let id_str: String = row.get(0)?;
+            let status_str: String = row.get(2)?;
+            let started_at_str: String = row.get(5)?;
+
+            let run = WorkflowRun {
+                id: id_str.parse().context("invalid UUID in DB")?,
+                workflow_name: row.get(1)?,
+                status: match status_str.as_str() {
+                    "running" => RunStatus::Running,
+                    "waiting_checkpoint" => RunStatus::WaitingCheckpoint,
+                    "completed" => RunStatus::Completed,
+                    _ => RunStatus::Failed,
+                },
+                current_step: row.get::<_, i64>(3)? as usize,
+                iteration: row.get::<_, i64>(4)? as u64,
+                started_at: started_at_str.parse().context("invalid datetime in DB")?,
+                trigger_payload: row.get(6)?,
+            };
+            runs.push(run);
+        }
+        Ok(runs)
+    }
+
+    fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT run_id, iteration, step_index, step_type, stdout, stderr, exit_code, accepted, feedback, timestamp
+             FROM step_logs WHERE run_id=?1",
+        )?;
+
+        let mut logs = Vec::new();
+        let mut rows = stmt.query(params![run_id.to_string()])?;
+        while let Some(row) = rows.next()? {
+            let run_id_str: String = row.get(0)?;
+            let timestamp_str: String = row.get(9)?;
+            let accepted_i: Option<i64> = row.get(7)?;
+
+            let log = LogEntry {
+                run_id: run_id_str.parse().context("invalid UUID in DB")?,
+                iteration: row.get::<_, i64>(1)? as u64,
+                step_index: row.get::<_, i64>(2)? as usize,
+                step_type: row.get(3)?,
+                stdout: row.get(4)?,
+                stderr: row.get(5)?,
+                exit_code: row.get(6)?,
+                accepted: accepted_i.map(|a| a != 0),
+                feedback: row.get(8)?,
+                timestamp: timestamp_str.parse().context("invalid datetime in DB")?,
+            };
+            logs.push(log);
+        }
+        Ok(logs)
+    }
+
+    fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let run_id_str = run_id.to_string();
+        conn.execute(
+            "DELETE FROM workflow_runs WHERE id=?1",
+            params![&run_id_str],
+        )?;
+        conn.execute(
+            "DELETE FROM step_logs WHERE run_id=?1",
+            params![&run_id_str],
+        )?;
+        Ok(())
     }
 }
 
@@ -314,5 +397,146 @@ mod tests {
 
         // THEN
         assert_eq!(accepted, 1);
+    }
+
+    #[test]
+    fn load_workflow_runs_returns_all_runs_ordered_by_started_at_desc() {
+        // GIVEN three runs for the same workflow with different timestamps
+        let storage = in_memory_storage();
+        let mut run1 = make_run("test-wf");
+        let mut run2 = make_run("test-wf");
+        let mut run3 = make_run("test-wf");
+
+        run1.started_at = Utc::now();
+        run2.started_at = run1.started_at + chrono::Duration::seconds(10);
+        run3.started_at = run2.started_at + chrono::Duration::seconds(10);
+
+        storage.save_workflow_run(&run1).unwrap();
+        storage.save_workflow_run(&run2).unwrap();
+        storage.save_workflow_run(&run3).unwrap();
+
+        // Add a run for a different workflow to verify filtering
+        let other = make_run("other-wf");
+        storage.save_workflow_run(&other).unwrap();
+
+        // WHEN
+        let runs = storage.load_workflow_runs("test-wf").unwrap();
+
+        // THEN
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].id, run3.id); // newest first
+        assert_eq!(runs[1].id, run2.id);
+        assert_eq!(runs[2].id, run1.id); // oldest last
+    }
+
+    #[test]
+    fn load_run_logs_returns_all_logs_for_run() {
+        // GIVEN a run with multiple log entries
+        let storage = in_memory_storage();
+        let run = make_run("wf");
+        storage.save_workflow_run(&run).unwrap();
+
+        let mut entries = Vec::new();
+        for i in 0..5 {
+            let entry = LogEntry {
+                run_id: run.id,
+                iteration: 0,
+                step_index: i,
+                step_type: "shell".to_string(),
+                stdout: format!("output {i}"),
+                stderr: String::new(),
+                exit_code: Some(0),
+                accepted: None,
+                feedback: None,
+                timestamp: Utc::now(),
+            };
+            storage.append_log(entry.clone()).unwrap();
+            entries.push(entry);
+        }
+
+        // WHEN
+        let logs = storage.load_run_logs(run.id).unwrap();
+
+        // THEN
+        assert_eq!(logs.len(), 5);
+        for (i, log) in logs.iter().enumerate() {
+            assert_eq!(log.run_id, run.id);
+            assert_eq!(log.step_index, i);
+            assert_eq!(log.stdout, format!("output {i}"));
+        }
+    }
+
+    #[test]
+    fn delete_run_removes_run_and_all_its_logs() {
+        // GIVEN two runs with logs
+        let storage = in_memory_storage();
+        let run1 = make_run("wf");
+        let run2 = make_run("wf");
+
+        storage.save_workflow_run(&run1).unwrap();
+        storage.save_workflow_run(&run2).unwrap();
+
+        // Add logs for both runs
+        for run in [&run1, &run2] {
+            for i in 0..3 {
+                storage
+                    .append_log(LogEntry {
+                        run_id: run.id,
+                        iteration: 0,
+                        step_index: i,
+                        step_type: "shell".to_string(),
+                        stdout: "test".to_string(),
+                        stderr: String::new(),
+                        exit_code: Some(0),
+                        accepted: None,
+                        feedback: None,
+                        timestamp: Utc::now(),
+                    })
+                    .unwrap();
+            }
+        }
+
+        // WHEN
+        storage.delete_run(run1.id).unwrap();
+
+        // THEN
+        // run1 should be deleted
+        assert!(storage.load_latest_run("wf").unwrap().unwrap().id == run2.id);
+
+        // All logs for run1 should be deleted
+        let conn = storage.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM step_logs WHERE run_id = ?1",
+                [run1.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // Logs for run2 should still exist
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM step_logs WHERE run_id = ?1",
+                [run2.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn trigger_payload_persists_and_is_retrieved() {
+        // GIVEN a run with trigger_payload set
+        let storage = in_memory_storage();
+        let mut run = make_run("triggered-wf");
+        run.trigger_payload = Some("hash-abc123".to_string());
+        storage.save_workflow_run(&run).unwrap();
+
+        // WHEN
+        let loaded = storage.load_latest_run("triggered-wf").unwrap().unwrap();
+
+        // THEN
+        assert_eq!(loaded.trigger_payload, Some("hash-abc123".to_string()));
     }
 }

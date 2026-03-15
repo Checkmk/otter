@@ -4,8 +4,10 @@ mod daemon;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
+use uuid::Uuid;
 
-use orchestr8r_core::types::DaemonCommand;
+use orchestr8r_core::types::{DaemonCommand, StorageBackend};
+use orchestr8r_storage::SqliteStorage;
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,19 @@ enum Commands {
     Resume { name: String },
     /// Print the status of all registered workflows
     Status,
+    /// Manage workflow runs
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunsCommands {
+    /// List all runs for a workflow
+    List { workflow: String },
+    /// Delete a run by ID
+    Delete { run_id: String },
 }
 
 #[tokio::main]
@@ -75,7 +90,50 @@ async fn main() -> anyhow::Result<()> {
             client::send_command_print(DaemonCommand::Resume { name }).await
         }
         Some(Commands::Status) => client::print_status().await,
+        Some(Commands::Runs { command }) => handle_runs_command(command).await,
     }
+}
+
+async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
+    match command {
+        RunsCommands::List { workflow } => {
+            let data_dir = dirs_data_dir();
+            let storage: std::sync::Arc<dyn StorageBackend> = std::sync::Arc::new(SqliteStorage::open(&data_dir.join("state.db"))?);
+            let runs = storage.load_workflow_runs(&workflow)?;
+
+            if runs.is_empty() {
+                println!("No runs found for workflow '{}'", workflow);
+                return Ok(());
+            }
+
+            // Print header
+            println!("RUN ID      STARTED             STATUS       TRIGGER");
+            println!("{}", "─".repeat(70));
+
+            // Print runs
+            for run in runs {
+                let run_id_short = run.id.to_string()[..8].to_string();
+                let started = run.started_at.format("%Y-%m-%d %H:%M:%S");
+                let status = match run.status {
+                    orchestr8r_core::types::RunStatus::Running => "running",
+                    orchestr8r_core::types::RunStatus::WaitingCheckpoint => "waiting",
+                    orchestr8r_core::types::RunStatus::Completed => "completed",
+                    orchestr8r_core::types::RunStatus::Failed => "failed",
+                };
+                let trigger = run.trigger_payload.unwrap_or_else(|| "-".to_string());
+                println!("{:<11} {:<19} {:<12} {}", run_id_short, started, status, trigger);
+            }
+        }
+        RunsCommands::Delete { run_id } => {
+            // Parse the run ID
+            let run_uuid = Uuid::parse_str(&run_id)?;
+
+            // Send the DeleteRun command through the daemon socket
+            client::send_command_print(DaemonCommand::DeleteRun { run_id: run_uuid }).await?;
+            println!("Run {} deleted.", run_id);
+        }
+    }
+    Ok(())
 }
 
 // ─── Shared path helpers ─────────────────────────────────────────────────────

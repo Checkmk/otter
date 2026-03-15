@@ -22,14 +22,18 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
-            if app.selected_run > 0 {
-                app.selected_run -= 1;
-            }
+            app.move_cursor_up();
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.selected_run + 1 < app.workflow_count() {
-                app.selected_run += 1;
-            }
+            app.move_cursor_down();
+        }
+        KeyCode::Char(' ') if !has_checkpoint => {
+            // Space toggles expanded state of workflow (only on workflow rows)
+            app.toggle_expanded();
+        }
+        KeyCode::Delete if !has_checkpoint => {
+            // Del key deletes a run (only on run rows)
+            app.delete_selected_run();
         }
         KeyCode::Char('c') if has_checkpoint => {
             app.respond_checkpoint(CheckpointAction::Continue)
@@ -46,8 +50,8 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             match state {
                 Some(WorkflowState::Dormant) => app.start_selected(),
                 Some(WorkflowState::Paused) => {
-                    if let Some((name, _, _)) = app.selected_workflow() {
-                        let name = name.clone();
+                    if let Some(entry) = app.selected_workflow() {
+                        let name = entry.name.clone();
                         let _ = app.cmd_tx.try_send(
                             orchestr8r_core::types::DaemonCommand::Resume { name }
                         );

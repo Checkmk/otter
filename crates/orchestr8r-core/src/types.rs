@@ -98,6 +98,7 @@ pub struct WorkflowRun {
     pub current_step: usize,
     pub iteration: u64,
     pub started_at: DateTime<Utc>,
+    pub trigger_payload: Option<String>,
 }
 
 impl WorkflowRun {
@@ -109,6 +110,7 @@ impl WorkflowRun {
             current_step: 0,
             iteration: 0,
             started_at: Utc::now(),
+            trigger_payload: None,
         }
     }
 }
@@ -243,6 +245,7 @@ pub enum DaemonEvent {
         message: String,
         feedback_available: bool,
     },
+    RunDeleted { run_id: Uuid },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +258,7 @@ pub enum DaemonCommand {
     /// Persistent subscription: server streams DaemonEvent JSON lines until disconnect.
     Subscribe,
     CheckpointRespond { run_id: Uuid, action: CheckpointAction },
+    DeleteRun { run_id: Uuid },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +273,9 @@ pub trait StorageBackend: Send + Sync {
     fn update_workflow_run(&self, run: &WorkflowRun) -> anyhow::Result<()>;
     fn append_log(&self, entry: LogEntry) -> anyhow::Result<()>;
     fn load_latest_run(&self, workflow_name: &str) -> anyhow::Result<Option<WorkflowRun>>;
+    fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>>;
+    fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>>;
+    fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]

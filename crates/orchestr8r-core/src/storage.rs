@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use uuid::Uuid;
 
 use crate::types::{LogEntry, StorageBackend, WorkflowRun};
 
@@ -57,6 +58,39 @@ impl StorageBackend for InMemoryStorage {
             .filter(|r| r.workflow_name == workflow_name)
             .max_by_key(|r| r.started_at);
         Ok(latest.cloned())
+    }
+
+    fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>> {
+        let mut runs: Vec<WorkflowRun> = self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.workflow_name == workflow_name)
+            .cloned()
+            .collect();
+        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        Ok(runs)
+    }
+
+    fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>> {
+        let logs: Vec<LogEntry> = self
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.run_id == run_id)
+            .cloned()
+            .collect();
+        Ok(logs)
+    }
+
+    fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()> {
+        let mut runs = self.runs.lock().unwrap();
+        runs.retain(|r| r.id != run_id);
+        let mut logs = self.logs.lock().unwrap();
+        logs.retain(|l| l.run_id != run_id);
+        Ok(())
     }
 }
 
@@ -156,5 +190,138 @@ mod tests {
 
         // THEN
         assert_eq!(storage.logs().len(), 3);
+    }
+
+    #[test]
+    fn load_workflow_runs_returns_all_runs_ordered_newest_first() {
+        // GIVEN three runs for the same workflow, with different started_at times
+        let storage = InMemoryStorage::new();
+        let mut run1 = make_run("test-wf");
+        let mut run2 = make_run("test-wf");
+        let mut run3 = make_run("test-wf");
+
+        run1.started_at = chrono::Utc::now();
+        run2.started_at = run1.started_at + chrono::Duration::seconds(1);
+        run3.started_at = run2.started_at + chrono::Duration::seconds(1);
+
+        storage.save_workflow_run(&run1).unwrap();
+        storage.save_workflow_run(&run2).unwrap();
+        storage.save_workflow_run(&run3).unwrap();
+
+        // Add one run for a different workflow
+        let other_run = make_run("other-wf");
+        storage.save_workflow_run(&other_run).unwrap();
+
+        // WHEN
+        let runs = storage.load_workflow_runs("test-wf").unwrap();
+
+        // THEN
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].id, run3.id); // newest first
+        assert_eq!(runs[1].id, run2.id);
+        assert_eq!(runs[2].id, run1.id); // oldest last
+    }
+
+    #[test]
+    fn load_run_logs_returns_only_logs_for_specified_run() {
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        // GIVEN
+        let storage = InMemoryStorage::new();
+        let run1_id = Uuid::new_v4();
+        let run2_id = Uuid::new_v4();
+
+        // Add logs for run1
+        for i in 0..2 {
+            storage
+                .append_log(LogEntry {
+                    run_id: run1_id,
+                    iteration: 0,
+                    step_index: i,
+                    step_type: "shell".to_string(),
+                    stdout: format!("run1-out{i}"),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: None,
+                    feedback: None,
+                    timestamp: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        // Add logs for run2
+        for i in 0..3 {
+            storage
+                .append_log(LogEntry {
+                    run_id: run2_id,
+                    iteration: 0,
+                    step_index: i,
+                    step_type: "shell".to_string(),
+                    stdout: format!("run2-out{i}"),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    accepted: None,
+                    feedback: None,
+                    timestamp: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        // WHEN
+        let run1_logs = storage.load_run_logs(run1_id).unwrap();
+        let run2_logs = storage.load_run_logs(run2_id).unwrap();
+
+        // THEN
+        assert_eq!(run1_logs.len(), 2);
+        assert_eq!(run2_logs.len(), 3);
+        assert!(run1_logs.iter().all(|l| l.run_id == run1_id));
+        assert!(run2_logs.iter().all(|l| l.run_id == run2_id));
+    }
+
+    #[test]
+    fn delete_run_removes_run_and_its_logs() {
+        use chrono::Utc;
+
+        // GIVEN
+        let storage = InMemoryStorage::new();
+        let run1 = make_run("wf");
+        let run2 = make_run("wf");
+
+        storage.save_workflow_run(&run1).unwrap();
+        storage.save_workflow_run(&run2).unwrap();
+
+        // Add logs for both runs
+        for run_id in [run1.id, run2.id] {
+            for i in 0..2 {
+                storage
+                    .append_log(LogEntry {
+                        run_id,
+                        iteration: 0,
+                        step_index: i,
+                        step_type: "shell".to_string(),
+                        stdout: "test".to_string(),
+                        stderr: String::new(),
+                        exit_code: Some(0),
+                        accepted: None,
+                        feedback: None,
+                        timestamp: Utc::now(),
+                    })
+                    .unwrap();
+            }
+        }
+
+        // WHEN
+        storage.delete_run(run1.id).unwrap();
+
+        // THEN
+        let runs = storage.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run2.id);
+
+        // Logs for run1 should be deleted, but run2 logs should remain
+        let remaining_logs = storage.logs();
+        assert!(remaining_logs.iter().all(|l| l.run_id == run2.id));
+        assert_eq!(remaining_logs.len(), 2);
     }
 }

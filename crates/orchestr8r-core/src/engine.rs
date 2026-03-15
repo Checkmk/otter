@@ -267,6 +267,9 @@ impl Engine {
         let run_id = event.and_then(|e| e.preallocated_run_id).unwrap_or_else(uuid::Uuid::new_v4);
         let mut run = WorkflowRun::new(workflow.name.clone());
         run.id = run_id;
+        if let Some(event) = event {
+            run.trigger_payload = Some(event.payload.clone());
+        }
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         std::fs::create_dir_all(&scratch_dir)?;
 

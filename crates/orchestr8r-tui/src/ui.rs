@@ -1,3 +1,4 @@
+use chrono::Local;
 use orchestr8r_core::types::{RunStatus, WorkflowType, WorkflowState};
 use ratatui::{
     Frame,
@@ -7,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, CursorTarget};
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const BG:     Color = Color::Rgb(0x33, 0x35, 0x43);
@@ -107,13 +108,13 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let name_width  = inner_width.saturating_sub(1);
 
-    let make_item = |name: &str, icon: String, icon_color: Color| {
-        let char_count = name.chars().count();
+    let make_item = |text: &str, icon: String, icon_color: Color| {
+        let char_count = text.chars().count();
         let padded = if char_count >= name_width {
-            let truncated: String = name.chars().take(name_width.saturating_sub(1)).collect();
+            let truncated: String = text.chars().take(name_width.saturating_sub(1)).collect();
             format!("{}…", truncated)
         } else {
-            format!("{:<width$}", name, width = name_width)
+            format!("{:<width$}", text, width = name_width)
         };
         ListItem::new(Line::from(vec![
             Span::styled(padded, Style::default().fg(c_foreground()).bg(c_background())),
@@ -121,32 +122,53 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         ]))
     };
 
-    let items: Vec<ListItem> = if !app.registered.is_empty() {
-        app.registered
-            .iter()
-            .map(|(name, _kind, state)| {
-                let run_status = app.runs.iter().rev()
-                    .find(|r| &r.workflow_name == name)
-                    .map(|r| &r.status);
-                let (icon, color) = workflow_state_color(state, run_status, app.tick);
-                make_item(name, icon, color)
-            })
-            .collect()
-    } else {
-        app.runs
-            .iter()
-            .map(|r| {
-                let (icon, color) = workflow_state_color(
-                    &WorkflowState::Running, Some(&r.status), app.tick,
+    // Build a flat list of all items (workflows and their runs)
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_index: Option<usize> = None;
+
+    for (wi, entry) in app.workflows.iter().enumerate() {
+        let current_index = items.len();
+
+        // Determine if this is the selected cursor position
+        if app.cursor == CursorTarget::Workflow(wi) {
+            selected_index = Some(current_index);
+        }
+
+        // Workflow row: show expand/collapse indicator and state icon
+        let expand_char = if entry.expanded { "▼ " } else { "▶ " };
+        let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), app.tick);
+        let workflow_label = format!("{}{} ({})", expand_char, &entry.name, match entry.kind {
+            WorkflowType::Looping => "looping",
+            WorkflowType::Triggered => "triggered",
+        });
+        items.push(make_item(&workflow_label, state_icon, state_color));
+
+        // If expanded, show run rows
+        if entry.expanded {
+            for (ri, run) in entry.runs.iter().enumerate() {
+                if app.cursor == CursorTarget::Run(wi, ri) {
+                    selected_index = Some(items.len());
+                }
+
+                // Run row: show date/time, trigger hash (if triggered), status
+                let datetime = run.started_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+                let trigger_info = run.trigger_payload.as_ref()
+                    .map(|p| format!("  {}", &p[..p.len().min(8)]))
+                    .unwrap_or_default();
+                let run_label = format!("  {}{}",datetime, trigger_info);
+                let (run_icon, run_color) = workflow_state_color(
+                    &WorkflowState::Running,
+                    Some(&run.status),
+                    app.tick,
                 );
-                make_item(&r.workflow_name, icon, color)
-            })
-            .collect()
-    };
+                items.push(make_item(&run_label, run_icon, run_color));
+            }
+        }
+    }
 
     let mut state = ListState::default();
-    if app.workflow_count() > 0 {
-        state.select(Some(app.selected_run));
+    if let Some(idx) = selected_index {
+        state.select(Some(idx));
     }
 
     let list = List::new(items)
@@ -249,36 +271,44 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let logs = app.selected_logs();
     let inner_width = area.width.saturating_sub(2) as usize;
 
-    let lines: Vec<Line> = logs
-        .iter()
-        .flat_map(|entry| {
-            let time = entry.timestamp.format("%H:%M:%S").to_string();
-            let text = if !entry.stdout.is_empty() {
-                &entry.stdout
-            } else if !entry.stderr.is_empty() {
-                &entry.stderr
-            } else if let Some(ref fb) = entry.feedback {
-                fb
-            } else {
-                ""
-            };
+    let lines: Vec<Line> = if logs.is_empty() {
+        // No logs selected; show placeholder
+        vec![Line::from(Span::styled(
+            "Select a run to view logs",
+            Style::default().fg(c_dim()).bg(c_background()),
+        ))]
+    } else {
+        logs
+            .iter()
+            .flat_map(|entry| {
+                let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
+                let text = if !entry.stdout.is_empty() {
+                    &entry.stdout
+                } else if !entry.stderr.is_empty() {
+                    &entry.stderr
+                } else if let Some(ref fb) = entry.feedback {
+                    fb
+                } else {
+                    ""
+                };
 
-            format_log_entry(&time, &entry.step_type, text, inner_width)
-                .into_iter()
-                .map(|wl| match wl {
-                    WrappedLogLine::Header { time, step_type, text } => Line::from(vec![
-                        Span::styled(format!("[{}] ", time), Style::default().fg(c_dim()).bg(c_background())),
-                        Span::styled(format!("{}:", step_type), Style::default().fg(step_color(&step_type)).bg(c_background())),
-                        Span::styled(format!(" {}", text), base_style()),
-                    ]),
-                    WrappedLogLine::Continuation { text } => Line::from(vec![
-                        Span::styled("  ", base_style()),
-                        Span::styled(text, base_style()),
-                    ]),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
+                format_log_entry(&time, &entry.step_type, text, inner_width)
+                    .into_iter()
+                    .map(|wl| match wl {
+                        WrappedLogLine::Header { time, step_type, text } => Line::from(vec![
+                            Span::styled(format!("[{}] ", time), Style::default().fg(c_dim()).bg(c_background())),
+                            Span::styled(format!("{}:", step_type), Style::default().fg(step_color(&step_type)).bg(c_background())),
+                            Span::styled(format!(" {}", text), base_style()),
+                        ]),
+                        WrappedLogLine::Continuation { text } => Line::from(vec![
+                            Span::styled("  ", base_style()),
+                            Span::styled(text, base_style()),
+                        ]),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
 
     let scroll_offset = lines.len().saturating_sub(area.height as usize - 2) as u16;
     let para = Paragraph::new(lines)
@@ -328,6 +358,25 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("[↑↓]", key),
                     Span::styled(" Navigate", dim),
                 ];
+
+                // Show expand/collapse hint when cursor is on a workflow
+                if matches!(app.cursor, CursorTarget::Workflow(_)) {
+                    spans.extend([
+                        Span::styled("  ", base_style()),
+                        Span::styled("[Space]", key),
+                        Span::styled(" Expand", dim),
+                    ]);
+                }
+
+                // Show delete hint when cursor is on a run
+                if matches!(app.cursor, CursorTarget::Run(_, _)) {
+                    spans.extend([
+                        Span::styled("  ", base_style()),
+                        Span::styled("[Del]", key),
+                        Span::styled(" Delete", dim),
+                    ]);
+                }
+
                 if let (Some(state), Some(kind)) = (
                     app.selected_workflow_state(),
                     app.selected_workflow_kind(),
