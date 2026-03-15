@@ -198,6 +198,14 @@ impl Engine {
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
 
+        // Fire one initial event for manual triggers; polling triggers wait for their interval
+        if matches!(trigger_def, crate::types::TriggerDef::Manual) {
+            if let Err(e) = trigger.fire_once(trigger_tx.clone()).await {
+                error!(workflow = %workflow.name, "Failed to fire initial trigger: {}", e);
+                return Err(anyhow::anyhow!("Failed to fire initial trigger: {}", e));
+            }
+        }
+
         let trigger_handle = tokio::spawn(async move {
             if let Err(e) = trigger.subscribe(trigger_tx).await {
                 error!("Trigger subscribe error: {}", e);
@@ -259,6 +267,13 @@ impl Engine {
             // Collect events that arrived during the run
             while let Ok(e) = trigger_rx.try_recv() {
                 queued.push_back(e);
+            }
+
+            // Manual triggers should only fire once per start; exit after the first event completes
+            if matches!(trigger_def, crate::types::TriggerDef::Manual) {
+                info!(workflow = %workflow.name, "Manual trigger completed, exiting");
+                trigger_handle.abort();
+                break;
             }
         }
 

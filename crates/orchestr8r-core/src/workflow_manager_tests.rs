@@ -49,6 +49,23 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
     }
 }
 
+fn manual_workflow(name: &str) -> WorkflowDef {
+    WorkflowDef {
+        name: name.to_string(),
+        workflow_type: WorkflowType::Triggered,
+        trigger: Some(TriggerDef::Manual),
+        workspace: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["true".to_string()]),
+            message: None,
+            session: None,
+            notify: None,
+            agent: Default::default(),
+        }],
+    }
+}
+
 fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
@@ -383,4 +400,39 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
 
     // cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn manual_trigger_fires_immediately_on_start() {
+    // GIVEN — a manual trigger workflow
+    let (tx, _rx) = mpsc::channel(64);
+    let storage = Arc::new(InMemoryStorage::new());
+    let data_dir = std::env::temp_dir().join("orchestr8r-manual-trigger-test");
+    let mut manager = WorkflowManager::new(
+        storage.clone(),
+        data_dir,
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+
+    manager.register(manual_workflow("manual-job"));
+
+    // WHEN — manually start the workflow
+    manager.start("manual-job").await.unwrap();
+
+    // THEN — a run should have been created (trigger fired immediately)
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let runs = storage.runs();
+    assert!(
+        !runs.is_empty(),
+        "manual trigger should fire immediately on start, creating a run"
+    );
+
+    // THEN — it should return to dormant
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        manager.status()[0].state,
+        WorkflowState::Dormant,
+        "manual trigger workflow should return to dormant after being started"
+    );
 }
