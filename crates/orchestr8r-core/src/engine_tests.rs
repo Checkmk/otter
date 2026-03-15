@@ -30,6 +30,22 @@ fn workflow(name: &str, kind: WorkflowKind, steps: Vec<StepDef>) -> WorkflowDef 
     }
 }
 
+// Helper: Poll until logs are non-empty, with timeout (used 3 times)
+async fn wait_for_logs(storage: &Arc<InMemoryStorage>, timeout_secs: u64) {
+    let start = tokio::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if !storage.logs().is_empty() {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "logs did not appear within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn shell_step_runs_and_logs() {
     // GIVEN
@@ -53,14 +69,15 @@ async fn shell_step_runs_and_logs() {
         engine.run(&wf, shutdown_clone, None).await.unwrap();
         storage_clone
     });
-    tokio::task::yield_now().await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    wait_for_logs(&storage, 5).await;
+
     shutdown.store(true, Ordering::Relaxed);
     let storage = handle.await.unwrap();
 
     // THEN
     let logs = storage.logs();
-    assert!(!logs.is_empty(), "expected at least one log entry");
+    assert!(!logs.is_empty());
     assert_eq!(logs[0].step_type, "shell");
     assert!(logs[0].stdout.contains("hello"));
 }
@@ -111,15 +128,30 @@ async fn workspace_step_sets_working_dir_for_shell() {
     // WHEN
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
+    let marker_clone = marker.clone();
     let handle = tokio::spawn(async move {
         engine.run(&wf, shutdown_clone, None).await.unwrap();
     });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Poll for marker file with timeout
+    let start = tokio::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(5);
+    loop {
+        if marker.exists() {
+            break;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "marker file not created within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
+
     shutdown.store(true, Ordering::Relaxed);
     handle.await.unwrap();
 
     // THEN
-    assert!(marker.exists(), "shell step should have run in the workspace dir");
+    assert!(marker_clone.exists());
 }
 
 
@@ -201,29 +233,63 @@ async fn pause_halts_iterations_and_resume_continues() {
         storage_clone
     });
 
-    // Let it run for a bit, then pause
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // Wait for at least one iteration to complete before pausing
+    wait_for_logs(&storage, 5).await;
+
     paused_flag.store(true, Ordering::Relaxed);
-    // Allow any in-flight iteration to finish writing its logs before snapshotting
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Wait for log count to stabilize while paused
+    // Poll until log count stabilizes (same count for 3 consecutive checks ~75ms)
+    let settle_start = tokio::time::Instant::now();
+    let mut prev_count = storage.logs().len();
+    let mut stable_checks = 0;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let current_count = storage.logs().len();
+        if current_count == prev_count {
+            stable_checks += 1;
+            if stable_checks >= 3 {
+                break;
+            }
+        } else {
+            stable_checks = 0;
+        }
+        prev_count = current_count;
+        assert!(
+            settle_start.elapsed() < std::time::Duration::from_secs(2),
+            "log count did not stabilize within timeout"
+        );
+    }
     let count_while_paused = storage.logs().len();
 
-    // Wait to confirm no new iterations happen while paused
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let count_after_wait = storage.logs().len();
-    assert_eq!(
-        count_while_paused, count_after_wait,
-        "no new logs should be produced while paused"
-    );
+    // Verify no new logs appear while paused (poll for 500ms to be sure)
+    let check_start = tokio::time::Instant::now();
+    loop {
+        let current = storage.logs().len();
+        assert_eq!(
+            current, count_while_paused,
+            "no new logs should be produced while paused"
+        );
+        if check_start.elapsed() > std::time::Duration::from_millis(500) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     // Resume and confirm iterations restart
     paused_flag.store(false, Ordering::Relaxed);
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    let count_after_resume = storage.logs().len();
-    assert!(
-        count_after_resume > count_after_wait,
-        "iterations should resume after unpausing"
-    );
+    let resume_start = tokio::time::Instant::now();
+    let resume_timeout = std::time::Duration::from_secs(5);
+    loop {
+        if storage.logs().len() > count_while_paused {
+            break;
+        }
+        assert!(
+            resume_start.elapsed() < resume_timeout,
+            "log count did not increase within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
 
     shutdown.store(true, Ordering::Relaxed);
     handle.await.unwrap();
@@ -253,9 +319,9 @@ async fn shutdown_while_paused_exits_cleanly() {
     let shutdown_clone = shutdown.clone();
     let handle = tokio::spawn(async move { engine.run(&wf, shutdown_clone, None).await });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for at least one iteration to start
+    wait_for_logs(&storage, 5).await;
     paused_flag.store(true, Ordering::Relaxed);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // WHEN shutdown while paused
     shutdown.store(true, Ordering::Relaxed);

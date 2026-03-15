@@ -1,8 +1,8 @@
 use super::*;
 use crate::storage::InMemoryStorage;
+use crate::test_helpers::write_executable_script;
 use crate::types::{StepDef, StepType, TriggerDef, WorkflowKind};
 use orchestr8r_notify::NoOpNotifier;
-use std::fs;
 
 fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
     let storage = Arc::new(InMemoryStorage::new());
@@ -267,17 +267,11 @@ async fn polling_trigger_fires_immediately_when_manually_started() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let cmd_path = temp_dir.join("mock-poller.sh");
-    fs::write(
-        &cmd_path,
-        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"test-hash\"]'; fi\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let cmd_path = write_executable_script(
+        &temp_dir,
+        "mock-poller.sh",
+        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"test-hash\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi\n",
+    ).unwrap();
 
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
@@ -343,17 +337,11 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let cmd_path = temp_dir.join("mock-poller.sh");
-    fs::write(
-        &cmd_path,
-        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"hash1\", \"hash2\", \"hash3\"]'; fi\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let cmd_path = write_executable_script(
+        &temp_dir,
+        "mock-poller.sh",
+        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"hash1\", \"hash2\", \"hash3\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi\n",
+    ).unwrap();
 
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
@@ -379,12 +367,7 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
 
     // THEN — all 3 trigger events should result in separate runs
     let runs = storage.runs();
-    assert_eq!(
-        runs.len(),
-        3,
-        "polling trigger should execute all 3 events; got {} runs",
-        runs.len()
-    );
+    assert_eq!(runs.len(), 3);
 
     // AND — workflow should be running (listening for more events)
     assert_eq!(manager.status()[0].state, WorkflowState::Running);
@@ -392,7 +375,7 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
     // WHEN — stop the workflow
     manager.stop("multi-poller").await.unwrap();
 
-    // Give it time to actually stop
+    // Give it time to stop
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // THEN — it should be dormant

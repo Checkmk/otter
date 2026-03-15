@@ -192,18 +192,17 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use crate::test_helpers::write_executable_script;
 
     #[tokio::test]
     async fn poll_fires_for_new_hashes() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(&cmd_path, "#!/bin/bash\necho '[\"hash1\", \"hash2\"]'").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\", \"hash2\"]'",
+        ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -234,13 +233,11 @@ mod tests {
     async fn poll_skips_seen_hashes() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(&cmd_path, "#!/bin/bash\necho '[\"hash1\"]'").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
         let data = SeenHashes {
@@ -270,15 +267,11 @@ mod tests {
     async fn poll_persists_seen_on_disk() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(&cmd_path, "#!/bin/bash\necho '[\"hash1\"]'").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        // Small delay to ensure file is fully synced
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
 
@@ -307,19 +300,11 @@ mod tests {
     async fn context_dir_created_on_poll() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(
-            &cmd_path,
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
             "#!/bin/bash\nif [[ \"$1\" == \"--context\" ]]; then touch \"$3/context.txt\"; fi\necho '[\"hash1\"]'",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        // Small delay to ensure file is fully synced
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -360,14 +345,11 @@ mod tests {
     async fn fire_once_updates_seen_hashes() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(&cmd_path, "#!/bin/bash\necho '[\"hash1\"]'").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
@@ -398,7 +380,6 @@ mod tests {
     async fn subscribe_continues_polling_after_interval() {
         // GIVEN a polling trigger with a script that returns new hashes each time
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
         let script = r#"#!/bin/bash
 if [[ "$1" == "--poll" ]]; then
   timestamp=$(date +%s%N)
@@ -410,13 +391,7 @@ elif [[ "$1" == "--context" ]]; then
   exit 0
 fi
 "#;
-        fs::write(&cmd_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cmd_path = write_executable_script(temp_dir.path(), "mock-poller.sh", script).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -464,13 +439,11 @@ fi
     async fn polling_trigger_shuts_down_cleanly() {
         // GIVEN a polling trigger that continuously polls
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = temp_dir.path().join("mock-poller.sh");
-        fs::write(&cmd_path, "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"event1\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"event1\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi",
+        ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),

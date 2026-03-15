@@ -7,5 +7,8 @@ pub mod triggers;
 pub mod types;
 pub mod workflow_manager;
 
+#[cfg(test)]
+mod test_helpers;
+
 pub use types::*;
 pub use workflow_manager::WorkflowManager;
