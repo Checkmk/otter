@@ -37,6 +37,10 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     let workflows = load_workflows_from_dir(&config_dir.join("workflows"))?;
 
+    let toml_map: Arc<HashMap<String, String>> = Arc::new(
+        workflows.iter().map(|(def, raw)| (def.name.clone(), raw.clone())).collect()
+    );
+
     let storage: Arc<dyn StorageBackend> = Arc::new(
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
@@ -52,8 +56,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     {
         let mut mgr = manager.lock().await;
-        for wf in workflows {
-            mgr.register(wf);
+        for (def, _raw) in workflows {
+            mgr.register(def);
         }
     }
 
@@ -82,7 +86,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     DaemonEvent::RunUpdated(r)
                 }
                 EngineEvent::WorkflowRegistered { name, kind, trigger } => {
-                    DaemonEvent::WorkflowRegistered { name, kind, trigger }
+                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content: None }
                 }
                 EngineEvent::WorkflowStateChanged { name, state } => {
                     DaemonEvent::WorkflowStateChanged { name, state }
@@ -143,7 +147,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 let runs = recent_runs.clone();
                 let subs = subscribers.clone();
                 let st = storage.clone();
-                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st));
+                let tm = toml_map.clone();
+                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm));
             }
             Ok(Err(e)) => {
                 tracing::error!("accept error: {}", e);
@@ -165,6 +170,7 @@ async fn handle_connection(
     recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
     storage: Arc<dyn StorageBackend>,
+    toml_map: Arc<HashMap<String, String>>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -189,6 +195,7 @@ async fn handle_connection(
             let current = manager.lock().await.status();
             for wf in current {
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
+                    toml_content: toml_map.get(&wf.name).cloned(),
                     name: wf.name.clone(),
                     kind: wf.kind,
                     trigger: wf.trigger.clone(),
@@ -299,7 +306,7 @@ async fn handle_connection(
     }
 }
 
-fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<WorkflowDef>> {
+fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(WorkflowDef, String)>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -316,7 +323,7 @@ fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<WorkflowDef>> {
         let def: WorkflowDef = toml::from_str(&content)
             .with_context(|| format!("Failed to parse {path:?}"))?;
         info!(workflow = %def.name, "Loaded workflow");
-        workflows.push(def);
+        workflows.push((def, content));
     }
     Ok(workflows)
 }

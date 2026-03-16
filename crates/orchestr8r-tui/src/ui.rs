@@ -5,7 +5,8 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode};
-use crate::logs_panel::{render_logs, wrap_into_chunks};
+use crate::right_panel::render_right_panel;
+use crate::text::wrap_into_chunks;
 use crate::runs_panel::render_runs;
 use crate::status_bar::render_status_bar;
 use crate::styles::base_style;
@@ -40,6 +41,6 @@ pub fn render(f: &mut Frame, app: &App) {
         .split(outer[0]);
 
     render_runs(f, app, main[0]);
-    render_logs(f, app, main[1]);
+    render_right_panel(f, app, main[1]);
     render_status_bar(f, app, outer[1]);
 }

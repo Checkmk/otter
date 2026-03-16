@@ -7,33 +7,10 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::App;
+use crate::app::{App, CursorTarget};
 use crate::styles::{base_style, c_background, c_dim, panel, step_color};
+use crate::text::wrap_into_chunks;
 
-pub fn wrap_into_chunks(s: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![s.to_string()];
-    }
-    let mut chunks = Vec::new();
-    let mut remaining = s;
-    loop {
-        let mut char_count = 0;
-        let mut byte_end = remaining.len();
-        for (byte_idx, _) in remaining.char_indices() {
-            if char_count == width {
-                byte_end = byte_idx;
-                break;
-            }
-            char_count += 1;
-        }
-        chunks.push(remaining[..byte_end].to_string());
-        remaining = &remaining[byte_end..];
-        if remaining.is_empty() {
-            break;
-        }
-    }
-    chunks
-}
 
 #[derive(Debug, PartialEq)]
 enum WrappedLogLine {
@@ -91,7 +68,46 @@ fn format_log_entry(
     result
 }
 
-pub fn render_logs(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_right_panel(f: &mut Frame, app: &App, area: Rect) {
+    match app.cursor {
+        CursorTarget::Workflow(_) => render_workflow_toml(f, app, area),
+        CursorTarget::Run(_, _) => render_logs(f, app, area),
+    }
+}
+
+fn render_workflow_toml(f: &mut Frame, app: &App, area: Rect) {
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    let lines: Vec<Line> = match app.selected_workflow_toml() {
+        None => vec![Line::from(Span::styled(
+            "No config available",
+            Style::default().fg(c_dim()).bg(c_background()),
+        ))],
+        Some(toml) => toml
+            .lines()
+            .flat_map(|raw_line| {
+                let line = raw_line.replace('\r', "");
+                if inner_width == 0 || line.len() <= inner_width {
+                    vec![Line::from(Span::styled(line, base_style()))]
+                } else {
+                    wrap_into_chunks(&line, inner_width)
+                        .into_iter()
+                        .map(|chunk| Line::from(Span::styled(chunk, base_style())))
+                        .collect()
+                }
+            })
+            .collect(),
+    };
+
+    let scroll_offset = lines.len().saturating_sub(area.height as usize - 2) as u16;
+    let para = Paragraph::new(lines)
+        .block(panel("Workflow"))
+        .scroll((scroll_offset, 0));
+
+    f.render_widget(para, area);
+}
+
+fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let logs = app.selected_logs();
     let inner_width = area.width.saturating_sub(2) as usize;
 

@@ -232,7 +232,7 @@ pub enum CheckpointAction {
 pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef> },
+    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef>, toml_content: Option<String> },
     WorkflowStateChanged { name: String, state: WorkflowState },
     CheckpointPending {
         run_id: Uuid,

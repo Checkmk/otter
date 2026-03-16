@@ -1,11 +1,12 @@
 mod app;
 mod input;
 mod input_field;
-mod logs_panel;
+mod right_panel;
 mod runs_panel;
 mod scroll;
 mod status_bar;
 mod styles;
+mod text;
 mod ui;
 
 use std::io::stdout;

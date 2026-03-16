@@ -24,6 +24,7 @@ pub struct WorkflowEntry {
     pub runs: Vec<WorkflowRun>,
     pub expanded: bool,
     pub trigger: Option<TriggerDef>,
+    pub toml_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -110,7 +111,7 @@ impl App {
             DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            DaemonEvent::WorkflowRegistered { name, kind, trigger } => {
+            DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content } => {
                 if !self.workflows.iter().any(|e| e.name == name) {
                     self.workflows.push(WorkflowEntry {
                         name,
@@ -119,6 +120,7 @@ impl App {
                         runs: Vec::new(),
                         expanded: false,
                         trigger,
+                        toml_content,
                     });
                 }
             }
@@ -252,6 +254,13 @@ impl App {
             .unwrap_or(&[])
     }
 
+    pub fn selected_workflow_toml(&self) -> Option<&str> {
+        match self.cursor {
+            CursorTarget::Workflow(wi) => self.workflows.get(wi)?.toml_content.as_deref(),
+            CursorTarget::Run(_, _) => None,
+        }
+    }
+
     /// Build a flat list of all cursor targets in navigation order
     fn build_flat_list(&self) -> Vec<CursorTarget> {
         let mut list = Vec::new();
@@ -334,6 +343,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf2".to_string(),
@@ -342,6 +352,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         // Start at first workflow
@@ -378,6 +389,7 @@ mod tests {
             runs: vec![run2.clone(), run1.clone()], // newest first
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Navigate through expanded workflow
@@ -414,6 +426,7 @@ mod tests {
             runs: vec![run],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         // Select the workflow
@@ -440,6 +453,7 @@ mod tests {
             runs: vec![run],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Start with cursor on the workflow (not on a run)
@@ -469,6 +483,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -489,6 +504,7 @@ mod tests {
             runs: vec![run],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         app.cursor = CursorTarget::Run(0, 0);
@@ -510,6 +526,7 @@ mod tests {
             runs: vec![run2.clone(), run1.clone()],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Handle RunDeleted event
@@ -531,6 +548,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         // Add runs in non-chronological order
@@ -569,6 +587,7 @@ mod tests {
             runs: vec![run2, run1],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Cursor on the last run (index 1)
@@ -603,6 +622,7 @@ mod tests {
             runs: vec![run_a],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf-b".to_string(),
@@ -611,6 +631,7 @@ mod tests {
             runs: vec![run_b1, run_b0.clone()],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Cursor on the second run of wf-b (the older one)
@@ -638,6 +659,7 @@ mod tests {
             runs: vec![run],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
 
         // Cursor on the only run
@@ -663,6 +685,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -686,6 +709,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         // Add a new run without starting the workflow
@@ -707,6 +731,7 @@ mod tests {
             runs: vec![],
             expanded: false,
             trigger: None,
+            toml_content: None,
         });
 
         // Start the workflow
@@ -740,6 +765,7 @@ mod tests {
             runs: vec![run],
             expanded: true,
             trigger: None,
+            toml_content: None,
         });
         app.cursor = CursorTarget::Run(0, 0);
 
@@ -769,5 +795,78 @@ mod tests {
 
         // THEN processing is cleared
         assert!(!app.pending_checkpoints[&run_id].processing);
+    }
+
+    #[test]
+    fn selected_workflow_toml_returns_content_when_cursor_on_workflow() {
+        let mut app = make_test_app();
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
+        });
+
+        app.cursor = CursorTarget::Workflow(0);
+        assert_eq!(app.selected_workflow_toml(), Some("name = \"wf\"\ntype = \"looping\"\n"));
+    }
+
+    #[test]
+    fn selected_workflow_toml_returns_none_when_toml_absent() {
+        let mut app = make_test_app();
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+        });
+
+        app.cursor = CursorTarget::Workflow(0);
+        assert_eq!(app.selected_workflow_toml(), None);
+    }
+
+    #[test]
+    fn selected_workflow_toml_returns_none_when_cursor_on_run() {
+        let mut app = make_test_app();
+
+        let run = WorkflowRun::new("wf".to_string());
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run],
+            expanded: true,
+            trigger: None,
+            toml_content: Some("name = \"wf\"\n".to_string()),
+        });
+
+        app.cursor = CursorTarget::Run(0, 0);
+        assert_eq!(app.selected_workflow_toml(), None);
+    }
+
+    #[test]
+    fn handle_daemon_event_workflow_registered_stores_toml_content() {
+        let mut app = make_test_app();
+
+        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            trigger: None,
+            toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
+        });
+
+        assert_eq!(app.workflows.len(), 1);
+        assert_eq!(
+            app.workflows[0].toml_content.as_deref(),
+            Some("name = \"wf\"\ntype = \"looping\"\n")
+        );
     }
 }
