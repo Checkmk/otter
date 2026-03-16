@@ -1,21 +1,23 @@
-# Architecture
-
-When planning any meaningful changes, consider @TARGET_ARCHITECTURE.md
-
 # Code style
 
 - Let code speak for itself. Names should convey intent; comments only when they can't.
-- This applies to test structure too: `// GIVEN`, `// WHEN`, `// THEN` labels are often enough — don't always elaborate.
-- Write unit tests for new features and bug fixes when possible. For complex features, integration tests are also encouraged.
+- Applies to test structure, too: `// GIVEN`, `// WHEN`, `// THEN` labels are often enough.
 
-# Schema changes
+# Testing
 
-- Update all example workflows in `examples/` and `tests/`.
+- Write tests for new features.
+- For bug fixes, write a test that reproduces the bug, check that it fails, then fix the bug.
+- For complex features, integration tests are also encouraged.
+- Use GIVEN, WHEN, THEN structure
 
-# Bug Fixing
+# Changing user behavior
 
-- When possible, add a test that reproduces the bug before fixing it.
+- Keep @README.md and @CONFIGURATION_REFERENCE.md up to date.
 
-# Documentation
+# Changing schemas
 
-- Always keep @README.md and @CONFIGURATION_REFERENCE.md up to date
+- Keep example workflows up to date in `examples/` and `tests/`.
+
+# Architecture
+
+- Consider @TARGET_ARCHITECTURE.md when planning.
