@@ -99,10 +99,10 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                 }
 
                 let datetime = run.started_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
-                let trigger_info = run.trigger_payload.as_ref()
-                    .map(|p| format!("  {}", &p[..p.len().min(8)]))
-                    .unwrap_or_default();
-                let run_content = format!("{}{}", datetime, trigger_info);
+                let run_content = match run.trigger_payload.as_deref() {
+                    Some(p) if !p.is_empty() => format!("{} ({})", &p[..p.len().min(8)], datetime),
+                    _ => datetime,
+                };
                 let running = RunStatus::Running;
                 let effective_run_status = if app.pending_checkpoints.get(&run.id).is_some_and(|cp| cp.processing) { &running } else { &run.status };
                 let (run_icon, run_color) = workflow_state_color(
