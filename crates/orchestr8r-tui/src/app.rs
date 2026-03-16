@@ -158,25 +158,28 @@ impl App {
                 }
             }
             DaemonEvent::RunDeleted { run_id } => {
-                // Remove from all workflows
+                let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
                 for entry in &mut self.workflows {
                     entry.runs.retain(|r| r.id != run_id);
                 }
                 self.logs.remove(&run_id);
                 self.pending_checkpoints.remove(&run_id);
-                self.ensure_cursor_valid();
+                self.ensure_cursor_valid(old_pos);
             }
         }
     }
 
-    fn ensure_cursor_valid(&mut self) {
+    fn ensure_cursor_valid(&mut self, preferred_pos: Option<usize>) {
         let flat = self.build_flat_list();
         if flat.is_empty() {
             self.cursor = CursorTarget::Workflow(0);
             return;
         }
         if !flat.iter().any(|t| *t == self.cursor) {
-            self.cursor = flat[flat.len() - 1];
+            let target = preferred_pos
+                .map(|p| p.saturating_sub(1).min(flat.len() - 1))
+                .unwrap_or(flat.len() - 1);
+            self.cursor = flat[target];
         }
     }
 
@@ -543,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_selected_run_snaps_cursor_to_valid_position() {
+    fn deleting_selected_run_snaps_cursor_to_previous_run() {
         let mut app = make_test_app();
 
         let run1 = WorkflowRun::new("wf".to_string());
@@ -560,16 +563,57 @@ mod tests {
             trigger: None,
         });
 
-        // Cursor on the last run
+        // Cursor on the last run (index 1)
         app.cursor = CursorTarget::Run(0, 1);
         assert_eq!(app.selected_run_id(), Some(run1_id));
 
         // Delete the selected run
         app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run1_id });
 
-        // Cursor should snap to the remaining run
+        // Cursor should snap to the previous run (index 0), not jump to another workflow
         assert_eq!(app.cursor, CursorTarget::Run(0, 0));
         assert_eq!(app.selected_run_id(), Some(run2_id));
+    }
+
+    #[test]
+    fn deleting_run_does_not_jump_to_another_workflow() {
+        use chrono::Duration;
+
+        let mut app = make_test_app();
+
+        let run_a = WorkflowRun::new("wf-a".to_string());
+        let run_b0 = WorkflowRun::new("wf-b".to_string());
+        let mut run_b1 = WorkflowRun::new("wf-b".to_string());
+        run_b1.started_at = run_b0.started_at + Duration::seconds(1);
+        let run_b1_id = run_b1.id;
+
+        // wf-a has one run; wf-b has two runs (b1 newest first)
+        app.workflows.push(WorkflowEntry {
+            name: "wf-a".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run_a],
+            expanded: false,
+            trigger: None,
+        });
+        app.workflows.push(WorkflowEntry {
+            name: "wf-b".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run_b1, run_b0.clone()],
+            expanded: true,
+            trigger: None,
+        });
+
+        // Cursor on the second run of wf-b (the older one)
+        app.cursor = CursorTarget::Run(1, 1);
+
+        // Delete that run
+        app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run_b0.id });
+
+        // Should snap to Run(1, 0) — the first run of wf-b — NOT to wf-a or run_b1_id accidentally
+        assert_eq!(app.cursor, CursorTarget::Run(1, 0));
+        assert_eq!(app.selected_run_id(), Some(run_b1_id));
     }
 
     #[test]
