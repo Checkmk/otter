@@ -120,7 +120,11 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         } else {
             "  "
         };
-        let (state_icon, state_color) = workflow_state_color(&entry.state, entry.runs.first().map(|r| &r.status), Some(&entry.kind), entry.trigger.as_ref(), app.tick);
+        let running = RunStatus::Running;
+        let first_run_status = entry.runs.first().map(|r| {
+            if app.pending_checkpoints.get(&r.id).is_some_and(|cp| cp.processing) { &running } else { &r.status }
+        });
+        let (state_icon, state_color) = workflow_state_color(&entry.state, first_run_status, Some(&entry.kind), entry.trigger.as_ref(), app.tick);
         items.push(make_item(&expand_char, &entry.name, state_icon, state_color, is_workflow_selected));
 
         if entry.expanded {
@@ -135,9 +139,11 @@ fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     .map(|p| format!("  {}", &p[..p.len().min(8)]))
                     .unwrap_or_default();
                 let run_content = format!("{}{}", datetime, trigger_info);
+                let running = RunStatus::Running;
+                let effective_run_status = if app.pending_checkpoints.get(&run.id).is_some_and(|cp| cp.processing) { &running } else { &run.status };
                 let (run_icon, run_color) = workflow_state_color(
                     &WorkflowState::Running,
-                    Some(&run.status),
+                    Some(effective_run_status),
                     None,
                     None,
                     app.tick,

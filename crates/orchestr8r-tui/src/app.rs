@@ -14,6 +14,7 @@ pub enum Mode {
 pub struct PendingCheckpoint {
     pub run_id: Uuid,
     pub feedback_available: bool,
+    pub processing: bool,
 }
 
 pub struct WorkflowEntry {
@@ -150,6 +151,7 @@ impl App {
                 self.pending_checkpoints.insert(run_id, PendingCheckpoint {
                     run_id,
                     feedback_available,
+                    processing: false,
                 });
             }
             DaemonEvent::WorkflowStateChanged { name, state } => {
@@ -216,6 +218,11 @@ impl App {
             _ => self.take_selected_checkpoint().map(|cp| cp.run_id),
         };
         if let Some(run_id) = run_id {
+            if matches!(action, CheckpointAction::Feedback(_)) {
+                if let Some(cp) = self.pending_checkpoints.get_mut(&run_id) {
+                    cp.processing = true;
+                }
+            }
             let _ = self.cmd_tx.try_send(DaemonCommand::CheckpointRespond { run_id, action });
         }
     }
@@ -690,5 +697,53 @@ mod tests {
         assert!(app.workflows[0].expanded);
         // pending_workflow_start should be cleared
         assert!(app.pending_workflow_start.is_none());
+    }
+
+    #[test]
+    fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
+        use orchestr8r_core::types::{CheckpointAction, RunStatus};
+
+        let mut app = make_test_app();
+
+        let mut run = WorkflowRun::new("wf".to_string());
+        run.status = RunStatus::WaitingCheckpoint;
+        let run_id = run.id;
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Running,
+            runs: vec![run],
+            expanded: true,
+            trigger: None,
+        });
+        app.cursor = CursorTarget::Run(0, 0);
+
+        // Simulate checkpoint pending
+        app.handle_daemon_event(DaemonEvent::CheckpointPending {
+            run_id,
+            step_index: 0,
+            message: "Review?".to_string(),
+            feedback_available: true,
+        });
+        assert!(app.pending_checkpoints.contains_key(&run_id));
+        assert!(!app.pending_checkpoints[&run_id].processing);
+
+        // WHEN user submits feedback
+        app.respond_checkpoint(CheckpointAction::Feedback("fix this".to_string()));
+
+        // THEN processing is set, checkpoint still pending
+        assert!(app.pending_checkpoints[&run_id].processing);
+
+        // WHEN agent finishes and checkpoint re-presents
+        app.handle_daemon_event(DaemonEvent::CheckpointPending {
+            run_id,
+            step_index: 0,
+            message: "Review?".to_string(),
+            feedback_available: true,
+        });
+
+        // THEN processing is cleared
+        assert!(!app.pending_checkpoints[&run_id].processing);
     }
 }
