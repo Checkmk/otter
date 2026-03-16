@@ -4,7 +4,7 @@ use ratatui::{
 };
 
 use crate::styles::{base_style, c_action_feedback, c_background};
-use crate::ui::wrap_into_chunks;
+use crate::logs_panel::wrap_into_chunks;
 
 #[derive(Copy, Clone)]
 pub struct RenderConfig {

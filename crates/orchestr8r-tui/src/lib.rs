@@ -1,7 +1,10 @@
 mod app;
 mod input;
 mod input_field;
+mod logs_panel;
+mod runs_panel;
 mod scroll;
+mod status_bar;
 mod styles;
 mod ui;
 
