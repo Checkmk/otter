@@ -332,19 +332,29 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" Navigate", dim),
                 ];
 
-                if matches!(app.cursor, CursorTarget::Workflow(_)) {
-                    spans.extend([
-                        Span::styled("  ", base_style()),
-                        Span::styled("[Space]", key),
-                        Span::styled(" Expand", dim),
-                    ]);
+                if let CursorTarget::Workflow(wi) = app.cursor {
+                    if let Some(entry) = app.workflows.get(wi) {
+                        if entry.expanded {
+                            spans.extend([
+                                Span::styled("  ", base_style()),
+                                Span::styled("[Space]", key),
+                                Span::styled(" Hide runs", dim),
+                            ]);
+                        } else if !entry.runs.is_empty() {
+                            spans.extend([
+                                Span::styled("  ", base_style()),
+                                Span::styled("[Space]", key),
+                                Span::styled(" Show runs", dim),
+                            ]);
+                        }
+                    }
                 }
 
                 if matches!(app.cursor, CursorTarget::Run(_, _)) {
                     spans.extend([
                         Span::styled("  ", base_style()),
                         Span::styled("[Del]", key),
-                        Span::styled(" Delete", dim),
+                        Span::styled(" Delete run", dim),
                     ]);
                 }
 
@@ -357,7 +367,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             spans.extend([
                                 Span::styled("  ", base_style()),
                                 Span::styled("[Enter]", key),
-                                Span::styled(" Start", dim),
+                                Span::styled(" Start workflow", dim),
                             ]);
                         }
                         WorkflowState::Running => {
@@ -365,23 +375,23 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                                 spans.extend([
                                     Span::styled("  ", base_style()),
                                     Span::styled("[p]", key),
-                                    Span::styled(" Pause", dim),
+                                    Span::styled(" Pause workflow", dim),
                                 ]);
                             }
                             spans.extend([
                                 Span::styled("  ", base_style()),
                                 Span::styled("[Enter]", key),
-                                Span::styled(" Stop", dim),
+                                Span::styled(" Stop workflow", dim),
                             ]);
                         }
                         WorkflowState::Paused => {
                             spans.extend([
                                 Span::styled("  ", base_style()),
                                 Span::styled("[Enter]", key),
-                                Span::styled(" Resume", dim),
+                                Span::styled(" Resume workflow", dim),
                                 Span::styled("  ", base_style()),
                                 Span::styled("[x]", key),
-                                Span::styled(" Stop", dim),
+                                Span::styled(" Stop workflow", dim),
                             ]);
                         }
                     }
