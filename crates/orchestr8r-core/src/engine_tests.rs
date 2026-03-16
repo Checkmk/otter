@@ -296,6 +296,52 @@ async fn pause_halts_iterations_and_resume_continues() {
 }
 
 #[tokio::test]
+async fn looping_workflow_creates_new_run_per_iteration() {
+    // GIVEN a looping workflow with a fast shell step
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let wf = workflow(
+        "test-new-runs",
+        WorkflowType::Looping,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "iter".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+
+    // WHEN the engine runs until at least 2 runs appear
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let storage_clone = storage.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+        storage_clone
+    });
+
+    let start = tokio::time::Instant::now();
+    loop {
+        if storage.runs().len() >= 2 {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "two separate runs did not appear within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    shutdown.store(true, Ordering::Relaxed);
+    let storage = handle.await.unwrap();
+
+    // THEN each iteration created a distinct run record
+    let runs = storage.runs();
+    assert!(runs.len() >= 2, "expected >= 2 runs, got {}", runs.len());
+    let ids: std::collections::HashSet<_> = runs.iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), runs.len(), "all run IDs should be distinct");
+}
+
+#[tokio::test]
 async fn shutdown_while_paused_exits_cleanly() {
     // GIVEN a paused engine
     let storage = Arc::new(InMemoryStorage::new());

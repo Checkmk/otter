@@ -94,15 +94,6 @@ impl Engine {
             kind: workflow.workflow_type.clone(),
             trigger: None,
         });
-        let mut run = WorkflowRun::new(workflow.name.clone());
-        let scratch_dir = self.scratch_base.join(run.id.to_string());
-        std::fs::create_dir_all(&scratch_dir)?;
-
-        self.storage.save_workflow_run(&run)?;
-        Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-        info!(run_id = %run.id, workflow = %workflow.name, "Starting looping workflow run");
-
-        let session_manager = Arc::new(AgentSessionManager::new());
 
         let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
             Some(path) => {
@@ -133,7 +124,14 @@ impl Engine {
                 break;
             }
 
-            info!(iteration = run.iteration, "Starting iteration");
+            let mut run = WorkflowRun::new(workflow.name.clone());
+            let scratch_dir = self.scratch_base.join(run.id.to_string());
+            std::fs::create_dir_all(&scratch_dir)?;
+            self.storage.save_workflow_run(&run)?;
+            Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+            info!(run_id = %run.id, workflow = %workflow.name, "Starting looping workflow iteration");
+
+            let session_manager = Arc::new(AgentSessionManager::new());
 
             let stop = self
                 .execute_steps(
@@ -147,18 +145,18 @@ impl Engine {
                 )
                 .await?;
 
+            session_manager.cleanup().await;
+
             if stop {
                 break;
             }
 
-            run.iteration += 1;
-            run.status = RunStatus::Running;
+            run.status = RunStatus::Completed;
             self.storage.update_workflow_run(&run)?;
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+            info!(run_id = %run.id, "Looping workflow iteration completed");
         }
 
-        session_manager.cleanup().await;
-        info!(run_id = %run.id, iterations = run.iteration, "Workflow run ended");
         Ok(())
     }
 
