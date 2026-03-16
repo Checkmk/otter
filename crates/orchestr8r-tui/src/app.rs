@@ -91,17 +91,18 @@ impl App {
         match event {
             DaemonEvent::RunUpdated(run) => {
                 // Find the workflow by name and upsert the run
-                if let Some(entry) = self.workflows.iter_mut().find(|e| e.name == run.workflow_name) {
+                if let Some((wi, entry)) = self.workflows.iter_mut().enumerate().find(|(_, e)| e.name == run.workflow_name) {
                     if let Some(existing) = entry.runs.iter_mut().find(|r| r.id == run.id) {
                         *existing = run;
                     } else {
                         entry.runs.push(run);
                         // Sort by started_at descending (newest first)
                         entry.runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-                        // Automatically expand workflow if we just started it
+                        // Automatically expand and focus the new run if we just started it
                         if self.pending_workflow_start.as_ref() == Some(&entry.name) {
                             entry.expanded = true;
                             self.pending_workflow_start = None;
+                            self.cursor = CursorTarget::Run(wi, 0);
                         }
                     }
                 }
@@ -649,6 +650,29 @@ mod tests {
         // Cursor should snap to the workflow row
         assert_eq!(app.cursor, CursorTarget::Workflow(0));
         assert_eq!(app.selected_run_id(), None);
+    }
+
+    #[test]
+    fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
+        let mut app = make_test_app();
+
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+        });
+
+        app.cursor = CursorTarget::Workflow(0);
+        app.start_selected();
+
+        let run = WorkflowRun::new("wf".to_string());
+        app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+
+        // Cursor should move to the new run, not stay on the workflow row
+        assert_eq!(app.cursor, CursorTarget::Run(0, 0));
     }
 
     #[test]
