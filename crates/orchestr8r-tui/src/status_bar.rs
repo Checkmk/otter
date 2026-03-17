@@ -7,7 +7,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, CursorTarget, Mode};
+use crate::app::{App, CursorTarget, Focus, Mode};
 use crate::input_field::InputField;
 use crate::styles::{
     base_style, c_action_continue, c_action_feedback, c_action_stop, c_background, c_dim,
@@ -23,6 +23,18 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let overhead = 15;
             let available_width = (area.width as usize).saturating_sub(overhead);
             InputField::render(" Feedback ", &app.feedback_input, available_width, app.tick)
+        }
+        Mode::Normal if app.focus == Focus::Right => {
+            vec![Line::from(vec![
+                Span::styled("[↑↓]", key),
+                Span::styled(" Navigate", dim),
+                Span::styled("  ", base_style()),
+                Span::styled("[Del]", key),
+                Span::styled(" Delete trigger", dim),
+                Span::styled("  ", base_style()),
+                Span::styled("[Esc/Tab]", key),
+                Span::styled(" Back", dim),
+            ])]
         }
         Mode::Normal => {
             if let Some(cp) = app.active_checkpoint() {
@@ -116,6 +128,14 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         }
                     }
                 }
+                if app.cursor_is_polling_workflow() {
+                    spans.extend([
+                        Span::styled("  ", base_style()),
+                        Span::styled("[T]", key),
+                        Span::styled(" Consumed triggers", dim),
+                    ]);
+                }
+
                 let other = app.other_checkpoint_count();
                 if other > 0 {
                     let msg = if other == 1 {

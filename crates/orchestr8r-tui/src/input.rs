@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use orchestr8r_core::types::{CheckpointAction, WorkflowType, WorkflowState};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Focus, Mode};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -16,6 +16,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_normal(app: &mut App, key: KeyEvent) {
+    // When right panel has focus, delegate to right panel handler
+    if app.focus == Focus::Right {
+        handle_right_panel(app, key);
+        return;
+    }
+
     // Checkpoint actions take priority when a checkpoint is active
     let has_checkpoint = app.active_checkpoint().is_some();
 
@@ -84,6 +90,22 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') if has_checkpoint => {
             app.respond_checkpoint(CheckpointAction::Stop)
         }
+        KeyCode::Char('t') if !has_checkpoint => {
+            app.open_consumed_triggers();
+        }
+        KeyCode::Tab if !has_checkpoint => {
+            app.open_consumed_triggers();
+        }
+        _ => {}
+    }
+}
+
+fn handle_right_panel(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Tab => app.close_right_panel(),
+        KeyCode::Up | KeyCode::Char('k') => app.move_right_cursor_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_right_cursor_down(),
+        KeyCode::Delete => app.delete_selected_consumed_trigger(),
         _ => {}
     }
 }

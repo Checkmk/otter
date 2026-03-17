@@ -7,8 +7,8 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, CursorTarget};
-use crate::styles::{base_style, c_background, c_dim, panel, step_color};
+use crate::app::{App, CursorTarget, Focus, RightPanelContent};
+use crate::styles::{base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
 
 
@@ -69,9 +69,14 @@ fn format_log_entry(
 }
 
 pub fn render_right_panel(f: &mut Frame, app: &App, area: Rect) {
-    match app.cursor {
-        CursorTarget::Workflow(_) => render_workflow_toml(f, app, area),
-        CursorTarget::Run(_, _) => render_logs(f, app, area),
+    match &app.right_panel_content {
+        RightPanelContent::ConsumedTriggers => {
+            render_consumed_triggers(f, app, area, app.focus == Focus::Right);
+        }
+        RightPanelContent::Contextual => match app.cursor {
+            CursorTarget::Workflow(_) => render_workflow_toml(f, app, area),
+            CursorTarget::Run(_, _) => render_logs(f, app, area),
+        },
     }
 }
 
@@ -151,6 +156,47 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let scroll_offset = lines.len().saturating_sub(area.height as usize - 2) as u16;
     let para = Paragraph::new(lines)
         .block(panel("Logs"))
+        .scroll((scroll_offset, 0));
+
+    f.render_widget(para, area);
+}
+
+fn render_consumed_triggers(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
+    let triggers = app.selected_consumed_triggers();
+    let block = if is_focused {
+        panel_focused("Consumed Triggers")
+    } else {
+        panel("Consumed Triggers")
+    };
+
+    let lines: Vec<Line> = if triggers.is_empty() {
+        vec![Line::from(Span::styled(
+            "No consumed triggers",
+            Style::default().fg(c_dim()).bg(c_background()),
+        ))]
+    } else {
+        triggers.iter().enumerate().map(|(i, hash)| {
+            if is_focused && i == app.right_cursor {
+                Line::from(Span::styled(
+                    hash.clone(),
+                    Style::default().fg(c_background()).bg(c_foreground()),
+                ))
+            } else {
+                Line::from(Span::styled(hash.clone(), base_style()))
+            }
+        }).collect()
+    };
+
+    // Scroll to keep right_cursor visible
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let scroll_offset = if triggers.is_empty() || !is_focused {
+        0
+    } else {
+        app.right_cursor.saturating_sub(inner_height.saturating_sub(1)) as u16
+    };
+
+    let para = Paragraph::new(lines)
+        .block(block)
         .scroll((scroll_offset, 0));
 
     f.render_widget(para, area);

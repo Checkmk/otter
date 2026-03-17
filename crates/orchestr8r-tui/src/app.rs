@@ -11,6 +11,18 @@ pub enum Mode {
     FeedbackInput,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Focus {
+    Left,
+    Right,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RightPanelContent {
+    Contextual,
+    ConsumedTriggers,
+}
+
 pub struct PendingCheckpoint {
     pub run_id: Uuid,
     pub feedback_available: bool,
@@ -45,6 +57,10 @@ pub struct App {
     pub cmd_tx: mpsc::Sender<DaemonCommand>,
     /// Name of workflow we just started; when a new run appears for it, auto-expand
     pub pending_workflow_start: Option<String>,
+    pub focus: Focus,
+    pub right_panel_content: RightPanelContent,
+    pub right_cursor: usize,
+    pub consumed_triggers: HashMap<String, Vec<String>>,
 }
 
 impl App {
@@ -60,6 +76,10 @@ impl App {
             tick: 0,
             cmd_tx,
             pending_workflow_start: None,
+            focus: Focus::Left,
+            right_panel_content: RightPanelContent::Contextual,
+            right_cursor: 0,
+            consumed_triggers: HashMap::new(),
         }
     }
 
@@ -171,8 +191,15 @@ impl App {
                 self.pending_checkpoints.remove(&run_id);
                 self.ensure_cursor_valid(old_pos);
             }
-            DaemonEvent::ConsumedTriggersChanged { .. } => {
-                // Reserved for future TUI display of consumed triggers
+            DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
+                self.consumed_triggers.insert(workflow, triggers);
+                // Clamp right_cursor in case the list shrank
+                let len = self.selected_consumed_triggers().len();
+                if len == 0 {
+                    self.right_cursor = 0;
+                } else {
+                    self.right_cursor = self.right_cursor.min(len - 1);
+                }
             }
         }
     }
@@ -280,6 +307,7 @@ impl App {
 
     /// Navigate up one position in the unified flat list (wraps to bottom)
     pub fn move_cursor_up(&mut self) {
+        self.close_right_panel();
         let flat = self.build_flat_list();
         if flat.is_empty() {
             return;
@@ -291,6 +319,7 @@ impl App {
 
     /// Navigate down one position in the unified flat list (wraps to top)
     pub fn move_cursor_down(&mut self) {
+        self.close_right_panel();
         let flat = self.build_flat_list();
         if flat.is_empty() {
             return;
@@ -311,6 +340,76 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn cursor_is_polling_workflow(&self) -> bool {
+        matches!(
+            self.selected_workflow().and_then(|e| e.trigger.as_ref()),
+            Some(TriggerDef::Polling { .. })
+        )
+    }
+
+    pub fn open_consumed_triggers(&mut self) {
+        if !self.cursor_is_polling_workflow() {
+            return;
+        }
+        if let Some(name) = self.selected_workflow().map(|e| e.name.clone()) {
+            self.consumed_triggers.entry(name.clone()).or_default();
+            self.right_panel_content = RightPanelContent::ConsumedTriggers;
+            self.focus = Focus::Right;
+            self.right_cursor = 0;
+            let _ = self.cmd_tx.try_send(DaemonCommand::ListConsumedTriggers { workflow: name });
+        }
+    }
+
+    pub fn close_right_panel(&mut self) {
+        self.focus = Focus::Left;
+        self.right_panel_content = RightPanelContent::Contextual;
+    }
+
+    pub fn selected_consumed_triggers(&self) -> &[String] {
+        let name = match self.selected_workflow() {
+            Some(e) => &e.name,
+            None => return &[],
+        };
+        self.consumed_triggers.get(name).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn move_right_cursor_up(&mut self) {
+        let len = self.selected_consumed_triggers().len();
+        if len == 0 {
+            return;
+        }
+        self.right_cursor = (self.right_cursor + len - 1) % len;
+    }
+
+    pub fn move_right_cursor_down(&mut self) {
+        let len = self.selected_consumed_triggers().len();
+        if len == 0 {
+            return;
+        }
+        self.right_cursor = (self.right_cursor + 1) % len;
+    }
+
+    pub fn delete_selected_consumed_trigger(&mut self) {
+        let workflow = match self.selected_workflow().map(|e| e.name.clone()) {
+            Some(n) => n,
+            None => return,
+        };
+        let triggers = match self.consumed_triggers.get_mut(&workflow) {
+            Some(t) => t,
+            None => return,
+        };
+        if self.right_cursor >= triggers.len() {
+            return;
+        }
+        let trigger = triggers.remove(self.right_cursor);
+        if !triggers.is_empty() {
+            self.right_cursor = self.right_cursor.min(triggers.len() - 1);
+        } else {
+            self.right_cursor = 0;
+        }
+        let _ = self.cmd_tx.try_send(DaemonCommand::DeleteConsumedTrigger { workflow, trigger });
     }
 
     /// Delete the currently selected run (only if cursor is on a run)

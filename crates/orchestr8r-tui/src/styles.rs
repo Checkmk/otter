@@ -135,6 +135,25 @@ pub fn panel(title: &str) -> Block<'static> {
         .style(base_style())
 }
 
+pub fn panel_focused(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(c_foreground())
+                .bg(c_background())
+                .add_modifier(Modifier::BOLD),
+        )
+        .title_style(
+            Style::default()
+                .fg(c_foreground())
+                .bg(c_background())
+                .add_modifier(Modifier::BOLD),
+        )
+        .title(title.to_string())
+        .style(base_style())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

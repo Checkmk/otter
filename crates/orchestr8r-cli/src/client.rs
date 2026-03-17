@@ -30,6 +30,9 @@ pub async fn run_ui() -> anyhow::Result<()> {
     let (event_tx, event_rx) = mpsc::channel::<DaemonEvent>(256);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<DaemonCommand>(32);
 
+    // Clone before event_tx is moved into the subscription task below
+    let event_tx_cmd = event_tx.clone();
+
     // Read event stream from the subscription connection
     tokio::spawn(async move {
         let _keep_writer = sub_writer; // hold write half open so connection stays alive
@@ -50,11 +53,22 @@ pub async fn run_ui() -> anyhow::Result<()> {
         }
     });
 
-    // Forward outbound commands via one-shot connections
+    // Forward outbound commands via one-shot connections; pipe trigger list responses back as events
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
-            if let Err(e) = send_command_once(cmd).await {
-                tracing::warn!("command to daemon failed: {}", e);
+            let workflow_hint = if let DaemonCommand::ListConsumedTriggers { ref workflow } = cmd {
+                Some(workflow.clone())
+            } else {
+                None
+            };
+            match send_command_once(cmd).await {
+                Ok(DaemonResponse::ConsumedTriggersResponse { triggers }) => {
+                    if let Some(workflow) = workflow_hint {
+                        let _ = event_tx_cmd.send(DaemonEvent::ConsumedTriggersChanged { workflow, triggers }).await;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("command to daemon failed: {}", e),
             }
         }
     });
