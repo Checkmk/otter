@@ -3,7 +3,7 @@
 ## Table of Contents
 
 1. [Workflow Structure](#workflow-structure)
-2. [Workflow Kinds](#workflow-kinds)
+2. [Workflow Types](#workflow-types)
 3. [Step Types](#step-types)
 4. [Triggers](#triggers)
 5. [Examples](#examples)
@@ -16,7 +16,7 @@ Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow def
 
 ```toml
 name = "my-workflow"
-type = "looping"  # or "triggered"
+type = "triggered"  # or "looping"
 workspace = "/home/user/my-project"  # optional
 
 [trigger]  # optional; required if type = "triggered"
@@ -326,6 +326,6 @@ Example script and workflow are available in the [examples](examples/) directory
 
 ---
 
-## Examples
+## Example Workflows
 
 Can be found in the [examples](examples/) directory.
