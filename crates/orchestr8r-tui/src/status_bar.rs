@@ -27,21 +27,21 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Normal if app.focus == Focus::Right => {
             match app.right_panel_content {
                 RightPanelContent::Contextual => vec![Line::from(vec![
-                    Span::styled("[↑↓]", key),
-                    Span::styled(" Scroll", dim),
-                    Span::styled("  ", base_style()),
                     Span::styled("[Tab]", key),
                     Span::styled(" Switch panel", dim),
+                    Span::styled("  ", base_style()),
+                    Span::styled("[↑↓]", key),
+                    Span::styled(" Scroll", dim),
                 ])],
                 RightPanelContent::ConsumedTriggers => vec![Line::from(vec![
+                    Span::styled("[Tab]", key),
+                    Span::styled(" Back", dim),
+                    Span::styled("  ", base_style()),
                     Span::styled("[↑↓]", key),
                     Span::styled(" Navigate", dim),
                     Span::styled("  ", base_style()),
                     Span::styled("[Del]", key),
                     Span::styled(" Delete trigger", dim),
-                    Span::styled("  ", base_style()),
-                    Span::styled("[Tab]", key),
-                    Span::styled(" Back", dim),
                 ])],
             }
         }
@@ -68,6 +68,9 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 let mut spans: Vec<Span> = vec![
                     Span::styled("[q]", key),
                     Span::styled(" Quit", dim),
+                    Span::styled("  ", base_style()),
+                    Span::styled("[Tab]", key),
+                    Span::styled(" Switch panel", dim),
                     Span::styled("  ", base_style()),
                     Span::styled("[↑↓]", key),
                     Span::styled(" Navigate", dim),
@@ -99,13 +102,14 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     ]);
                 }
 
+                let mut enter_spans: Vec<Span> = vec![];
                 if let (Some(state), Some(kind)) = (
                     app.selected_workflow_state(),
                     app.selected_workflow_kind(),
                 ) {
                     match state {
                         WorkflowState::Dormant => {
-                            spans.extend([
+                            enter_spans.extend([
                                 Span::styled("  ", base_style()),
                                 Span::styled("[Enter]", key),
                                 Span::styled(" Start workflow", dim),
@@ -119,7 +123,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                                     Span::styled(" Pause workflow", dim),
                                 ]);
                             }
-                            spans.extend([
+                            enter_spans.extend([
                                 Span::styled("  ", base_style()),
                                 Span::styled("[Enter]", key),
                                 Span::styled(" Stop workflow", dim),
@@ -128,11 +132,13 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         WorkflowState::Paused => {
                             spans.extend([
                                 Span::styled("  ", base_style()),
-                                Span::styled("[Enter]", key),
-                                Span::styled(" Resume workflow", dim),
-                                Span::styled("  ", base_style()),
                                 Span::styled("[x]", key),
                                 Span::styled(" Stop workflow", dim),
+                            ]);
+                            enter_spans.extend([
+                                Span::styled("  ", base_style()),
+                                Span::styled("[Enter]", key),
+                                Span::styled(" Resume workflow", dim),
                             ]);
                         }
                     }
@@ -145,11 +151,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     ]);
                 }
 
-                spans.extend([
-                    Span::styled("  ", base_style()),
-                    Span::styled("[Tab]", key),
-                    Span::styled(" Switch panel", dim),
-                ]);
+                spans.extend(enter_spans);
 
                 let other = app.other_checkpoint_count();
                 if other > 0 {
