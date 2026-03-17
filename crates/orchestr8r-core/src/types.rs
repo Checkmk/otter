@@ -12,7 +12,7 @@ pub struct WorkflowDef {
     #[serde(default)]
     pub trigger: Option<TriggerDef>,
     #[serde(default)]
-    pub workspace: Option<String>,
+    pub workspace: Option<WorkspaceConfig>,
     pub steps: Vec<StepDef>,
 }
 
@@ -40,11 +40,27 @@ fn default_poll_interval() -> u64 {
     600
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkspaceConfig {
+    /// Use the run's scratch directory (default when omitted).
+    Scratch,
+    /// An existing directory on disk.
+    Fixed { path: String },
+    /// A command whose stdout (trimmed) is the workspace path.
+    /// Invoked as: `command[0] command[1..] <workflow-name> <run-id>`.
+    Script { command: Vec<String> },
+}
+
 #[derive(Debug, Clone)]
 pub struct TriggerEvent {
     pub source: String,
     pub payload: String,
     pub preallocated_run_id: Option<Uuid>,
+    /// Workspace path already resolved by the trigger (e.g. polling trigger ran
+    /// the workspace script before the context command). When set, `run_once()`
+    /// uses this directly instead of re-running `resolve_workspace()`.
+    pub resolved_workspace: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]

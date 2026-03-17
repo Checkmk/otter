@@ -12,6 +12,7 @@ use crate::types::{
     EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
     WorkflowDef, WorkflowType, WorkflowRun,
 };
+use crate::workspace::resolve_workspace;
 use orchestr8r_notify::{NoOpNotifier, Notifier};
 use tokio::sync::mpsc;
 
@@ -95,19 +96,6 @@ impl Engine {
             trigger: None,
         });
 
-        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
-            Some(path) => {
-                let resolved = std::fs::canonicalize(path).map_err(|e| {
-                    anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
-                })?;
-                if !resolved.is_dir() {
-                    return Err(anyhow::anyhow!("workspace path '{}' is not a directory", resolved.display()));
-                }
-                Some(resolved)
-            }
-            None => None,
-        };
-
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current iteration");
@@ -127,6 +115,13 @@ impl Engine {
             let mut run = WorkflowRun::new(workflow.name.clone());
             let scratch_dir = self.scratch_base.join(run.id.to_string());
             std::fs::create_dir_all(&scratch_dir)?;
+
+            let workspace_dir = resolve_workspace(
+                workflow.workspace.as_ref(),
+                &workflow.name,
+                run.id,
+            )?;
+
             self.storage.save_workflow_run(&run)?;
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
             info!(run_id = %run.id, workflow = %workflow.name, "Starting looping workflow iteration");
@@ -179,19 +174,12 @@ impl Engine {
             .unwrap_or(&self.scratch_base)
             .to_path_buf();
 
-        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
-            Some(path) => Some(std::fs::canonicalize(path).map_err(|e| {
-                anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
-            })?),
-            None => None,
-        };
-
         let trigger = build_trigger(
             trigger_def,
             &workflow.name,
             &data_dir,
             &self.scratch_base,
-            workspace_dir.as_deref(),
+            workflow.workspace.as_ref(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -300,17 +288,12 @@ impl Engine {
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
-        let workspace_dir: Option<std::path::PathBuf> = match workflow.workspace.as_deref() {
-            Some(path) => {
-                let resolved = std::fs::canonicalize(path).map_err(|e| {
-                    anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
-                })?;
-                if !resolved.is_dir() {
-                    return Err(anyhow::anyhow!("workspace path '{}' is not a directory", resolved.display()));
-                }
-                Some(resolved)
-            }
-            None => None,
+        // Use the workspace already resolved by the trigger (e.g. polling trigger ran
+        // the workspace script before the context command). Fall back to resolving now
+        // for manual triggers and looping workflow runs that call run_once() directly.
+        let workspace_dir = match event.and_then(|e| e.resolved_workspace.clone()) {
+            Some(ws) => Some(ws),
+            None => resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?,
         };
 
         let stop = self

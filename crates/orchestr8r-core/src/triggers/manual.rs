@@ -30,6 +30,7 @@ impl TriggerSource for ManualTrigger {
                     source: self.name.clone(),
                     payload: String::new(),
                     preallocated_run_id: None,
+                    resolved_workspace: None,
                 })
                 .await
                 .map_err(|e| TriggerError::Failed(e.to_string()))?;
@@ -43,6 +44,7 @@ impl TriggerSource for ManualTrigger {
             source: self.name.clone(),
             payload: String::new(),
             preallocated_run_id: None,
+            resolved_workspace: None,
         })
         .await
         .map_err(|e| TriggerError::Failed(e.to_string()))

@@ -1,6 +1,7 @@
 use super::*;
 use crate::storage::InMemoryStorage;
-use crate::types::{RunStatus, StepDef, StepType, WorkflowDef, WorkflowType};
+use crate::test_helpers::write_executable_script;
+use crate::types::{RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowType, WorkspaceConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -123,7 +124,9 @@ async fn workspace_step_sets_working_dir_for_shell() {
             ..step_def(StepType::Shell)
         }],
     );
-    wf.workspace = Some(workspace.path().to_string_lossy().to_string());
+    wf.workspace = Some(WorkspaceConfig::Fixed {
+        path: workspace.path().to_string_lossy().into_owned(),
+    });
 
     // WHEN
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -378,4 +381,134 @@ async fn shutdown_while_paused_exits_cleanly() {
         .expect("engine should exit within timeout")
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn script_workspace_polling_trigger_context_written_to_workspace() {
+    // GIVEN
+    // The desired flow: poll trigger finds hash → workspace script runs → context command
+    // writes into <workspace>/trigger-context/ → steps execute in that workspace.
+    let temp = tempfile::tempdir().unwrap();
+    let workspaces_dir = temp.path().join("workspaces");
+    std::fs::create_dir_all(&workspaces_dir).unwrap();
+
+    // Workspace script: creates a unique dir per run_id ($2) and returns its path.
+    let ws_script = write_executable_script(
+        temp.path(),
+        "workspace.sh",
+        &format!(
+            "#!/bin/bash\nRUN_DIR='{}/run-$2'\nmkdir -p \"$RUN_DIR\"\necho \"$RUN_DIR\"",
+            workspaces_dir.display()
+        ),
+    )
+    .unwrap();
+
+    // Context command: writes context.txt into the trigger-context dir it receives.
+    let ctx_script = write_executable_script(
+        temp.path(),
+        "context.sh",
+        "#!/bin/bash\nmkdir -p \"$2\"\necho 'ctx-data' > \"$2/context.txt\"",
+    )
+    .unwrap();
+
+    // Poll script: returns a single hash once, then nothing.
+    let poll_script = write_executable_script(
+        temp.path(),
+        "poll.sh",
+        "#!/bin/bash\necho '[\"hash-001\"]'",
+    )
+    .unwrap();
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    let engine = Engine::new(
+        storage.clone(),
+        scratch.clone(),
+        Arc::new(orchestr8r_notify::NoOpNotifier),
+    );
+
+    // Shell step: asserts trigger-context/context.txt exists in the current working dir
+    // (which must be the script-created workspace), then drops a marker file to prove it.
+    let wf = WorkflowDef {
+        name: "test-script-ws-trigger".to_string(),
+        workflow_type: WorkflowType::Triggered,
+        trigger: Some(TriggerDef::Polling {
+            poll_command: vec![poll_script.to_string_lossy().into_owned()],
+            context_command: Some(vec![ctx_script.to_string_lossy().into_owned()]),
+            interval_secs: 3600, // won't re-poll during the test
+        }),
+        workspace: Some(WorkspaceConfig::Script {
+            command: vec![ws_script.to_string_lossy().into_owned()],
+        }),
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            // Fail explicitly if context.txt is not in the workspace; write marker if it is.
+            command: Some(vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "test -f trigger-context/context.txt && touch workspace-marker.txt".to_string(),
+            ]),
+            ..step_def(StepType::Shell)
+        }],
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let storage_clone = storage.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+        storage_clone
+    });
+
+    // WHEN: wait for the single run to complete, then shut down.
+    let start = tokio::time::Instant::now();
+    loop {
+        if storage.runs().iter().any(|r| r.status == RunStatus::Completed) {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "run did not complete within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
+    shutdown.store(true, Ordering::Relaxed);
+    handle.await.unwrap();
+
+    // THEN: the run completed successfully (shell step found context.txt in its CWD).
+    assert!(
+        storage.runs().iter().any(|r| r.status == RunStatus::Completed),
+        "run should have completed"
+    );
+
+    // AND: workspace-marker.txt exists in a script-created workspace dir, not in scratch.
+    let marker_in_workspace = std::fs::read_dir(&workspaces_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.path().join("workspace-marker.txt").exists());
+    assert!(
+        marker_in_workspace,
+        "workspace-marker.txt should exist in the script-created workspace dir"
+    );
+
+    // AND: context.txt lives inside the workspace's trigger-context/, not in scratch.
+    let context_in_workspace = std::fs::read_dir(&workspaces_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.path().join("trigger-context").join("context.txt").exists());
+    assert!(
+        context_in_workspace,
+        "trigger-context/context.txt should be inside the workspace dir"
+    );
+
+    let context_in_scratch = scratch.exists() && std::fs::read_dir(&scratch)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.path().join("trigger-context").exists());
+    assert!(
+        !context_in_scratch,
+        "context should not have been placed in the scratch dir"
+    );
 }

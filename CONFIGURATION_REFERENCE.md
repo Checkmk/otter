@@ -5,8 +5,9 @@
 1. [Workflow Structure](#workflow-structure)
 2. [Workflow Types](#workflow-types)
 3. [Step Types](#step-types)
-4. [Triggers](#triggers)
-5. [Examples](#examples)
+4. [Workspace Configuration](#workspace-configuration)
+5. [Triggers](#triggers)
+6. [Examples](#examples)
 
 ---
 
@@ -17,7 +18,10 @@ Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow def
 ```toml
 name = "my-workflow"
 type = "triggered"  # or "looping"
-workspace = "/home/user/my-project"  # optional
+
+[workspace]         # optional; see Workspace Configuration below
+type = "fixed"
+path = "/home/user/my-project"
 
 [trigger]  # optional; required if type = "triggered"
 type = "manual"
@@ -32,8 +36,8 @@ message = "Review output?"
 ```
 
 **Workspace behavior:**
-- `workspace`: (optional) Absolute or relative path. All steps execute in this directory. Relative paths are resolved relative to the daemon's working directory.
-- If `workspace` is omitted, all steps execute in the run's isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
+- If `[workspace]` is omitted, all steps execute in the run's isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
+- See [Workspace Configuration](#workspace-configuration) for all variants including per-run script setup.
 
 ---
 
@@ -216,6 +220,65 @@ message = "Build completed successfully!"
 
 ---
 
+## Workspace Configuration
+
+The optional `[workspace]` table controls where steps execute. If omitted, each run uses an isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
+
+### `scratch` (default)
+
+Steps run in the per-run scratch directory. Equivalent to omitting `[workspace]` entirely.
+
+```toml
+[workspace]
+type = "scratch"
+```
+
+### `fixed`
+
+Steps run in an existing directory on disk.
+
+```toml
+[workspace]
+type = "fixed"
+path = "/home/user/my-project"
+```
+
+**Behavior:**
+- Path is canonicalized at run time; an error is raised if it does not exist or is not a directory
+- Relative paths are resolved relative to the daemon's working directory
+
+### `script`
+
+A command is run before each workflow run. Its stdout (trimmed) is used as the workspace path.
+
+```toml
+[workspace]
+type = "script"
+command = ["setup-workspace.sh"]
+```
+
+**Script contract:**
+- Invoked as: `<command> <workflow-name> <run-id>`
+- Must print exactly one path to stdout (trailing newlines are trimmed)
+- Must exit 0; non-zero exit fails the run before any steps execute
+- The returned path must exist and be a directory
+
+**Example script (`setup-workspace.sh`):**
+```bash
+#!/bin/bash
+WORKFLOW=$1
+RUN_ID=$2
+BRANCH="orchestr8r-${RUN_ID:0:8}"
+git -C ~/my-repo worktree add "/tmp/ws-$RUN_ID" -b "$BRANCH"
+echo "/tmp/ws-$RUN_ID"
+```
+
+**Behavior by workflow type:**
+- **Triggered workflows**: script runs once per trigger event (per run)
+- **Looping workflows**: script runs once per iteration
+
+---
+
 ## Triggers
 
 Triggers define how a `triggered` workflow is started. Only `triggered` workflows require a trigger.
@@ -286,8 +349,8 @@ message = "Implement the JIRA issue described in trigger-context/issue.json."
 ```
 
 **Context directory location (adaptive):**
-- **No workspace configured** → Trigger pre-allocates a run directory and creates `<run-dir>/trigger-context/`. Persists in `~/.local/share/orchestr8r/runs/<run-id>/trigger-context/`.
-- **Workspace configured** → Context is written to `<workspace>/trigger-context/` (stable across runs). Scripts may clean up if desired — orchestr8r does not remove context directories.
+- **`fixed` or `script` workspace** → Context is written to `<workspace>/trigger-context/`. For `script` workspaces, the workspace is set up first (via the script), then the context command runs inside it.
+- **No workspace / `scratch`** → Trigger pre-allocates a run directory and creates `<run-dir>/trigger-context/`. Persists in `~/.local/share/orchestr8r/runs/<run-id>/trigger-context/`.
 - **No `context_command`** → No context directory is created; the workflow runs without trigger-context files.
 
 **Seen-hash persistence:**

@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::types::{TriggerError, TriggerEvent};
+use crate::types::{TriggerError, TriggerEvent, WorkspaceConfig};
+use crate::workspace::resolve_workspace;
 use super::TriggerSource;
 
 #[derive(Serialize, Deserialize)]
@@ -52,32 +53,35 @@ fn save_consumed_triggers(path: &Path, seen: &HashSet<String>) -> anyhow::Result
 
 pub struct PollingTrigger {
     name: String,
+    workflow_name: String,
     poll_command: Vec<String>,
     context_command: Option<Vec<String>>,
     interval: Duration,
     seen_path: PathBuf,
     scratch_base: PathBuf,
-    workspace: Option<PathBuf>,
+    workspace_config: Option<WorkspaceConfig>,
 }
 
 impl PollingTrigger {
     pub fn new(
         name: String,
+        workflow_name: String,
         poll_command: Vec<String>,
         context_command: Option<Vec<String>>,
         interval: Duration,
         seen_path: PathBuf,
         scratch_base: PathBuf,
-        workspace: Option<PathBuf>,
+        workspace_config: Option<WorkspaceConfig>,
     ) -> Self {
         Self {
             name,
+            workflow_name,
             poll_command,
             context_command,
             interval,
             seen_path,
             scratch_base,
-            workspace,
+            workspace_config,
         }
     }
 
@@ -150,21 +154,34 @@ impl PollingTrigger {
                 self.save_seen(&seen)?;
                 debug!("saved seen-hash file");
 
-                let run_id = if let Some(context_cmd) = &self.context_command {
-                    let (run_id, ctx_dir) = if let Some(workspace) = &self.workspace {
-                        let ctx_dir = workspace.join("trigger-context");
-                        std::fs::create_dir_all(&ctx_dir)?;
-                        debug!("using workspace context dir: {}", ctx_dir.display());
-                        (None, ctx_dir)
-                    } else {
-                        let run_id = Uuid::new_v4();
-                        let scratch_dir = self.scratch_base.join(run_id.to_string());
-                        let ctx_dir = scratch_dir.join("trigger-context");
-                        std::fs::create_dir_all(&ctx_dir)?;
-                        debug!("pre-allocated run_id {}, context dir: {}", run_id, ctx_dir.display());
-                        (Some(run_id), ctx_dir)
-                    };
+                // Always pre-allocate a run_id; Script workspaces need it to set up a
+                // unique workspace directory (e.g. a git worktree named after the run).
+                let run_id = Uuid::new_v4();
 
+                // Resolve the workspace for this specific run.
+                // Script workspaces are invoked here so the context command can write
+                // directly into the workspace rather than a scratch directory.
+                let resolved_workspace = match resolve_workspace(
+                    self.workspace_config.as_ref(),
+                    &self.workflow_name,
+                    run_id,
+                ) {
+                    Ok(ws) => ws,
+                    Err(e) => {
+                        warn!("workspace setup failed for hash {}: {}", hash, e);
+                        continue;
+                    }
+                };
+
+                // Context directory lives inside the workspace when one is available,
+                // otherwise fall back to the pre-allocated scratch directory.
+                let ctx_dir = match &resolved_workspace {
+                    Some(ws) => ws.join("trigger-context"),
+                    None => self.scratch_base.join(run_id.to_string()).join("trigger-context"),
+                };
+
+                if let Some(context_cmd) = &self.context_command {
+                    std::fs::create_dir_all(&ctx_dir)?;
                     debug!("running context command: {:?} {} {}", context_cmd, hash, ctx_dir.display());
                     let context_output = Command::new(&context_cmd[0])
                         .args(&context_cmd[1..])
@@ -190,21 +207,13 @@ impl PollingTrigger {
                             continue;
                         }
                     }
-
-                    run_id
-                } else {
-                    // No context command — pre-allocate run_id for non-workspace workflows only
-                    if self.workspace.is_none() {
-                        Some(Uuid::new_v4())
-                    } else {
-                        None
-                    }
-                };
+                }
 
                 let event = TriggerEvent {
                     source: self.name.clone(),
                     payload: hash.clone(),
-                    preallocated_run_id: run_id,
+                    preallocated_run_id: Some(run_id),
+                    resolved_workspace,
                 };
 
                 info!("sending trigger event for hash {}", hash);
@@ -239,6 +248,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
@@ -281,6 +291,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
@@ -312,6 +323,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
@@ -349,6 +361,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),
@@ -396,6 +409,7 @@ mod tests {
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
@@ -436,6 +450,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),  // 100ms interval
@@ -489,6 +504,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(50),
@@ -532,6 +548,7 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),

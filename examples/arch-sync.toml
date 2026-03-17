@@ -1,6 +1,9 @@
 name = "arch-sync"
 type = "looping"
-workspace = "."
+
+[workspace]
+type = "fixed"
+path = "."
 
 [[steps]]
 type = "agent"

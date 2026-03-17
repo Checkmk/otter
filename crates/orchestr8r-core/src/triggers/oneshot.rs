@@ -28,6 +28,7 @@ impl TriggerSource for OneShotTrigger {
             source: self.name.clone(),
             payload: String::new(),
             preallocated_run_id: None,
+            resolved_workspace: None,
         })
         .await
         .map_err(|_| TriggerError::Failed("receiver dropped".to_string()))
