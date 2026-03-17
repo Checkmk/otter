@@ -28,6 +28,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the TUI dashboard (default when no subcommand is given)
+    Ui,
     /// Launch the headless background daemon
     Daemon,
     /// Start a dormant workflow
@@ -88,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        None => client::run_ui().await,
+        None | Some(Commands::Ui) => client::run_ui().await,
         Some(Commands::Daemon) => daemon::run_daemon().await,
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
