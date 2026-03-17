@@ -28,7 +28,9 @@ pub enum WorkflowType {
 pub enum TriggerDef {
     Manual,
     Polling {
-        command: Vec<String>,
+        poll_command: Vec<String>,
+        #[serde(default)]
+        context_command: Option<Vec<String>>,
         #[serde(default = "default_poll_interval")]
         interval_secs: u64,
     },
@@ -376,7 +378,7 @@ mod tests {
 
             [trigger]
             type = "polling"
-            command = ["jira-poller.sh"]
+            poll_command = ["jira-poller.sh"]
 
             [[steps]]
             type = "shell"
@@ -389,8 +391,9 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { command, interval_secs } => {
-                assert_eq!(command, vec!["jira-poller.sh".to_string()]);
+            TriggerDef::Polling { poll_command, context_command, interval_secs } => {
+                assert_eq!(poll_command, vec!["jira-poller.sh".to_string()]);
+                assert!(context_command.is_none());
                 assert_eq!(interval_secs, 600);
             }
             _ => panic!("expected polling trigger"),
@@ -406,7 +409,8 @@ mod tests {
 
             [trigger]
             type = "polling"
-            command = ["jira-poller.py"]
+            poll_command = ["jira-poller.py"]
+            context_command = ["jira-poller.py", "--context"]
             interval_secs = 300
 
             [[steps]]
@@ -420,8 +424,9 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { command, interval_secs } => {
-                assert_eq!(command, vec!["jira-poller.py".to_string()]);
+            TriggerDef::Polling { poll_command, context_command, interval_secs } => {
+                assert_eq!(poll_command, vec!["jira-poller.py".to_string()]);
+                assert_eq!(context_command, Some(vec!["jira-poller.py".to_string(), "--context".to_string()]));
                 assert_eq!(interval_secs, 300);
             }
             _ => panic!("expected polling trigger"),

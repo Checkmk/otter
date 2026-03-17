@@ -52,7 +52,8 @@ fn save_consumed_triggers(path: &Path, seen: &HashSet<String>) -> anyhow::Result
 
 pub struct PollingTrigger {
     name: String,
-    command: Vec<String>,
+    poll_command: Vec<String>,
+    context_command: Option<Vec<String>>,
     interval: Duration,
     seen_path: PathBuf,
     scratch_base: PathBuf,
@@ -62,7 +63,8 @@ pub struct PollingTrigger {
 impl PollingTrigger {
     pub fn new(
         name: String,
-        command: Vec<String>,
+        poll_command: Vec<String>,
+        context_command: Option<Vec<String>>,
         interval: Duration,
         seen_path: PathBuf,
         scratch_base: PathBuf,
@@ -70,7 +72,8 @@ impl PollingTrigger {
     ) -> Self {
         Self {
             name,
-            command,
+            poll_command,
+            context_command,
             interval,
             seen_path,
             scratch_base,
@@ -94,8 +97,8 @@ impl TriggerSource for PollingTrigger {
     }
 
     async fn subscribe(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError> {
-        info!("polling trigger started: command={:?}, interval={:?}, seen_path={}",
-              self.command, self.interval, self.seen_path.display());
+        info!("polling trigger started: poll_command={:?}, interval={:?}, seen_path={}",
+              self.poll_command, self.interval, self.seen_path.display());
         loop {
             if let Err(e) = self.poll_once(&tx).await {
                 error!("polling error: {}", e);
@@ -113,19 +116,18 @@ impl TriggerSource for PollingTrigger {
 
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
-        debug!("polling: running '{}' with --poll", self.command[0]);
-        let output = Command::new(&self.command[0])
-            .args(&self.command[1..])
-            .arg("--poll")
+        debug!("polling: running {:?}", self.poll_command);
+        let output = Command::new(&self.poll_command[0])
+            .args(&self.poll_command[1..])
             .output()
             .await
-            .map_err(|e| anyhow::anyhow!("failed to run poll command '{}': {}", self.command[0], e))?;
+            .map_err(|e| anyhow::anyhow!("failed to run poll command '{}': {}", self.poll_command[0], e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!(
                 "poll command '{}' exited with status {}\nstderr: {}",
-                self.command[0],
+                self.poll_command[0],
                 output.status,
                 stderr
             ));
@@ -148,48 +150,56 @@ impl PollingTrigger {
                 self.save_seen(&seen)?;
                 debug!("saved seen-hash file");
 
-                let (run_id, ctx_dir) = if let Some(workspace) = &self.workspace {
-                    let ctx_dir = workspace.join("trigger-context");
-                    std::fs::create_dir_all(&ctx_dir)?;
-                    debug!("using workspace context dir: {}", ctx_dir.display());
-                    (None, ctx_dir)
-                } else {
-                    let run_id = Uuid::new_v4();
-                    let scratch_dir = self.scratch_base.join(run_id.to_string());
-                    let ctx_dir = scratch_dir.join("trigger-context");
-                    std::fs::create_dir_all(&ctx_dir)?;
-                    debug!("pre-allocated run_id {}, context dir: {}", run_id, ctx_dir.display());
-                    (Some(run_id), ctx_dir)
-                };
+                let run_id = if let Some(context_cmd) = &self.context_command {
+                    let (run_id, ctx_dir) = if let Some(workspace) = &self.workspace {
+                        let ctx_dir = workspace.join("trigger-context");
+                        std::fs::create_dir_all(&ctx_dir)?;
+                        debug!("using workspace context dir: {}", ctx_dir.display());
+                        (None, ctx_dir)
+                    } else {
+                        let run_id = Uuid::new_v4();
+                        let scratch_dir = self.scratch_base.join(run_id.to_string());
+                        let ctx_dir = scratch_dir.join("trigger-context");
+                        std::fs::create_dir_all(&ctx_dir)?;
+                        debug!("pre-allocated run_id {}, context dir: {}", run_id, ctx_dir.display());
+                        (Some(run_id), ctx_dir)
+                    };
 
-                debug!("running context command: {} --context {} {}", self.command[0], hash, ctx_dir.display());
-                let context_output = Command::new(&self.command[0])
-                    .args(&self.command[1..])
-                    .arg("--context")
-                    .arg(&hash)
-                    .arg(&ctx_dir)
-                    .output()
-                    .await;
+                    debug!("running context command: {:?} {} {}", context_cmd, hash, ctx_dir.display());
+                    let context_output = Command::new(&context_cmd[0])
+                        .args(&context_cmd[1..])
+                        .arg(&hash)
+                        .arg(&ctx_dir)
+                        .output()
+                        .await;
 
-                match context_output {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            warn!(
-                                "context command failed for hash {}: {} (stderr: {})",
-                                hash,
-                                output.status,
-                                stderr
-                            );
+                    match context_output {
+                        Ok(out) => {
+                            if !out.status.success() {
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                warn!(
+                                    "context command failed for hash {}: {} (stderr: {})",
+                                    hash, out.status, stderr
+                                );
+                                continue;
+                            }
+                            debug!("context command succeeded for hash {}", hash);
+                        }
+                        Err(e) => {
+                            warn!("failed to run context command for hash {}: {}", hash, e);
                             continue;
                         }
-                        debug!("context command succeeded for hash {}", hash);
                     }
-                    Err(e) => {
-                        warn!("failed to run context command for hash {}: {}", hash, e);
-                        continue;
+
+                    run_id
+                } else {
+                    // No context command — pre-allocate run_id for non-workspace workflows only
+                    if self.workspace.is_none() {
+                        Some(Uuid::new_v4())
+                    } else {
+                        None
                     }
-                }
+                };
 
                 let event = TriggerEvent {
                     source: self.name.clone(),
@@ -230,6 +240,7 @@ mod tests {
         let trigger = PollingTrigger::new(
             "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
+            None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             temp_dir.path().to_path_buf(),
@@ -271,6 +282,7 @@ mod tests {
         let trigger = PollingTrigger::new(
             "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
+            None,
             Duration::from_millis(100),
             seen_path,
             temp_dir.path().to_path_buf(),
@@ -301,6 +313,7 @@ mod tests {
         let trigger = PollingTrigger::new(
             "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
+            None,
             Duration::from_millis(100),
             seen_path.clone(),
             temp_dir.path().to_path_buf(),
@@ -323,15 +336,21 @@ mod tests {
     async fn context_dir_created_on_poll() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = write_executable_script(
+        let poll_path = write_executable_script(
             temp_dir.path(),
-            "mock-poller.sh",
-            "#!/bin/bash\nif [[ \"$1\" == \"--context\" ]]; then touch \"$3/context.txt\"; fi\necho '[\"hash1\"]'",
+            "mock-poll.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
+        let ctx_path = write_executable_script(
+            temp_dir.path(),
+            "mock-context.sh",
+            "#!/bin/bash\ntouch \"$2/context.txt\"",
         ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            vec![cmd_path.to_string_lossy().to_string()],
+            vec![poll_path.to_string_lossy().to_string()],
+            Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             temp_dir.path().to_path_buf(),
@@ -378,6 +397,7 @@ mod tests {
         let trigger = PollingTrigger::new(
             "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
+            None,
             Duration::from_millis(100),
             seen_path.clone(),
             temp_dir.path().to_path_buf(),
@@ -403,22 +423,21 @@ mod tests {
     async fn subscribe_continues_polling_after_interval() {
         // GIVEN a polling trigger with a script that returns new hashes each time
         let temp_dir = TempDir::new().unwrap();
-        let script = r#"#!/bin/bash
-if [[ "$1" == "--poll" ]]; then
-  timestamp=$(date +%s%N)
-  echo "[\"event-${timestamp}\"]"
-  exit 0
-elif [[ "$1" == "--context" ]]; then
-  mkdir -p "$3"
-  echo "event=$2" > "$3/metadata.txt"
-  exit 0
-fi
-"#;
-        let cmd_path = write_executable_script(temp_dir.path(), "mock-poller.sh", script).unwrap();
+        let poll_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poll.sh",
+            "#!/bin/bash\ntimestamp=$(date +%s%N)\necho \"[\\\"event-${timestamp}\\\"]\"\n",
+        ).unwrap();
+        let ctx_path = write_executable_script(
+            temp_dir.path(),
+            "mock-context.sh",
+            "#!/bin/bash\nmkdir -p \"$2\"\necho \"event=$1\" > \"$2/metadata.txt\"\n",
+        ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            vec![cmd_path.to_string_lossy().to_string()],
+            vec![poll_path.to_string_lossy().to_string()],
+            Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),  // 100ms interval
             temp_dir.path().join("seen.json"),
             temp_dir.path().to_path_buf(),
@@ -462,15 +481,16 @@ fi
     async fn polling_trigger_shuts_down_cleanly() {
         // GIVEN a polling trigger that continuously polls
         let temp_dir = TempDir::new().unwrap();
-        let cmd_path = write_executable_script(
+        let poll_path = write_executable_script(
             temp_dir.path(),
-            "mock-poller.sh",
-            "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"event1\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi",
+            "mock-poll.sh",
+            "#!/bin/bash\necho '[\"event1\"]'",
         ).unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            vec![cmd_path.to_string_lossy().to_string()],
+            vec![poll_path.to_string_lossy().to_string()],
+            None,
             Duration::from_millis(50),
             temp_dir.path().join("seen.json"),
             temp_dir.path().to_path_buf(),
@@ -498,5 +518,36 @@ fi
 
         // THEN the abort should complete without panic or error (no "channel closed" errors in logs)
         assert!(subscribe_handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn context_command_none_still_fires_event() {
+        // GIVEN a trigger with no context_command
+        let temp_dir = TempDir::new().unwrap();
+        let poll_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poll.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
+
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            vec![poll_path.to_string_lossy().to_string()],
+            None,
+            Duration::from_millis(100),
+            temp_dir.path().join("seen.json"),
+            temp_dir.path().to_path_buf(),
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+
+        // WHEN
+        trigger.poll_once(&tx).await.unwrap();
+
+        // THEN event is fired even without a context command
+        let event = rx.recv().await.expect("expected event");
+        assert_eq!(event.payload, "hash1");
+        assert!(event.preallocated_run_id.is_some());
     }
 }

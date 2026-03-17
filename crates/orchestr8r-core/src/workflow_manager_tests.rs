@@ -71,7 +71,8 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
         name: name.to_string(),
         workflow_type: WorkflowType::Triggered,
         trigger: Some(TriggerDef::Polling {
-            command,
+            poll_command: command,
+            context_command: None,
             interval_secs: 3600, // Very long interval (1 hour)
         }),
         workspace: None,
@@ -287,7 +288,7 @@ async fn polling_trigger_fires_immediately_when_manually_started() {
     let cmd_path = write_executable_script(
         &temp_dir,
         "mock-poller.sh",
-        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"test-hash\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi\n",
+        "#!/bin/bash\necho '[\"test-hash\"]'\n",
     ).unwrap();
 
     let (tx, _rx) = mpsc::channel(64);
@@ -357,7 +358,7 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
     let cmd_path = write_executable_script(
         &temp_dir,
         "mock-poller.sh",
-        "#!/bin/bash\nif [[ \"$1\" == \"--poll\" ]]; then echo '[\"hash1\", \"hash2\", \"hash3\"]'; fi\nif [[ \"$1\" == \"--context\" ]]; then mkdir -p \"$3\"; fi\n",
+        "#!/bin/bash\necho '[\"hash1\", \"hash2\", \"hash3\"]'\n",
     ).unwrap();
 
     let (tx, _rx) = mpsc::channel(64);

@@ -30,11 +30,12 @@ pub fn build_trigger(
                 signal_path,
             )))
         }
-        TriggerDef::Polling { command, interval_secs } => {
+        TriggerDef::Polling { poll_command, context_command, interval_secs } => {
             let seen_path = data_dir.join("triggers").join(format!("{}-seen.json", workflow_name));
             Ok(Box::new(polling::PollingTrigger::new(
                 "polling".to_string(),
-                command.clone(),
+                poll_command.clone(),
+                context_command.clone(),
                 std::time::Duration::from_secs(*interval_secs),
                 seen_path,
                 scratch_base.to_path_buf(),
