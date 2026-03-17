@@ -35,7 +35,7 @@ fn scroll_text_with_config(
         return (text.to_string(), padding);
     }
 
-    let scroll_range = text_len - width;
+    let scroll_range = text_len - width + 1;
     let scroll_speed = config.scroll_speed;
     let pause_duration = config.pause_duration;
 
@@ -140,12 +140,12 @@ mod tests {
             scroll_speed: 3,
             pause_duration: 30,
         };
-        let scroll_range = text.chars().count() - width;
+        let scroll_range = text.chars().count() - width + 1;
         let phase_start = 30 + (scroll_range as u64 * 3);
 
         for tick in phase_start..(phase_start + 30) {
             let (displayed, _) = scroll_text_with_config(text, width, tick, config);
-            assert_eq!(displayed, "…kflow_nam");
+            assert_eq!(displayed, "…flow_name");
         }
     }
 
@@ -157,14 +157,14 @@ mod tests {
             scroll_speed: 3,
             pause_duration: 30,
         };
-        let scroll_range = text.chars().count() - width;
+        let scroll_range = text.chars().count() - width + 1;
         let phase_scroll_right = 30 + (scroll_range as u64 * 3) + 30;
 
         let (displayed, _) = scroll_text_with_config(text, width, phase_scroll_right, config);
-        assert_eq!(displayed, "…kflow_nam");
+        assert_eq!(displayed, "…flow_name");
 
         let (displayed, _) = scroll_text_with_config(text, width, phase_scroll_right + 3, config);
-        assert_eq!(displayed, "…rkflow_n…");
+        assert_eq!(displayed, "…kflow_na…");
     }
 
     #[test]
@@ -177,7 +177,7 @@ mod tests {
         };
 
         let (displayed_start, _) = scroll_text_with_config(text, width, 0, config);
-        let scroll_range = text.chars().count() - width;
+        let scroll_range = text.chars().count() - width + 1;
         let cycle_length = (30 + (scroll_range as u64 * 3) + 30 + (scroll_range as u64 * 3)) as u64;
 
         let (displayed_end, _) = scroll_text_with_config(text, width, cycle_length, config);
