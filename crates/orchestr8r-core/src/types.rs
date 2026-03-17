@@ -241,6 +241,7 @@ pub enum DaemonEvent {
         feedback_available: bool,
     },
     RunDeleted { run_id: Uuid },
+    ConsumedTriggersChanged { workflow: String, triggers: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +255,8 @@ pub enum DaemonCommand {
     Subscribe,
     CheckpointRespond { run_id: Uuid, action: CheckpointAction },
     DeleteRun { run_id: Uuid },
+    ListConsumedTriggers { workflow: String },
+    DeleteConsumedTrigger { workflow: String, trigger: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +264,7 @@ pub enum DaemonResponse {
     Ok,
     Error { message: String },
     StatusResponse { workflows: Vec<WorkflowStatus> },
+    ConsumedTriggersResponse { triggers: Vec<String> },
 }
 
 pub trait StorageBackend: Send + Sync {

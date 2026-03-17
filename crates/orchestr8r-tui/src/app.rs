@@ -171,6 +171,9 @@ impl App {
                 self.pending_checkpoints.remove(&run_id);
                 self.ensure_cursor_valid(old_pos);
             }
+            DaemonEvent::ConsumedTriggersChanged { .. } => {
+                // Reserved for future TUI display of consumed triggers
+            }
         }
     }
 

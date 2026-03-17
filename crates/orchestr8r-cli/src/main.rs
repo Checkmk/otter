@@ -45,6 +45,11 @@ enum Commands {
         #[command(subcommand)]
         command: RunsCommands,
     },
+    /// Manage consumed workflow triggers
+    Triggers {
+        #[command(subcommand)]
+        command: TriggersCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -53,6 +58,14 @@ enum RunsCommands {
     List { workflow: String },
     /// Delete a run by ID
     Delete { run_id: String },
+}
+
+#[derive(Subcommand)]
+enum TriggersCommands {
+    /// List consumed triggers for a polling workflow
+    ListConsumed { workflow: String },
+    /// Delete a consumed trigger so it is re-processed on the next poll
+    DeleteConsumed { workflow: String, trigger: String },
 }
 
 #[tokio::main]
@@ -91,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Status) => client::print_status().await,
         Some(Commands::Runs { command }) => handle_runs_command(command).await,
+        Some(Commands::Triggers { command }) => handle_triggers_command(command).await,
     }
 }
 
@@ -131,6 +145,35 @@ async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
             // Send the DeleteRun command through the daemon socket
             client::send_command_print(DaemonCommand::DeleteRun { run_id: run_uuid }).await?;
             println!("Run {} deleted.", run_id);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()> {
+    match command {
+        TriggersCommands::ListConsumed { workflow } => {
+            let resp = client::send_command_once(DaemonCommand::ListConsumedTriggers { workflow: workflow.clone() }).await?;
+            match resp {
+                orchestr8r_core::types::DaemonResponse::ConsumedTriggersResponse { triggers } => {
+                    if triggers.is_empty() {
+                        println!("No consumed triggers for workflow '{}'", workflow);
+                    } else {
+                        println!("Consumed triggers for '{}':", workflow);
+                        for trigger in triggers {
+                            println!("  {}", trigger);
+                        }
+                    }
+                }
+                orchestr8r_core::types::DaemonResponse::Error { message } => {
+                    eprintln!("Error: {}", message);
+                    std::process::exit(1);
+                }
+                _ => eprintln!("Unexpected response from daemon"),
+            }
+        }
+        TriggersCommands::DeleteConsumed { workflow, trigger } => {
+            client::send_command_print(DaemonCommand::DeleteConsumedTrigger { workflow, trigger }).await?;
         }
     }
     Ok(())

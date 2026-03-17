@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -14,6 +14,40 @@ use super::TriggerSource;
 #[derive(Serialize, Deserialize)]
 struct SeenHashes {
     hashes: Vec<String>,
+}
+
+/// Returns the path to the consumed-triggers file for the given workflow.
+pub fn consumed_triggers_path(data_dir: &Path, workflow_name: &str) -> PathBuf {
+    data_dir.join("triggers").join(format!("{}-seen.json", workflow_name))
+}
+
+/// Loads consumed trigger IDs from `path`, returning a sorted Vec. Returns empty Vec if the file doesn't exist.
+pub fn load_consumed_triggers(path: &Path) -> anyhow::Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let data: SeenHashes = serde_json::from_str(&content)?;
+    let mut triggers = data.hashes;
+    triggers.sort();
+    Ok(triggers)
+}
+
+/// Removes `trigger` from the consumed-triggers file at `path`. No-op if the trigger is not present.
+pub fn delete_consumed_trigger(path: &Path, trigger: &str) -> anyhow::Result<()> {
+    let mut set: HashSet<String> = load_consumed_triggers(path)?.into_iter().collect();
+    set.remove(trigger);
+    save_consumed_triggers(path, &set)
+}
+
+fn save_consumed_triggers(path: &Path, seen: &HashSet<String>) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let mut hashes: Vec<String> = seen.iter().cloned().collect();
+    hashes.sort();
+    let data = SeenHashes { hashes };
+    let content = serde_json::to_string(&data)?;
+    std::fs::write(path, content)?;
+    Ok(())
 }
 
 pub struct PollingTrigger {
@@ -45,22 +79,11 @@ impl PollingTrigger {
     }
 
     fn load_seen(&self) -> anyhow::Result<HashSet<String>> {
-        if !self.seen_path.exists() {
-            return Ok(HashSet::new());
-        }
-        let content = std::fs::read_to_string(&self.seen_path)?;
-        let data: SeenHashes = serde_json::from_str(&content)?;
-        Ok(data.hashes.into_iter().collect())
+        Ok(load_consumed_triggers(&self.seen_path)?.into_iter().collect())
     }
 
     fn save_seen(&self, seen: &HashSet<String>) -> anyhow::Result<()> {
-        std::fs::create_dir_all(self.seen_path.parent().unwrap())?;
-        let mut hashes: Vec<String> = seen.iter().cloned().collect();
-        hashes.sort();
-        let data = SeenHashes { hashes };
-        let content = serde_json::to_string(&data)?;
-        std::fs::write(&self.seen_path, content)?;
-        Ok(())
+        save_consumed_triggers(&self.seen_path, seen)
     }
 }
 

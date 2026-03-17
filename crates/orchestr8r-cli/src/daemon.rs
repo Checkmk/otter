@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 use uuid::Uuid;
 
+use orchestr8r_core::triggers::polling::{consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers};
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
     StorageBackend, WorkflowDef, WorkflowRun,
@@ -300,6 +301,30 @@ async fn handle_connection(
                 _ => DaemonResponse::Error {
                     message: "Failed to delete run".to_string(),
                 }
+            };
+            let _ = write_json(&mut writer, &resp).await;
+        }
+        DaemonCommand::ListConsumedTriggers { workflow } => {
+            let path = consumed_triggers_path(&dirs_data_dir(), &workflow);
+            let resp = match load_consumed_triggers(&path) {
+                Ok(triggers) => DaemonResponse::ConsumedTriggersResponse { triggers },
+                Err(e) => DaemonResponse::Error { message: e.to_string() },
+            };
+            let _ = write_json(&mut writer, &resp).await;
+        }
+        DaemonCommand::DeleteConsumedTrigger { workflow, trigger } => {
+            let path = consumed_triggers_path(&dirs_data_dir(), &workflow);
+            let resp = match delete_consumed_trigger(&path, &trigger) {
+                Ok(()) => {
+                    // Broadcast updated trigger list to subscribers
+                    if let Ok(triggers) = load_consumed_triggers(&path) {
+                        let event = DaemonEvent::ConsumedTriggersChanged { workflow, triggers };
+                        let mut subs = subscribers.lock().unwrap();
+                        subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+                    }
+                    DaemonResponse::Ok
+                }
+                Err(e) => DaemonResponse::Error { message: e.to_string() },
             };
             let _ = write_json(&mut writer, &resp).await;
         }

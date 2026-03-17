@@ -76,6 +76,7 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
             std::process::exit(1);
         }
         DaemonResponse::StatusResponse { workflows } => print_workflows(&workflows),
+        DaemonResponse::ConsumedTriggersResponse { .. } => {}
     }
     Ok(())
 }
