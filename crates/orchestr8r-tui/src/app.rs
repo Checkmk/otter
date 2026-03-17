@@ -60,6 +60,7 @@ pub struct App {
     pub focus: Focus,
     pub right_panel_content: RightPanelContent,
     pub right_cursor: usize,
+    pub right_scroll: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
 }
 
@@ -79,6 +80,7 @@ impl App {
             focus: Focus::Left,
             right_panel_content: RightPanelContent::Contextual,
             right_cursor: 0,
+            right_scroll: 0,
             consumed_triggers: HashMap::new(),
         }
     }
@@ -362,9 +364,40 @@ impl App {
         }
     }
 
+    pub fn enter_right_panel(&mut self) {
+        self.focus = Focus::Right;
+        self.right_panel_content = RightPanelContent::Contextual;
+        self.right_scroll = 0;
+    }
+
     pub fn close_right_panel(&mut self) {
         self.focus = Focus::Left;
         self.right_panel_content = RightPanelContent::Contextual;
+        self.right_scroll = 0;
+    }
+
+    pub fn move_right_up(&mut self) {
+        match self.right_panel_content {
+            RightPanelContent::ConsumedTriggers => self.move_right_cursor_up(),
+            RightPanelContent::Contextual => match self.cursor {
+                // TOML: right_scroll is absolute from top — ↑ means smaller offset (toward top)
+                CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(1),
+                // Logs: right_scroll is lines from bottom — ↑ means more lines from bottom (toward top)
+                CursorTarget::Run(_, _) => self.right_scroll += 1,
+            },
+        }
+    }
+
+    pub fn move_right_down(&mut self) {
+        match self.right_panel_content {
+            RightPanelContent::ConsumedTriggers => self.move_right_cursor_down(),
+            RightPanelContent::Contextual => match self.cursor {
+                // TOML: right_scroll is absolute from top — ↓ means larger offset (toward bottom)
+                CursorTarget::Workflow(_) => self.right_scroll += 1,
+                // Logs: right_scroll is lines from bottom — ↓ means fewer lines from bottom (toward bottom)
+                CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(1),
+            },
+        }
     }
 
     pub fn selected_consumed_triggers(&self) -> &[String] {

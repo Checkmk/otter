@@ -11,7 +11,7 @@ use crate::runs_panel::render_runs;
 use crate::status_bar::render_status_bar;
 use crate::styles::base_style;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new("").style(base_style()), f.area());
 
     let status_bar_height = if app.mode == Mode::FeedbackInput {

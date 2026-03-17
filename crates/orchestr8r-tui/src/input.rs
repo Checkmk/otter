@@ -94,7 +94,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             app.open_consumed_triggers();
         }
         KeyCode::Tab if !has_checkpoint => {
-            app.open_consumed_triggers();
+            app.enter_right_panel();
         }
         _ => {}
     }
@@ -103,8 +103,8 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
 fn handle_right_panel(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Tab => app.close_right_panel(),
-        KeyCode::Up | KeyCode::Char('k') => app.move_right_cursor_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_right_cursor_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.move_right_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_right_down(),
         KeyCode::Delete => app.delete_selected_consumed_trigger(),
         _ => {}
     }

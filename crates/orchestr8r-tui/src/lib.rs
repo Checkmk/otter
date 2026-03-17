@@ -42,7 +42,7 @@ pub fn run(
             app.handle_daemon_event(ev);
         }
 
-        terminal.draw(|f| ui::render(f, &app))?;
+        terminal.draw(|f| ui::render(f, &mut app))?;
         app.tick = app.tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(16))? {

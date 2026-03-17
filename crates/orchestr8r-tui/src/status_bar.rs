@@ -7,7 +7,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, CursorTarget, Focus, Mode};
+use crate::app::{App, CursorTarget, Focus, Mode, RightPanelContent};
 use crate::input_field::InputField;
 use crate::styles::{
     base_style, c_action_continue, c_action_feedback, c_action_stop, c_background, c_dim,
@@ -25,16 +25,25 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             InputField::render(" Feedback ", &app.feedback_input, available_width, app.tick)
         }
         Mode::Normal if app.focus == Focus::Right => {
-            vec![Line::from(vec![
-                Span::styled("[↑↓]", key),
-                Span::styled(" Navigate", dim),
-                Span::styled("  ", base_style()),
-                Span::styled("[Del]", key),
-                Span::styled(" Delete trigger", dim),
-                Span::styled("  ", base_style()),
-                Span::styled("[Esc/Tab]", key),
-                Span::styled(" Back", dim),
-            ])]
+            match app.right_panel_content {
+                RightPanelContent::Contextual => vec![Line::from(vec![
+                    Span::styled("[↑↓]", key),
+                    Span::styled(" Scroll", dim),
+                    Span::styled("  ", base_style()),
+                    Span::styled("[Tab]", key),
+                    Span::styled(" Switch panel", dim),
+                ])],
+                RightPanelContent::ConsumedTriggers => vec![Line::from(vec![
+                    Span::styled("[↑↓]", key),
+                    Span::styled(" Navigate", dim),
+                    Span::styled("  ", base_style()),
+                    Span::styled("[Del]", key),
+                    Span::styled(" Delete trigger", dim),
+                    Span::styled("  ", base_style()),
+                    Span::styled("[Tab]", key),
+                    Span::styled(" Back", dim),
+                ])],
+            }
         }
         Mode::Normal => {
             if let Some(cp) = app.active_checkpoint() {
@@ -135,6 +144,12 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" Consumed triggers", dim),
                     ]);
                 }
+
+                spans.extend([
+                    Span::styled("  ", base_style()),
+                    Span::styled("[Tab]", key),
+                    Span::styled(" Switch panel", dim),
+                ]);
 
                 let other = app.other_checkpoint_count();
                 if other > 0 {

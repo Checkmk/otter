@@ -68,20 +68,25 @@ fn format_log_entry(
     result
 }
 
-pub fn render_right_panel(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
     match &app.right_panel_content {
         RightPanelContent::ConsumedTriggers => {
-            render_consumed_triggers(f, app, area, app.focus == Focus::Right);
+            let is_focused = app.focus == Focus::Right;
+            render_consumed_triggers(f, app, area, is_focused);
         }
-        RightPanelContent::Contextual => match app.cursor {
-            CursorTarget::Workflow(_) => render_workflow_toml(f, app, area),
-            CursorTarget::Run(_, _) => render_logs(f, app, area),
-        },
+        RightPanelContent::Contextual => {
+            let is_focused = app.focus == Focus::Right;
+            match app.cursor {
+                CursorTarget::Workflow(_) => render_workflow_toml(f, app, area, is_focused),
+                CursorTarget::Run(_, _) => render_logs(f, app, area, is_focused),
+            }
+        }
     }
 }
 
-fn render_workflow_toml(f: &mut Frame, app: &App, area: Rect) {
+fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
 
     let lines: Vec<Line> = match app.selected_workflow_toml() {
         None => vec![Line::from(Span::styled(
@@ -104,17 +109,21 @@ fn render_workflow_toml(f: &mut Frame, app: &App, area: Rect) {
             .collect(),
     };
 
-    let scroll_offset = lines.len().saturating_sub(area.height as usize - 2) as u16;
-    let para = Paragraph::new(lines)
-        .block(panel("Workflow"))
-        .scroll((scroll_offset, 0));
+    let auto_bottom = lines.len().saturating_sub(inner_height);
+    // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
+    app.right_scroll = app.right_scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { app.right_scroll } else { 0 } as u16;
+
+    let block = if is_focused { panel_focused("Workflow") } else { panel("Workflow") };
+    let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
 
     f.render_widget(para, area);
 }
 
-fn render_logs(f: &mut Frame, app: &App, area: Rect) {
+fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let logs = app.selected_logs();
     let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
 
     let lines: Vec<Line> = if logs.is_empty() {
         vec![Line::from(Span::styled(
@@ -153,15 +162,22 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
             .collect()
     };
 
-    let scroll_offset = lines.len().saturating_sub(area.height as usize - 2) as u16;
-    let para = Paragraph::new(lines)
-        .block(panel("Logs"))
-        .scroll((scroll_offset, 0));
+    let auto_bottom = lines.len().saturating_sub(inner_height);
+    // Clamp app state so pressing ↓ always has a visible effect after scrolling up.
+    app.right_scroll = app.right_scroll.min(auto_bottom);
+    let scroll_offset = if is_focused {
+        auto_bottom - app.right_scroll
+    } else {
+        auto_bottom
+    } as u16;
+
+    let block = if is_focused { panel_focused("Logs") } else { panel("Logs") };
+    let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
 
     f.render_widget(para, area);
 }
 
-fn render_consumed_triggers(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
+fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let triggers = app.selected_consumed_triggers();
     let block = if is_focused {
         panel_focused("Consumed Triggers")
