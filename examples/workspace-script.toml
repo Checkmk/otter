@@ -1,0 +1,13 @@
+name = "workspace-script"
+type = "triggered"
+
+[workspace]
+type = "script"
+command = ["bash", "examples/workspace-script-setup.sh"]
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "shell"
+command = ["git", "status"]
