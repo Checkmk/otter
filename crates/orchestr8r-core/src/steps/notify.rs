@@ -76,6 +76,7 @@ mod tests {
             session_manager: None,
             notifier,
             log_fn: None,
+            progress_fn: None,
         }
     }
 

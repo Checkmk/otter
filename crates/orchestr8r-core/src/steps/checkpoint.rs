@@ -71,7 +71,17 @@ async fn execute_via_channel(
                 log_immediate(ctx, "feedback", text.clone(), String::new(), None);
 
                 if let Some(manager) = &ctx.session_manager {
-                    match manager.prompt_last(&text).await {
+                    let progress_tx = ctx.progress_fn.as_ref().map(|pf| {
+                        let pf = pf.clone();
+                        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::types::ProgressChunk>(64);
+                        tokio::spawn(async move {
+                            while let Some(chunk) = rx.recv().await {
+                                pf(chunk);
+                            }
+                        });
+                        tx
+                    });
+                    match manager.prompt_last(&text, progress_tx).await {
                         Ok(Some(agent_out)) => {
                             log_immediate(ctx, "agent", agent_out.stdout, agent_out.stderr, agent_out.exit_code);
                         }
@@ -110,8 +120,10 @@ mod tests {
     use super::*;
     use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
     use crate::session::AgentSessionManager;
+    use crate::types::ProgressChunk;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
     use uuid::Uuid;
 
     struct MockRunner {
@@ -130,7 +142,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentRunner for MockRunner {
-        async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+        async fn start(
+            &self,
+            spec: AgentSpec,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push("start".into());
             Ok((
                 AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir },
@@ -138,7 +154,12 @@ mod tests {
             ))
         }
 
-        async fn prompt(&self, _session: &AgentSessionHandle, message: &str) -> Result<AgentOutput, AgentError> {
+        async fn prompt(
+            &self,
+            _session: &AgentSessionHandle,
+            message: &str,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<AgentOutput, AgentError> {
             self.calls.lock().unwrap().push(format!("prompt:{}", message));
             Ok(AgentOutput { stdout: format!("response:{}", message), stderr: String::new(), exit_code: Some(0) })
         }
@@ -160,6 +181,7 @@ mod tests {
             session_manager: None,
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
+            progress_fn: None,
         }
     }
 
@@ -179,6 +201,7 @@ mod tests {
             session_manager: Some(manager),
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
+            progress_fn: None,
         }
     }
 
@@ -261,6 +284,7 @@ mod tests {
                 Some(&["echo".to_string()]),
                 "initial",
                 std::path::Path::new("/tmp"),
+                None,
             )
             .await
             .unwrap();
@@ -306,6 +330,7 @@ mod tests {
                 Some(&["echo".to_string()]),
                 "initial",
                 std::path::Path::new("/tmp"),
+                None,
             )
             .await
             .unwrap();
@@ -382,6 +407,7 @@ mod tests {
                 Some(&["echo".to_string()]),
                 "hi",
                 std::path::Path::new("/tmp"),
+                None,
             )
             .await
             .unwrap();
@@ -406,6 +432,7 @@ mod tests {
             session_manager: Some(Arc::new(manager)),
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(log_fn),
+            progress_fn: None,
         };
 
         // WHEN
@@ -459,6 +486,7 @@ mod tests {
             session_manager: None,
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
+            progress_fn: None,
         };
 
         // WHEN
@@ -494,6 +522,7 @@ mod tests {
             session_manager: None,
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
+            progress_fn: None,
         };
 
         // WHEN

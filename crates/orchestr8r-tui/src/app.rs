@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, TriggerDef, WorkflowType, WorkflowRun, WorkflowState};
+use orchestr8r_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowType, WorkflowRun, WorkflowState};
 use uuid::Uuid;
 use tokio::sync::mpsc;
 
@@ -62,6 +62,7 @@ pub struct App {
     pub right_cursor: usize,
     pub right_scroll: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
+    pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
 }
 
 impl App {
@@ -82,6 +83,7 @@ impl App {
             right_cursor: 0,
             right_scroll: 0,
             consumed_triggers: HashMap::new(),
+            progress: HashMap::new(),
         }
     }
 
@@ -190,8 +192,12 @@ impl App {
                     entry.runs.retain(|r| r.id != run_id);
                 }
                 self.logs.remove(&run_id);
+                self.progress.remove(&run_id);
                 self.pending_checkpoints.remove(&run_id);
                 self.ensure_cursor_valid(old_pos);
+            }
+            DaemonEvent::StepProgress { run_id, step_index, chunk } => {
+                self.progress.entry(run_id).or_default().push((step_index, chunk));
             }
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
                 self.consumed_triggers.insert(workflow, triggers);
@@ -282,6 +288,13 @@ impl App {
     pub fn selected_logs(&self) -> &[LogEntry] {
         self.selected_run_id()
             .and_then(|id| self.logs.get(&id))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn selected_progress(&self) -> &[(usize, ProgressChunk)] {
+        self.selected_run_id()
+            .and_then(|id| self.progress.get(&id))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -1003,5 +1016,46 @@ mod tests {
             app.workflows[0].toml_content.as_deref(),
             Some("name = \"wf\"\ntype = \"looping\"\n")
         );
+    }
+
+    #[test]
+    fn step_progress_accumulates_and_persists_after_log() {
+        // GIVEN
+        let mut app = make_test_app();
+        let run_id = Uuid::new_v4();
+
+        // WHEN progress arrives
+        app.handle_daemon_event(DaemonEvent::StepProgress {
+            run_id,
+            step_index: 0,
+            chunk: ProgressChunk::Status("Thinking...".to_string()),
+        });
+        app.handle_daemon_event(DaemonEvent::StepProgress {
+            run_id,
+            step_index: 0,
+            chunk: ProgressChunk::Status("Using tool: Read".to_string()),
+        });
+
+        // THEN — progress accumulates
+        assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
+
+        // WHEN a LogAppended arrives for the same run
+        app.handle_daemon_event(DaemonEvent::LogAppended(LogEntry {
+            run_id,
+            iteration: 0,
+            step_index: 0,
+            step_type: "agent".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            accepted: None,
+            feedback: None,
+            timestamp: Utc::now(),
+        }));
+
+        // THEN — progress persists (not cleared)
+        assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
+        // AND the log entry was added
+        assert_eq!(app.logs.get(&run_id).unwrap().len(), 1);
     }
 }

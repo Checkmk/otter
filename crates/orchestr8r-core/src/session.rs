@@ -8,7 +8,8 @@ use crate::agent_runner::{
     AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec, CustomRunner,
     build_runner,
 };
-use crate::types::AgentConfig;
+use crate::types::{AgentConfig, ProgressChunk};
+use tokio::sync::mpsc;
 
 struct SessionEntry {
     handle: AgentSessionHandle,
@@ -55,6 +56,7 @@ impl AgentSessionManager {
         command: Option<&[String]>,
         message: &str,
         working_dir: &Path,
+        progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<AgentOutput, AgentError> {
         let session_key = session_name
             .map(str::to_string)
@@ -68,7 +70,7 @@ impl AgentSessionManager {
         };
 
         let output = if let Some((handle, runner)) = existing {
-            runner.prompt(&handle, message).await?
+            runner.prompt(&handle, message, progress_tx).await?
         } else {
             let runner = self.resolve_runner(config, command)?;
 
@@ -77,7 +79,7 @@ impl AgentSessionManager {
                 working_dir: working_dir.to_path_buf(),
             };
 
-            let (handle, output) = runner.start(spec).await?;
+            let (handle, output) = runner.start(spec, progress_tx).await?;
             self.sessions
                 .lock()
                 .unwrap()
@@ -116,7 +118,11 @@ impl AgentSessionManager {
     }
 
     /// Prompt the most recently used session. Returns `None` if no session is active.
-    pub async fn prompt_last(&self, message: &str) -> Result<Option<AgentOutput>, AgentError> {
+    pub async fn prompt_last(
+        &self,
+        message: &str,
+        progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+    ) -> Result<Option<AgentOutput>, AgentError> {
         let key = self.last_key.lock().unwrap().clone();
         let entry = key.and_then(|k| {
             let sessions = self.sessions.lock().unwrap();
@@ -126,7 +132,7 @@ impl AgentSessionManager {
         });
         match entry {
             None => Ok(None),
-            Some((handle, runner)) => Ok(Some(runner.prompt(&handle, message).await?)),
+            Some((handle, runner)) => Ok(Some(runner.prompt(&handle, message, progress_tx).await?)),
         }
     }
 
@@ -173,7 +179,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentRunner for MockRunner {
-        async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+        async fn start(
+            &self,
+            spec: AgentSpec,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push(format!("start:{}", spec.message));
             Ok((
                 AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir },
@@ -181,7 +191,12 @@ mod tests {
             ))
         }
 
-        async fn prompt(&self, _session: &AgentSessionHandle, message: &str) -> Result<AgentOutput, AgentError> {
+        async fn prompt(
+            &self,
+            _session: &AgentSessionHandle,
+            message: &str,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<AgentOutput, AgentError> {
             self.calls.lock().unwrap().push(format!("prompt:{}", message));
             Ok(AgentOutput { stdout: format!("resp:{}", message), stderr: String::new(), exit_code: Some(0) })
         }
@@ -212,8 +227,8 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("planner"), &claude(), None, "first", &dir).await.unwrap();
-        manager.run_step(Some("planner"), &AgentConfig::default(), None, "second", &dir).await.unwrap();
+        manager.run_step(Some("planner"), &claude(), None, "first", &dir, None).await.unwrap();
+        manager.run_step(Some("planner"), &AgentConfig::default(), None, "second", &dir, None).await.unwrap();
 
         // THEN — start once, prompt once
         let calls = runner.calls();
@@ -229,7 +244,7 @@ mod tests {
         let manager = manager_with_mock(runner.clone());
 
         // WHEN
-        let result = manager.prompt_last("hello").await.unwrap();
+        let result = manager.prompt_last("hello", None).await.unwrap();
 
         // THEN
         assert!(result.is_none());
@@ -245,7 +260,7 @@ mod tests {
 
         // WHEN / THEN
         assert!(!manager.has_active_session());
-        manager.run_step(Some("s"), &claude(), None, "hi", &dir).await.unwrap();
+        manager.run_step(Some("s"), &claude(), None, "hi", &dir, None).await.unwrap();
         assert!(manager.has_active_session());
     }
 
@@ -256,7 +271,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN / THEN — neither provided
-        let err = manager.run_step(None, &AgentConfig::default(), None, "hi", &dir).await.unwrap_err();
+        let err = manager.run_step(None, &AgentConfig::default(), None, "hi", &dir, None).await.unwrap_err();
         assert!(err.to_string().contains("provider or command"));
     }
 
@@ -269,7 +284,7 @@ mod tests {
 
         // WHEN / THEN
         let err = manager
-            .run_step(None, &claude(), Some(&cmd), "hi", &dir)
+            .run_step(None, &claude(), Some(&cmd), "hi", &dir, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not both"));
@@ -283,8 +298,8 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(None, &claude(), None, "task one", &dir).await.unwrap();
-        manager.run_step(None, &claude(), None, "task two", &dir).await.unwrap();
+        manager.run_step(None, &claude(), None, "task one", &dir, None).await.unwrap();
+        manager.run_step(None, &claude(), None, "task two", &dir, None).await.unwrap();
 
         // THEN — two separate start calls (each anonymous session is independent)
         let calls = runner.calls();
@@ -300,7 +315,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("worker"), &claude(), None, "do work", &dir).await.unwrap();
+        manager.run_step(Some("worker"), &claude(), None, "do work", &dir, None).await.unwrap();
         manager.cleanup().await;
 
         // THEN

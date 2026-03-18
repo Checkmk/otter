@@ -119,6 +119,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                         feedback_available,
                     }
                 }
+                EngineEvent::StepProgress { run_id, step_index, chunk } => {
+                    DaemonEvent::StepProgress { run_id, step_index, chunk }
+                }
             };
             let mut subs = subscribers_fanout.lock().unwrap();
             subs.retain(|tx| tx.try_send(daemon_ev.clone()).is_ok());

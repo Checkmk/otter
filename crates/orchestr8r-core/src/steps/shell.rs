@@ -73,6 +73,7 @@ mod tests {
             session_manager: None,
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
+            progress_fn: None,
         }
     }
 

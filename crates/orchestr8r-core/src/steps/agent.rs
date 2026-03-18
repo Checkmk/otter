@@ -1,6 +1,7 @@
 use super::StepExecutor;
-use crate::types::{StepContext, StepDef, StepError, StepOutput};
+use crate::types::{ProgressChunk, StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 pub struct AgentExecutor;
 
@@ -46,6 +47,13 @@ impl StepExecutor for AgentExecutor {
             });
         }
 
+        let progress_tx: Option<mpsc::Sender<ProgressChunk>> = ctx.progress_fn.as_ref().map(|f| {
+            let (tx, mut rx) = mpsc::channel::<ProgressChunk>(64);
+            let f = f.clone();
+            tokio::spawn(async move { while let Some(chunk) = rx.recv().await { f(chunk); } });
+            tx
+        });
+
         let output = manager
             .run_step(
                 step_def.session.as_deref(),
@@ -53,6 +61,7 @@ impl StepExecutor for AgentExecutor {
                 step_def.command.as_deref(),
                 message,
                 working_dir,
+                progress_tx,
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -75,22 +84,32 @@ impl StepExecutor for AgentExecutor {
 mod tests {
     use super::*;
     use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
-    use crate::types::StepType;
+    use crate::types::{ProgressChunk, StepType};
     use std::sync::Arc;
+    use tokio::sync::mpsc;
     use uuid::Uuid;
 
     struct FixedRunner;
 
     #[async_trait::async_trait]
     impl AgentRunner for FixedRunner {
-        async fn start(&self, spec: AgentSpec) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
+        async fn start(
+            &self,
+            spec: AgentSpec,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
                 AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone() },
                 AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
 
-        async fn prompt(&self, _session: &AgentSessionHandle, _message: &str) -> Result<AgentOutput, AgentError> {
+        async fn prompt(
+            &self,
+            _session: &AgentSessionHandle,
+            _message: &str,
+            _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        ) -> Result<AgentOutput, AgentError> {
             Ok(AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) })
         }
 
@@ -115,6 +134,7 @@ mod tests {
             session_manager: Some(manager),
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
+            progress_fn: None,
         };
         let step_def = StepDef {
             step_type: StepType::Agent,

@@ -167,6 +167,8 @@ pub struct StepContext {
     /// Called by step executors to persist and broadcast a log entry immediately,
     /// rather than waiting until the step's execute() returns.
     pub log_fn: Option<Arc<dyn Fn(LogEntry) + Send + Sync>>,
+    /// Called by step executors to emit ephemeral progress chunks for live TUI display.
+    pub progress_fn: Option<Arc<dyn Fn(ProgressChunk) + Send + Sync>>,
 }
 
 #[derive(Debug)]
@@ -188,6 +190,24 @@ pub enum EngineEvent {
         feedback_available: bool,
         response_tx: oneshot::Sender<CheckpointResponse>,
     },
+    /// Ephemeral progress from a running step — not persisted, not replayed on reconnect.
+    StepProgress {
+        run_id: Uuid,
+        step_index: usize,
+        chunk: ProgressChunk,
+    },
+}
+
+/// Ephemeral progress chunk emitted during step execution for live TUI display.
+/// Not persisted to storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProgressChunk {
+    /// Raw stdout line (for non-Claude providers or shell streaming).
+    Stdout(String),
+    /// Raw stderr line.
+    Stderr(String),
+    /// Parsed high-level status (e.g. "Thinking...", "Using tool: Read").
+    Status(String),
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +280,12 @@ pub enum DaemonEvent {
     },
     RunDeleted { run_id: Uuid },
     ConsumedTriggersChanged { workflow: String, triggers: Vec<String> },
+    /// Ephemeral progress from a running step — not persisted, not replayed on reconnect.
+    StepProgress {
+        run_id: Uuid,
+        step_index: usize,
+        chunk: ProgressChunk,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -355,6 +355,14 @@ impl Engine {
                     Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
                 });
 
+            let progress_fn: Option<Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>> = ui_tx.as_ref().map(|tx| {
+                let tx = tx.clone();
+                let run_id = run.id;
+                Arc::new(move |chunk: crate::types::ProgressChunk| {
+                    let _ = tx.try_send(EngineEvent::StepProgress { run_id, step_index: i, chunk });
+                }) as Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>
+            });
+
             let ctx = StepContext {
                 run_id: run.id,
                 workflow_name: workflow.name.clone(),
@@ -366,6 +374,7 @@ impl Engine {
                 session_manager: Some(session_manager.clone()),
                 notifier: self.notifier.clone(),
                 log_fn: Some(log_fn),
+                progress_fn,
             };
 
             info!(step = i, step_type = %step_def.step_type, command = ?step_def.command, "Executing step");

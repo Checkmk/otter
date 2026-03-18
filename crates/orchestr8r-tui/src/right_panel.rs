@@ -7,6 +7,8 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+use orchestr8r_core::types::ProgressChunk;
+
 use crate::app::{App, CursorTarget, Focus, RightPanelContent};
 use crate::styles::{base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
@@ -120,46 +122,83 @@ fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bo
     f.render_widget(para, area);
 }
 
+fn render_progress_line<'a>(
+    chunk: &ProgressChunk,
+    inner_width: usize,
+    dim_style: Style,
+    stderr_style: Style,
+) -> Line<'a> {
+    let (prefix, text, style) = match chunk {
+        ProgressChunk::Status(s) => ("│ ", s.as_str(), dim_style),
+        ProgressChunk::Stdout(s) => ("│ ", s.as_str(), dim_style),
+        ProgressChunk::Stderr(s) => ("│ ", s.as_str(), stderr_style),
+    };
+    let max_text_width = inner_width.saturating_sub(4);
+    let display: String = text.chars().take(max_text_width).collect();
+    let suffix = if text.len() > max_text_width { "…" } else { "" };
+    Line::from(vec![
+        Span::styled(format!("  {prefix}"), dim_style),
+        Span::styled(format!("{display}{suffix}"), style),
+    ])
+}
+
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let logs = app.selected_logs();
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
 
-    let lines: Vec<Line> = if logs.is_empty() {
+    let progress = app.selected_progress();
+    let dim_style = Style::default().fg(c_dim()).bg(c_background());
+    let stderr_style = Style::default().fg(ratatui::style::Color::Red).bg(c_background());
+
+    let lines: Vec<Line> = if logs.is_empty() && progress.is_empty() {
         vec![Line::from(Span::styled(
             "Select a run to view logs",
-            Style::default().fg(c_dim()).bg(c_background()),
+            dim_style,
         ))]
     } else {
-        logs.iter()
-            .flat_map(|entry| {
-                let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
-                let text = if !entry.stdout.is_empty() {
-                    &entry.stdout
-                } else if !entry.stderr.is_empty() {
-                    &entry.stderr
-                } else if let Some(ref fb) = entry.feedback {
-                    fb
-                } else {
-                    ""
-                };
+        let mut lines: Vec<Line> = Vec::new();
+        let mut progress_cursor = 0;
 
-                format_log_entry(&time, &entry.step_type, text, inner_width)
-                    .into_iter()
-                    .map(|wl| match wl {
-                        WrappedLogLine::Header { time, step_type, text } => Line::from(vec![
-                            Span::styled(format!("[{}] ", time), Style::default().fg(c_dim()).bg(c_background())),
-                            Span::styled(format!("{}:", step_type), Style::default().fg(step_color(&step_type)).bg(c_background())),
-                            Span::styled(format!(" {}", text), base_style()),
-                        ]),
-                        WrappedLogLine::Continuation { text } => Line::from(vec![
-                            Span::styled("  ", base_style()),
-                            Span::styled(text, base_style()),
-                        ]),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        for entry in logs {
+            let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
+            let text = if !entry.stdout.is_empty() {
+                &entry.stdout
+            } else if !entry.stderr.is_empty() {
+                &entry.stderr
+            } else if let Some(ref fb) = entry.feedback {
+                fb
+            } else {
+                ""
+            };
+
+            for wl in format_log_entry(&time, &entry.step_type, text, inner_width) {
+                match wl {
+                    WrappedLogLine::Header { time, step_type, text } => lines.push(Line::from(vec![
+                        Span::styled(format!("[{}] ", time), Style::default().fg(c_dim()).bg(c_background())),
+                        Span::styled(format!("{}:", step_type), Style::default().fg(step_color(&step_type)).bg(c_background())),
+                        Span::styled(format!(" {}", text), base_style()),
+                    ])),
+                    WrappedLogLine::Continuation { text } => lines.push(Line::from(vec![
+                        Span::styled("  ", base_style()),
+                        Span::styled(text, base_style()),
+                    ])),
+                }
+            }
+
+            while progress_cursor < progress.len() && progress[progress_cursor].0 <= entry.step_index {
+                lines.push(render_progress_line(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
+                progress_cursor += 1;
+            }
+        }
+
+        // Remaining progress chunks (for in-flight steps)
+        while progress_cursor < progress.len() {
+            lines.push(render_progress_line(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
+            progress_cursor += 1;
+        }
+
+        lines
     };
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
