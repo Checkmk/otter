@@ -8,7 +8,7 @@ use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
 /// Current schema version. Increment this and add a corresponding entry to `MIGRATIONS` when
 /// making schema changes.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     // v0 -> v1: initial schema
@@ -20,8 +20,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
                 status TEXT NOT NULL,
                 current_step INTEGER NOT NULL,
                 iteration INTEGER NOT NULL,
-                started_at TEXT NOT NULL,
-                trigger_payload TEXT
+                started_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS step_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,6 +35,13 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
                 feedback TEXT,
                 timestamp TEXT NOT NULL
             );",
+        )?;
+        Ok(())
+    },
+    // v1 -> v2: add trigger_payload column to workflow_runs
+    |conn| {
+        conn.execute_batch(
+            "ALTER TABLE workflow_runs ADD COLUMN trigger_payload TEXT;",
         )?;
         Ok(())
     },
