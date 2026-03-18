@@ -184,7 +184,14 @@ async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()
 // ─── Shared path helpers ─────────────────────────────────────────────────────
 
 pub(crate) fn socket_path() -> PathBuf {
-    dirs_data_dir().join("orchestr8r.sock")
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"\\.\pipe\orchestr8r")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        dirs_data_dir().join("orchestr8r.sock")
+    }
 }
 
 pub(crate) fn dirs_data_dir() -> PathBuf {

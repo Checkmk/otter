@@ -23,7 +23,7 @@ pub async fn run_ui() -> anyhow::Result<()> {
         }
     };
 
-    let (sub_reader, mut sub_writer) = stream.into_split();
+    let (sub_reader, mut sub_writer) = tokio::io::split(stream);
     let subscribe_line = serde_json::to_string(&DaemonCommand::Subscribe)? + "\n";
     sub_writer.write_all(subscribe_line.as_bytes()).await?;
 
@@ -123,7 +123,7 @@ fn print_workflows(workflows: &[WorkflowStatus]) {
 
 pub async fn send_command_once(cmd: DaemonCommand) -> anyhow::Result<DaemonResponse> {
     let stream = connect_to_daemon().await?;
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = tokio::io::split(stream);
     let cmd_line = serde_json::to_string(&cmd)? + "\n";
     writer.write_all(cmd_line.as_bytes()).await?;
     drop(writer);
@@ -136,9 +136,18 @@ pub async fn send_command_once(cmd: DaemonCommand) -> anyhow::Result<DaemonRespo
     Ok(serde_json::from_str(line.trim())?)
 }
 
+#[cfg(not(target_os = "windows"))]
 async fn connect_to_daemon() -> anyhow::Result<tokio::net::UnixStream> {
     let path = socket_path();
     tokio::net::UnixStream::connect(&path)
         .await
         .with_context(|| format!("could not connect to daemon socket at {path:?}"))
+}
+
+#[cfg(target_os = "windows")]
+async fn connect_to_daemon() -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    let path = socket_path();
+    tokio::net::windows::named_pipe::ClientOptions::new()
+        .open(&path)
+        .with_context(|| format!("could not connect to daemon pipe at {path:?}"))
 }

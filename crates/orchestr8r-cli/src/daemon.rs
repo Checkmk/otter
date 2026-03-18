@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(target_os = "windows"))]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(target_os = "windows")]
+use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 use uuid::Uuid;
@@ -34,6 +37,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let socket_path = socket_path();
 
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
+    #[cfg(not(target_os = "windows"))]
     let _ = std::fs::remove_file(&socket_path); // remove stale socket if present
 
     let workflows = load_workflows_from_dir(&config_dir.join("workflows"))?;
@@ -121,7 +125,6 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         }
     });
 
-    let listener = UnixListener::bind(&socket_path).context("bind unix socket")?;
     info!(socket = ?socket_path, "Daemon started — all workflows dormant");
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -132,48 +135,91 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         shutdown_ctrlc.store(true, Ordering::Relaxed);
     });
 
-    loop {
-        if shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            listener.accept(),
-        )
-        .await
-        {
-            Ok(Ok((stream, _addr))) => {
-                let mgr = manager.clone();
-                let pending = pending_checkpoints.clone();
-                let runs = recent_runs.clone();
-                let subs = subscribers.clone();
-                let st = storage.clone();
-                let tm = toml_map.clone();
-                tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm));
-            }
-            Ok(Err(e)) => {
-                tracing::error!("accept error: {}", e);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let listener = UnixListener::bind(&socket_path).context("bind unix socket")?;
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            Err(_) => {} // timeout — check shutdown flag and continue
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                listener.accept(),
+            )
+            .await
+            {
+                Ok(Ok((stream, _addr))) => {
+                    let mgr = manager.clone();
+                    let pending = pending_checkpoints.clone();
+                    let runs = recent_runs.clone();
+                    let subs = subscribers.clone();
+                    let st = storage.clone();
+                    let tm = toml_map.clone();
+                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm));
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("accept error: {}", e);
+                    break;
+                }
+                Err(_) => {} // timeout — check shutdown flag and continue
+            }
+        }
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let pipe_name = socket_path.to_str().expect("pipe path is valid UTF-8");
+        let mut first = true;
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            let server = ServerOptions::new()
+                .first_pipe_instance(first)
+                .create(pipe_name)
+                .context("create named pipe")?;
+            first = false;
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                server.connect(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    let mgr = manager.clone();
+                    let pending = pending_checkpoints.clone();
+                    let runs = recent_runs.clone();
+                    let subs = subscribers.clone();
+                    let st = storage.clone();
+                    let tm = toml_map.clone();
+                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, tm));
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("accept error: {}", e);
+                    break;
+                }
+                Err(_) => {} // timeout — check shutdown flag and continue
+            }
         }
     }
 
-    let _ = std::fs::remove_file(&socket_path);
     info!("Daemon stopped");
     Ok(())
 }
 
-async fn handle_connection(
-    stream: UnixStream,
+async fn handle_connection<S>(
+    stream: S,
     manager: Arc<Mutex<WorkflowManager>>,
     pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>>,
     recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
     storage: Arc<dyn StorageBackend>,
     toml_map: Arc<HashMap<String, String>>,
-) {
-    let (reader, mut writer) = stream.into_split();
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
@@ -369,7 +415,7 @@ fn action_to_checkpoint_response(action: CheckpointAction) -> CheckpointResponse
 }
 
 async fn write_json<T: serde::Serialize>(
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
     value: &T,
 ) -> anyhow::Result<()> {
     let mut line = serde_json::to_string(value)?;
