@@ -192,8 +192,9 @@ impl Engine {
             }
         }
 
+        let trigger_for_spawn = trigger.clone();
         let trigger_handle = tokio::spawn(async move {
-            if let Err(e) = trigger.subscribe(trigger_tx).await {
+            if let Err(e) = trigger_for_spawn.subscribe(trigger_tx).await {
                 error!("Trigger subscribe error: {}", e);
             }
         });
@@ -248,7 +249,8 @@ impl Engine {
                 "Trigger fired, starting run"
             );
 
-            self.run_once(workflow, Some(&event), shutdown.clone(), ui_tx.clone()).await?;
+            let run_status = self.run_once(workflow, Some(&event), shutdown.clone(), ui_tx.clone()).await?;
+            trigger.on_run_completed(&event.payload, run_status == RunStatus::Completed).await;
 
             // Collect events that arrived during the run
             while let Ok(e) = trigger_rx.try_recv() {
@@ -272,7 +274,7 @@ impl Engine {
         event: Option<&TriggerEvent>,
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<RunStatus> {
         let run_id = event.and_then(|e| e.preallocated_run_id).unwrap_or_else(uuid::Uuid::new_v4);
         let mut run = WorkflowRun::new(workflow.name.clone());
         run.id = run_id;
@@ -316,7 +318,7 @@ impl Engine {
 
         session_manager.cleanup().await;
         info!(run_id = %run.id, "Triggered workflow run ended");
-        Ok(())
+        Ok(run.status)
     }
 
     /// Runs all steps once. Returns `Ok(true)` if execution should stop (failed or shutdown).

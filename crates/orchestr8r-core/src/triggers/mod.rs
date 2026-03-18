@@ -4,6 +4,7 @@ pub mod polling;
 
 use async_trait::async_trait;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::types::{TriggerDef, TriggerError, TriggerEvent, WorkspaceConfig};
@@ -13,6 +14,9 @@ pub trait TriggerSource: Send + Sync {
     fn name(&self) -> &str;
     async fn subscribe(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError>;
     async fn fire_once(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError>;
+    /// Called after a workflow run completes. `succeeded` is true if the run reached
+    /// `RunStatus::Completed`; false on failure or user-initiated stop.
+    async fn on_run_completed(&self, _payload: &str, _succeeded: bool) {}
 }
 
 pub fn build_trigger(
@@ -21,18 +25,18 @@ pub fn build_trigger(
     data_dir: &Path,
     scratch_base: &Path,
     workspace_config: Option<&WorkspaceConfig>,
-) -> Result<Box<dyn TriggerSource>, anyhow::Error> {
+) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
             let signal_path = data_dir.join("triggers").join(workflow_name);
-            Ok(Box::new(manual::ManualTrigger::new(
+            Ok(Arc::new(manual::ManualTrigger::new(
                 "manual".to_string(),
                 signal_path,
             )))
         }
         TriggerDef::Polling { poll_command, context_command, interval_secs } => {
             let seen_path = data_dir.join("triggers").join(format!("{}-seen.json", workflow_name));
-            Ok(Box::new(polling::PollingTrigger::new(
+            Ok(Arc::new(polling::PollingTrigger::new(
                 "polling".to_string(),
                 workflow_name.to_string(),
                 poll_command.clone(),

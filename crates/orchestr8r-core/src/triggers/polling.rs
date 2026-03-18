@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -60,6 +61,7 @@ pub struct PollingTrigger {
     seen_path: PathBuf,
     scratch_base: PathBuf,
     workspace_config: Option<WorkspaceConfig>,
+    in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl PollingTrigger {
@@ -82,6 +84,7 @@ impl PollingTrigger {
             seen_path,
             scratch_base,
             workspace_config,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -116,6 +119,28 @@ impl TriggerSource for PollingTrigger {
             .await
             .map_err(|e| TriggerError::Failed(e.to_string()))
     }
+
+    async fn on_run_completed(&self, payload: &str, succeeded: bool) {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        in_flight.remove(payload);
+        drop(in_flight);
+
+        if succeeded {
+            match self.load_seen() {
+                Ok(mut seen) => {
+                    seen.insert(payload.to_string());
+                    if let Err(e) = self.save_seen(&seen) {
+                        warn!("failed to persist seen-hash for {}: {}", payload, e);
+                    } else {
+                        debug!("hash {} marked as seen after successful run", payload);
+                    }
+                }
+                Err(e) => warn!("failed to load seen-hashes when completing run for {}: {}", payload, e),
+            }
+        } else {
+            info!("run failed for hash {}; hash not marked seen and will be retried on next poll", payload);
+        }
+    }
 }
 
 impl PollingTrigger {
@@ -145,14 +170,16 @@ impl PollingTrigger {
         })?;
 
         info!("polling found {} hash(es)", hashes.len());
-        let mut seen = self.load_seen()?;
+        let seen = self.load_seen()?;
 
         for hash in hashes {
-            if !seen.contains(&hash) {
+            let already_processed = seen.contains(&hash) || {
+                let in_flight = self.in_flight.lock().unwrap();
+                in_flight.contains(&hash)
+            };
+            if !already_processed {
                 info!("new hash from polling: {}", hash);
-                seen.insert(hash.clone());
-                self.save_seen(&seen)?;
-                debug!("saved seen-hash file");
+                self.in_flight.lock().unwrap().insert(hash.clone());
 
                 // Always pre-allocate a run_id; Script workspaces need it to set up a
                 // unique workspace directory (e.g. a git worktree named after the run).
@@ -169,6 +196,7 @@ impl PollingTrigger {
                     Ok(ws) => ws,
                     Err(e) => {
                         warn!("workspace setup failed for hash {}: {}", hash, e);
+                        self.in_flight.lock().unwrap().remove(&hash);
                         continue;
                     }
                 };
@@ -198,12 +226,14 @@ impl PollingTrigger {
                                     "context command failed for hash {}: {} (stderr: {})",
                                     hash, out.status, stderr
                                 );
+                                self.in_flight.lock().unwrap().remove(&hash);
                                 continue;
                             }
                             debug!("context command succeeded for hash {}", hash);
                         }
                         Err(e) => {
                             warn!("failed to run context command for hash {}: {}", hash, e);
+                            self.in_flight.lock().unwrap().remove(&hash);
                             continue;
                         }
                     }
@@ -310,7 +340,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_persists_seen_on_disk() {
+    async fn poll_does_not_persist_seen_until_run_completes() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
         let cmd_path = write_executable_script(
@@ -334,10 +364,16 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(32);
 
-        // WHEN
+        // WHEN - poll fires but run has not yet completed
         trigger.poll_once(&tx).await.unwrap();
 
-        // THEN
+        // THEN - seen file is NOT written yet
+        assert!(!seen_path.exists(), "seen file must not be written before run completes");
+
+        // WHEN - run completes successfully
+        trigger.on_run_completed("hash1", true).await;
+
+        // THEN - seen file is written
         assert!(seen_path.exists());
         let content = fs::read_to_string(&seen_path).unwrap();
         let data: SeenHashes = serde_json::from_str(&content).unwrap();
@@ -397,7 +433,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fire_once_updates_seen_hashes() {
+    async fn fire_once_updates_seen_hashes_after_successful_run() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
         let cmd_path = write_executable_script(
@@ -427,10 +463,83 @@ mod tests {
         let event = rx.recv().await.expect("expected event");
         assert_eq!(event.payload, "hash1");
 
-        // AND - seen-hash file updated
+        // AND - seen-hash file NOT yet written (run hasn't completed)
+        assert!(!seen_path.exists(), "seen file must not be written before run completes");
+
+        // WHEN - run completes successfully
+        trigger.on_run_completed("hash1", true).await;
+
+        // THEN - seen-hash file written
         let content = fs::read_to_string(&seen_path).unwrap();
         let data: SeenHashes = serde_json::from_str(&content).unwrap();
         assert!(data.hashes.contains(&"hash1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn hash_not_in_seen_file_after_failed_run() {
+        // GIVEN
+        let temp_dir = TempDir::new().unwrap();
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
+
+        let seen_path = temp_dir.path().join("seen.json");
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            "test-workflow".to_string(),
+            vec![cmd_path.to_string_lossy().to_string()],
+            None,
+            Duration::from_millis(100),
+            seen_path.clone(),
+            temp_dir.path().to_path_buf(),
+            None,
+        );
+
+        let (tx, _rx) = mpsc::channel(32);
+        trigger.poll_once(&tx).await.unwrap();
+
+        // WHEN - run fails
+        trigger.on_run_completed("hash1", false).await;
+
+        // THEN - seen file is not written
+        assert!(!seen_path.exists(), "failed run must not write hash to seen file");
+    }
+
+    #[tokio::test]
+    async fn hash_not_double_fired_while_in_flight() {
+        // GIVEN
+        let temp_dir = TempDir::new().unwrap();
+        let cmd_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poller.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
+
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            "test-workflow".to_string(),
+            vec![cmd_path.to_string_lossy().to_string()],
+            None,
+            Duration::from_millis(100),
+            temp_dir.path().join("seen.json"),
+            temp_dir.path().to_path_buf(),
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+
+        // WHEN - first poll fires the hash (run still in-flight)
+        trigger.poll_once(&tx).await.unwrap();
+        let event = rx.recv().await.expect("expected first event");
+        assert_eq!(event.payload, "hash1");
+
+        // WHEN - second poll while run is still in-flight
+        trigger.poll_once(&tx).await.unwrap();
+
+        // THEN - no second event fired
+        assert!(rx.try_recv().is_err(), "hash must not be fired again while in-flight");
     }
 
     #[tokio::test]
