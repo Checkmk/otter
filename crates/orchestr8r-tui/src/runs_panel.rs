@@ -100,7 +100,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 
                 let datetime = run.started_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
                 let run_content = match run.trigger_payload.as_deref() {
-                    Some(p) if !p.is_empty() => format!("{} ({})", &p[..p.len().min(8)], datetime),
+                    Some(p) if !p.is_empty() => format!("{} ({})", p, datetime),
                     _ => datetime,
                 };
                 let running = RunStatus::Running;
