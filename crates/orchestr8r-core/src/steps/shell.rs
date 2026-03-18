@@ -38,8 +38,11 @@ impl StepExecutor for ShellExecutor {
 
         if !output.status.success() {
             return Err(StepError::ExecutionFailed(format!(
-                "command exited with code {:?}",
-                exit_code
+                "'{}' exited with code {}\nstdout: {}\nstderr: {}",
+                command.join(" "),
+                exit_code.unwrap_or(-1),
+                stdout.trim(),
+                stderr.trim(),
             )));
         }
 
@@ -49,5 +52,94 @@ impl StepExecutor for ShellExecutor {
             exit_code,
             accepted: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{StepDef, StepType};
+    use uuid::Uuid;
+
+    fn ctx(scratch: &std::path::Path) -> StepContext {
+        StepContext {
+            run_id: Uuid::new_v4(),
+            workflow_name: "test".into(),
+            iteration: 0,
+            step_index: 0,
+            scratch_dir: scratch.to_path_buf(),
+            workspace_dir: None,
+            checkpoint_tx: None,
+            session_manager: None,
+            notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
+            log_fn: None,
+        }
+    }
+
+    fn step(command: Vec<&str>) -> StepDef {
+        StepDef {
+            step_type: StepType::Shell,
+            command: Some(command.into_iter().map(String::from).collect()),
+            message: None,
+            session: None,
+            notify: None,
+            agent: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_command_includes_command_name_in_error() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let step_def = step(vec!["bash", "-c", "exit 1"]);
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("bash -c exit 1"), "error should contain the command: {msg}");
+    }
+
+    #[tokio::test]
+    async fn failed_command_includes_exit_code_in_error() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let step_def = step(vec!["bash", "-c", "exit 42"]);
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("42"), "error should contain the exit code: {msg}");
+    }
+
+    #[tokio::test]
+    async fn failed_command_includes_stderr_in_error() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let step_def = step(vec!["bash", "-c", "echo 'something went wrong' >&2; exit 1"]);
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("something went wrong"), "error should contain stderr: {msg}");
+    }
+
+    #[tokio::test]
+    async fn failed_command_includes_stdout_in_error() {
+        // GIVEN
+        let scratch = tempfile::tempdir().unwrap();
+        let step_def = step(vec!["bash", "-c", "echo 'partial output'; exit 1"]);
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("partial output"), "error should contain stdout: {msg}");
     }
 }

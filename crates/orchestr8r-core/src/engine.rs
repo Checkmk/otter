@@ -366,7 +366,7 @@ impl Engine {
                 log_fn: Some(log_fn),
             };
 
-            info!(step = i, step_type = %step_def.step_type, "Executing step");
+            info!(step = i, step_type = %step_def.step_type, command = ?step_def.command, "Executing step");
 
             let executor = match self.find_executor(step_def.step_type) {
                 Some(e) => e,
