@@ -30,6 +30,22 @@ impl StepExecutor for AgentExecutor {
             .as_deref()
             .unwrap_or(&ctx.scratch_dir);
 
+        if let Some(ref log_fn) = ctx.log_fn {
+            let provider = step_def.agent.provider.as_deref().unwrap_or("custom");
+            log_fn(crate::types::LogEntry {
+                run_id: ctx.run_id,
+                iteration: ctx.iteration,
+                step_index: ctx.step_index,
+                step_type: "agent".to_string(),
+                stdout: format!("Running {provider} agent..."),
+                stderr: String::new(),
+                exit_code: None,
+                accepted: None,
+                feedback: None,
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
         let output = manager
             .run_step(
                 step_def.session.as_deref(),
