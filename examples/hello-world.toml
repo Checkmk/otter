@@ -1,6 +1,9 @@
 name = "hello-world"
 type = "triggered"
 
+[trigger]
+type = "manual"
+
 [[steps]]
 type = "shell"
 command = ["echo", "Hello from orchestr8r!"]
