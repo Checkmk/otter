@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(not(target_os = "windows"))]
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 #[cfg(target_os = "windows")]
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::{mpsc, Mutex};
