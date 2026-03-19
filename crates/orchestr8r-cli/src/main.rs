@@ -48,14 +48,14 @@ enum Commands {
         command: WorkflowCommands,
     },
     /// Manage consumed workflow triggers
-    Triggers {
+    Trigger {
         #[command(subcommand)]
         command: TriggersCommands,
     },
     /// Manage workflow runs
-    Runs {
+    Run {
         #[command(subcommand)]
-        command: RunsCommands,
+        command: RunCommands,
     },
 }
 
@@ -74,7 +74,7 @@ enum WorkflowCommands {
 }
 
 #[derive(Subcommand)]
-enum RunsCommands {
+enum RunCommands {
     /// List runs (all workflows by default; filter with --workflow)
     List {
         /// Only show runs for this workflow
@@ -128,15 +128,15 @@ async fn main() -> anyhow::Result<()> {
             client::send_command_print(DaemonCommand::Resume { name }).await
         }
         Some(Commands::Status) => client::print_status().await,
-        Some(Commands::Runs { command }) => handle_runs_command(command).await,
-        Some(Commands::Triggers { command }) => handle_triggers_command(command).await,
+        Some(Commands::Run { command }) => handle_runs_command(command).await,
+        Some(Commands::Trigger { command }) => handle_triggers_command(command).await,
         Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
     }
 }
 
-async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
+async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
     match command {
-        RunsCommands::List { workflow } => {
+        RunCommands::List { workflow } => {
             let data_dir = dirs_data_dir();
             let storage: std::sync::Arc<dyn StorageBackend> = std::sync::Arc::new(SqliteStorage::open(&data_dir.join("state.db"))?);
             let runs = match &workflow {
@@ -173,7 +173,7 @@ async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
                 println!("{:<37} {:<19} {:<12} {:<20} {}", run_id, started, status, wf_name, trigger);
             }
         }
-        RunsCommands::Delete { run_id } => {
+        RunCommands::Delete { run_id } => {
             // Parse the run ID
             let run_uuid = Uuid::parse_str(&run_id)?;
 
