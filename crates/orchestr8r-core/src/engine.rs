@@ -290,13 +290,31 @@ impl Engine {
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
-        // Use the workspace already resolved by the trigger (e.g. polling trigger ran
-        // the workspace script before the context command). Fall back to resolving now
-        // for manual triggers and looping workflow runs that call run_once() directly.
-        let workspace_dir = match event.and_then(|e| e.resolved_workspace.clone()) {
-            Some(ws) => Some(ws),
-            None => resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?,
-        };
+        let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?;
+
+        // Run the pending context command (from a polling trigger) now that the workspace is ready.
+        if let Some(ctx) = event.and_then(|e| e.pending_context.as_ref()) {
+            let ctx_dir = match &workspace_dir {
+                Some(ws) => ws.join("trigger-context"),
+                None => scratch_dir.join("trigger-context"),
+            };
+            std::fs::create_dir_all(&ctx_dir)?;
+            info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
+            let out = tokio::process::Command::new(&ctx.command[0])
+                .args(&ctx.command[1..])
+                .arg(&ctx.hash)
+                .arg(&ctx_dir)
+                .output()
+                .await?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                warn!(run_id = %run.id, "context command failed for hash {}: {} (stderr: {})", ctx.hash, out.status, stderr);
+                run.status = RunStatus::Failed;
+                self.storage.update_workflow_run(&run)?;
+                Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+                return Ok(run.status);
+            }
+        }
 
         let stop = self
             .execute_steps(

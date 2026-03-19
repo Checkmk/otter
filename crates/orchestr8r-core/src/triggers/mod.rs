@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::types::{TriggerDef, TriggerError, TriggerEvent, WorkspaceConfig};
+use crate::types::{TriggerDef, TriggerError, TriggerEvent};
 
 #[async_trait]
 pub trait TriggerSource: Send + Sync {
@@ -23,8 +23,8 @@ pub fn build_trigger(
     def: &TriggerDef,
     workflow_name: &str,
     data_dir: &Path,
-    scratch_base: &Path,
-    workspace_config: Option<&WorkspaceConfig>,
+    _scratch_base: &Path,
+    _workspace_config: Option<&crate::types::WorkspaceConfig>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -38,13 +38,10 @@ pub fn build_trigger(
             let seen_path = data_dir.join("triggers").join(format!("{}-seen.json", workflow_name));
             Ok(Arc::new(polling::PollingTrigger::new(
                 "polling".to_string(),
-                workflow_name.to_string(),
                 poll_command.clone(),
                 context_command.clone(),
                 std::time::Duration::from_secs(*interval_secs),
                 seen_path,
-                scratch_base.to_path_buf(),
-                workspace_config.cloned(),
             )))
         }
     }

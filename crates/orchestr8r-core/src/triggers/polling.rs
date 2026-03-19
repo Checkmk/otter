@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::types::{TriggerError, TriggerEvent, WorkspaceConfig};
-use crate::workspace::resolve_workspace;
+use crate::types::{PendingContext, TriggerError, TriggerEvent};
 use super::TriggerSource;
 
 #[derive(Serialize, Deserialize)]
@@ -54,36 +53,27 @@ fn save_consumed_triggers(path: &Path, seen: &HashSet<String>) -> anyhow::Result
 
 pub struct PollingTrigger {
     name: String,
-    workflow_name: String,
     poll_command: Vec<String>,
     context_command: Option<Vec<String>>,
     interval: Duration,
     seen_path: PathBuf,
-    scratch_base: PathBuf,
-    workspace_config: Option<WorkspaceConfig>,
     in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl PollingTrigger {
     pub fn new(
         name: String,
-        workflow_name: String,
         poll_command: Vec<String>,
         context_command: Option<Vec<String>>,
         interval: Duration,
         seen_path: PathBuf,
-        scratch_base: PathBuf,
-        workspace_config: Option<WorkspaceConfig>,
     ) -> Self {
         Self {
             name,
-            workflow_name,
             poll_command,
             context_command,
             interval,
             seen_path,
-            scratch_base,
-            workspace_config,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -181,69 +171,16 @@ impl PollingTrigger {
                 info!("new hash from polling: {}", hash);
                 self.in_flight.lock().unwrap().insert(hash.clone());
 
-                // Always pre-allocate a run_id; Script workspaces need it to set up a
-                // unique workspace directory (e.g. a git worktree named after the run).
                 let run_id = Uuid::new_v4();
-
-                // Resolve the workspace for this specific run.
-                // Script workspaces are invoked here so the context command can write
-                // directly into the workspace rather than a scratch directory.
-                let resolved_workspace = match resolve_workspace(
-                    self.workspace_config.as_ref(),
-                    &self.workflow_name,
-                    run_id,
-                ) {
-                    Ok(ws) => ws,
-                    Err(e) => {
-                        warn!("workspace setup failed for hash {}: {}", hash, e);
-                        self.in_flight.lock().unwrap().remove(&hash);
-                        continue;
-                    }
-                };
-
-                // Context directory lives inside the workspace when one is available,
-                // otherwise fall back to the pre-allocated scratch directory.
-                let ctx_dir = match &resolved_workspace {
-                    Some(ws) => ws.join("trigger-context"),
-                    None => self.scratch_base.join(run_id.to_string()).join("trigger-context"),
-                };
-
-                if let Some(context_cmd) = &self.context_command {
-                    std::fs::create_dir_all(&ctx_dir)?;
-                    debug!("running context command: {:?} {} {}", context_cmd, hash, ctx_dir.display());
-                    let context_output = Command::new(&context_cmd[0])
-                        .args(&context_cmd[1..])
-                        .arg(&hash)
-                        .arg(&ctx_dir)
-                        .output()
-                        .await;
-
-                    match context_output {
-                        Ok(out) => {
-                            if !out.status.success() {
-                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                warn!(
-                                    "context command failed for hash {}: {} (stderr: {})",
-                                    hash, out.status, stderr
-                                );
-                                self.in_flight.lock().unwrap().remove(&hash);
-                                continue;
-                            }
-                            debug!("context command succeeded for hash {}", hash);
-                        }
-                        Err(e) => {
-                            warn!("failed to run context command for hash {}: {}", hash, e);
-                            self.in_flight.lock().unwrap().remove(&hash);
-                            continue;
-                        }
-                    }
-                }
 
                 let event = TriggerEvent {
                     source: self.name.clone(),
                     payload: hash.clone(),
                     preallocated_run_id: Some(run_id),
-                    resolved_workspace,
+                    pending_context: self.context_command.as_ref().map(|cmd| PendingContext {
+                        command: cmd.clone(),
+                        hash: hash.clone(),
+                    }),
                 };
 
                 info!("sending trigger event for hash {}", hash);
@@ -278,13 +215,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -321,13 +255,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path,
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -353,13 +284,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -381,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dir_created_on_poll() {
+    async fn poll_with_context_command_sets_pending_context_on_event() {
         // GIVEN
         let temp_dir = TempDir::new().unwrap();
         let poll_path = write_executable_script(
@@ -395,41 +323,33 @@ mod tests {
             "#!/bin/bash\ntouch \"$2/context.txt\"",
         ).unwrap();
 
+        let ctx_cmd = vec![ctx_path.to_string_lossy().to_string()];
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
-            Some(vec![ctx_path.to_string_lossy().to_string()]),
+            Some(ctx_cmd.clone()),
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
-        let (tx, _rx) = mpsc::channel(32);
+        let (tx, mut rx) = mpsc::channel(32);
 
         // WHEN
         trigger.poll_once(&tx).await.unwrap();
 
-        // THEN - verify context files exist
-        let scratch_entries: Vec<_> = fs::read_dir(temp_dir.path())
+        // THEN - event carries pending_context; no context files are created yet
+        let event = rx.recv().await.expect("expected event");
+        let pending = event.pending_context.expect("expected pending_context to be set");
+        assert_eq!(pending.command, ctx_cmd);
+        assert_eq!(pending.hash, "hash1");
+
+        // No scratch directories created at poll time
+        let dirs: Vec<_> = fs::read_dir(temp_dir.path())
             .unwrap()
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.metadata()
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
             .collect();
-
-        assert!(!scratch_entries.is_empty(), "scratch directories should be created");
-
-        // Find a context directory and verify it has the expected file
-        let has_context = scratch_entries.iter().any(|entry| {
-            let context_path = entry.path().join("trigger-context").join("context.txt");
-            context_path.exists()
-        });
-        assert!(has_context, "context.txt should exist in trigger-context directory");
+        assert!(dirs.is_empty(), "no directories should be created at poll time");
     }
 
     #[tokio::test]
@@ -445,13 +365,10 @@ mod tests {
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -488,13 +405,10 @@ mod tests {
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -519,13 +433,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -559,13 +470,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),  // 100ms interval
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -613,13 +521,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(50),
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -657,13 +562,10 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
-            "test-workflow".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
-            temp_dir.path().to_path_buf(),
-            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);

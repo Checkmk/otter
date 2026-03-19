@@ -53,14 +53,19 @@ pub enum WorkspaceConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct PendingContext {
+    pub command: Vec<String>,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TriggerEvent {
     pub source: String,
     pub payload: String,
     pub preallocated_run_id: Option<Uuid>,
-    /// Workspace path already resolved by the trigger (e.g. polling trigger ran
-    /// the workspace script before the context command). When set, `run_once()`
-    /// uses this directly instead of re-running `resolve_workspace()`.
-    pub resolved_workspace: Option<std::path::PathBuf>,
+    /// Context command to run at the start of the workflow run, after the workspace is set up.
+    /// When set, `run_once()` invokes `command <hash> <ctx_dir>` before executing steps.
+    pub pending_context: Option<PendingContext>,
 }
 
 #[derive(Debug, thiserror::Error)]
