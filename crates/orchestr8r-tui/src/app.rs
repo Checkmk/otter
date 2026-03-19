@@ -353,6 +353,9 @@ impl App {
     pub fn toggle_expanded(&mut self) {
         if let CursorTarget::Workflow(wi) = self.cursor {
             if let Some(entry) = self.workflows.get_mut(wi) {
+                if entry.runs.is_empty() {
+                    return;
+                }
                 entry.expanded = !entry.expanded;
                 // Collapse: snap cursor to the workflow row
                 if !entry.expanded {
@@ -1062,5 +1065,27 @@ mod tests {
         assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
         // AND the log entry was added
         assert_eq!(app.logs.get(&run_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn toggle_expanded_is_noop_on_workflow_without_runs() {
+        // GIVEN a workflow with no runs
+        let mut app = make_test_app();
+        app.workflows.push(WorkflowEntry {
+            name: "empty".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+        });
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN toggle_expanded is called
+        app.toggle_expanded();
+
+        // THEN expanded stays false
+        assert!(!app.workflows[0].expanded);
     }
 }

@@ -19,6 +19,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_normal(app: &mut App, key: KeyEvent) {
+    // Quit is always available regardless of focus
+    if key.code == KeyCode::Char('q') {
+        app.should_quit = true;
+        return;
+    }
+
     // When right panel has focus, delegate to right panel handler
     if app.focus == Focus::Right {
         handle_right_panel(app, key);
@@ -29,7 +35,6 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
     let has_checkpoint = app.active_checkpoint().is_some();
 
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
             app.move_cursor_up();
         }
@@ -88,7 +93,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
         KeyCode::Char('t') if !has_checkpoint => {
             app.open_consumed_triggers();
         }
-        KeyCode::Tab if !has_checkpoint => {
+        KeyCode::Tab => {
             app.enter_right_panel();
         }
         _ => {}

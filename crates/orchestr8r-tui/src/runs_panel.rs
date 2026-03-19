@@ -8,11 +8,12 @@ use ratatui::{
     widgets::{List, ListItem, ListState},
 };
 
-use crate::app::{App, CursorTarget};
+use crate::app::{App, CursorTarget, Focus};
 use crate::scroll::scroll_text;
+use crate::status_bar::PanelHint;
 use crate::styles::{
     c_background, c_completed, c_dormant, c_failed, c_foreground, c_paused, c_running,
-    c_waiting_cp, panel, spinner_frame,
+    c_waiting_cp, panel, panel_focused, spinner_frame,
 };
 
 fn workflow_state_color(
@@ -122,8 +123,189 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(idx));
     }
 
-    let list = List::new(items)
-        .block(panel("Workflows"));
+    let block = if app.focus == Focus::Left {
+        panel_focused("Workflows")
+    } else {
+        panel("Workflows")
+    };
+    let list = List::new(items).block(block);
 
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// Returns the keybinding hints this panel contributes to the status bar.
+pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
+    let mut hints: Vec<PanelHint> = vec![];
+
+    if let CursorTarget::Workflow(wi) = app.cursor {
+        if let Some(entry) = app.workflows.get(wi) {
+            if entry.expanded {
+                hints.push(PanelHint::new("[Space]", "Hide runs"));
+            } else if !entry.runs.is_empty() {
+                hints.push(PanelHint::new("[Space]", "Show runs"));
+            }
+        }
+    }
+
+    if matches!(app.cursor, CursorTarget::Run(_, _)) {
+        hints.push(PanelHint::new("[Del]", "Delete run"));
+    }
+
+    let mut enter_hints: Vec<PanelHint> = vec![];
+    if let (Some(state), Some(kind)) = (app.selected_workflow_state(), app.selected_workflow_kind()) {
+        match state {
+            WorkflowState::Dormant => {
+                enter_hints.push(PanelHint::new("[Enter]", "Start workflow"));
+            }
+            WorkflowState::Running => {
+                if matches!(kind, WorkflowType::Looping) {
+                    hints.push(PanelHint::new("[p]", "Pause workflow"));
+                }
+                enter_hints.push(PanelHint::new("[Enter]", "Stop workflow"));
+            }
+            WorkflowState::Paused => {
+                hints.push(PanelHint::new("[x]", "Stop workflow"));
+                enter_hints.push(PanelHint::new("[Enter]", "Resume workflow"));
+            }
+        }
+    }
+
+    if app.cursor_is_polling_workflow() {
+        hints.push(PanelHint::new("[T]", "Consumed triggers"));
+    }
+
+    hints.extend(enter_hints);
+    hints
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orchestr8r_core::types::{WorkflowRun, WorkflowType, WorkflowState};
+    use tokio::sync::mpsc;
+    use crate::app::WorkflowEntry;
+
+    fn make_app() -> App {
+        let (tx, _rx) = mpsc::channel(32);
+        App::new(tx)
+    }
+
+    fn make_entry(name: &str, kind: WorkflowType, state: WorkflowState, runs: Vec<WorkflowRun>, expanded: bool) -> WorkflowEntry {
+        WorkflowEntry { name: name.to_string(), kind, state, runs, expanded, trigger: None, toml_content: None }
+    }
+
+    fn hint_keys(hints: &[PanelHint]) -> Vec<&str> {
+        hints.iter().map(|h| h.key).collect()
+    }
+
+    #[test]
+    fn left_panel_hints_empty_workflow_has_no_space_hint() {
+        // GIVEN a workflow with no runs
+        let mut app = make_app();
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN no [Space] hint
+        assert!(!hint_keys(&hints).contains(&"[Space]"));
+    }
+
+    #[test]
+    fn left_panel_hints_collapsed_workflow_with_runs_shows_show_hint() {
+        // GIVEN a collapsed workflow with runs
+        let mut app = make_app();
+        let run = WorkflowRun::new("wf".to_string());
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], false));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [Space] Show runs is present
+        let space = hints.iter().find(|h| h.key == "[Space]");
+        assert!(space.is_some());
+        assert_eq!(space.unwrap().label, "Show runs");
+    }
+
+    #[test]
+    fn left_panel_hints_expanded_workflow_shows_hide_hint() {
+        // GIVEN an expanded workflow
+        let mut app = make_app();
+        let run = WorkflowRun::new("wf".to_string());
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], true));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [Space] Hide runs is present
+        let space = hints.iter().find(|h| h.key == "[Space]");
+        assert!(space.is_some());
+        assert_eq!(space.unwrap().label, "Hide runs");
+    }
+
+    #[test]
+    fn left_panel_hints_run_cursor_shows_delete_hint() {
+        // GIVEN cursor on a run
+        let mut app = make_app();
+        let run = WorkflowRun::new("wf".to_string());
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], true));
+        app.cursor = CursorTarget::Run(0, 0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [Del] Delete run hint present
+        assert!(hint_keys(&hints).contains(&"[Del]"));
+    }
+
+    #[test]
+    fn left_panel_hints_dormant_workflow_shows_start() {
+        // GIVEN a dormant workflow
+        let mut app = make_app();
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [Enter] Start workflow
+        let enter = hints.iter().find(|h| h.key == "[Enter]");
+        assert!(enter.is_some());
+        assert_eq!(enter.unwrap().label, "Start workflow");
+    }
+
+    #[test]
+    fn left_panel_hints_running_looping_shows_pause_and_stop() {
+        // GIVEN a running looping workflow
+        let mut app = make_app();
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Running, vec![], false));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+        let keys = hint_keys(&hints);
+
+        // THEN [p] Pause and [Enter] Stop
+        assert!(keys.contains(&"[p]"));
+        assert!(hints.iter().any(|h| h.key == "[Enter]" && h.label == "Stop workflow"));
+    }
+
+    #[test]
+    fn left_panel_hints_paused_shows_stop_and_resume() {
+        // GIVEN a paused workflow
+        let mut app = make_app();
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Paused, vec![], false));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+        let keys = hint_keys(&hints);
+
+        // THEN [x] Stop and [Enter] Resume
+        assert!(keys.contains(&"[x]"));
+        assert!(hints.iter().any(|h| h.key == "[Enter]" && h.label == "Resume workflow"));
+    }
 }

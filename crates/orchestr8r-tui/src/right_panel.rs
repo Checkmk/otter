@@ -10,6 +10,7 @@ use ratatui::{
 use orchestr8r_core::types::ProgressChunk;
 
 use crate::app::{App, CursorTarget, Focus, RightPanelContent};
+use crate::status_bar::PanelHint;
 use crate::styles::{base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
 
@@ -116,7 +117,7 @@ fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bo
     app.right_scroll = app.right_scroll.min(auto_bottom);
     let scroll_offset = if is_focused { app.right_scroll } else { 0 } as u16;
 
-    let block = if is_focused { panel_focused("Workflow") } else { panel("Workflow") };
+    let block = if is_focused { panel_focused("Definition") } else { panel("Definition") };
     let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
 
     f.render_widget(para, area);
@@ -210,7 +211,7 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
         auto_bottom
     } as u16;
 
-    let block = if is_focused { panel_focused("Logs") } else { panel("Logs") };
+    let block = if is_focused { panel_focused("Run log") } else { panel("Run log") };
     let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
 
     f.render_widget(para, area);
@@ -257,9 +258,39 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     f.render_widget(para, area);
 }
 
+/// Returns the keybinding hints this panel contributes to the status bar.
+pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
+    match app.right_panel_content {
+        RightPanelContent::Contextual => vec![],
+        RightPanelContent::ConsumedTriggers => vec![
+            PanelHint::new("[Del]", "Delete trigger"),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
+
+    fn make_app() -> App {
+        let (tx, _rx) = mpsc::channel(32);
+        App::new(tx)
+    }
+
+    #[test]
+    fn right_panel_hints_consumed_triggers_shows_delete() {
+        // GIVEN consumed triggers panel content
+        let mut app = make_app();
+        app.right_panel_content = RightPanelContent::ConsumedTriggers;
+
+        // WHEN
+        let hints = right_panel_hints(&app);
+
+        // THEN delete hints
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].key, "[Del]");
+    }
 
     #[test]
     fn short_message_produces_single_header_line() {
