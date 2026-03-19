@@ -75,8 +75,12 @@ enum WorkflowCommands {
 
 #[derive(Subcommand)]
 enum RunsCommands {
-    /// List all runs for a workflow
-    List { workflow: String },
+    /// List runs (all workflows by default; filter with --workflow)
+    List {
+        /// Only show runs for this workflow
+        #[arg(long, short)]
+        workflow: Option<String>,
+    },
     /// Delete a run by ID
     Delete { run_id: String },
 }
@@ -135,20 +139,24 @@ async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
         RunsCommands::List { workflow } => {
             let data_dir = dirs_data_dir();
             let storage: std::sync::Arc<dyn StorageBackend> = std::sync::Arc::new(SqliteStorage::open(&data_dir.join("state.db"))?);
-            let runs = storage.load_workflow_runs(&workflow)?;
+            let runs = match &workflow {
+                Some(name) => storage.load_workflow_runs(name)?,
+                None => storage.load_all_runs()?,
+            };
 
             if runs.is_empty() {
-                println!("No runs found for workflow '{}'", workflow);
+                match &workflow {
+                    Some(name) => println!("No runs found for workflow '{}'", name),
+                    None => println!("No runs found."),
+                }
                 return Ok(());
             }
 
-            // Print header
-            println!("RUN ID      STARTED             STATUS       TRIGGER");
-            println!("{}", "─".repeat(70));
+            println!("RUN ID                               STARTED             STATUS       WORKFLOW             TRIGGER");
+            println!("{}", "─".repeat(110));
 
-            // Print runs
             for run in runs {
-                let run_id_short = run.id.to_string()[..8].to_string();
+                let run_id = run.id.to_string();
                 let started = run.started_at.format("%Y-%m-%d %H:%M:%S");
                 let status = match run.status {
                     orchestr8r_core::types::RunStatus::Running => "running",
@@ -156,8 +164,13 @@ async fn handle_runs_command(command: RunsCommands) -> anyhow::Result<()> {
                     orchestr8r_core::types::RunStatus::Completed => "completed",
                     orchestr8r_core::types::RunStatus::Failed => "failed",
                 };
+                let wf_name = if run.orphaned {
+                    format!("{} [orphaned]", run.workflow_name)
+                } else {
+                    run.workflow_name.clone()
+                };
                 let trigger = run.trigger_payload.unwrap_or_else(|| "-".to_string());
-                println!("{:<11} {:<19} {:<12} {}", run_id_short, started, status, trigger);
+                println!("{:<37} {:<19} {:<12} {:<20} {}", run_id, started, status, wf_name, trigger);
             }
         }
         RunsCommands::Delete { run_id } => {

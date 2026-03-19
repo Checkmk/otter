@@ -212,6 +212,24 @@ impl StorageBackend for SqliteStorage {
         Ok(runs)
     }
 
+    fn load_all_runs(&self) -> anyhow::Result<Vec<WorkflowRun>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
+                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+             FROM workflow_runs wr
+             LEFT JOIN workflows w ON wr.workflow_name = w.name
+             ORDER BY wr.started_at DESC",
+        )?;
+
+        let mut runs = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            runs.push(row_to_run(row)?);
+        }
+        Ok(runs)
+    }
+
     fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

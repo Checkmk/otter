@@ -348,6 +348,7 @@ pub trait StorageBackend: Send + Sync {
     fn append_log(&self, entry: LogEntry) -> anyhow::Result<()>;
     fn load_latest_run(&self, workflow_name: &str) -> anyhow::Result<Option<WorkflowRun>>;
     fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>>;
+    fn load_all_runs(&self) -> anyhow::Result<Vec<WorkflowRun>>;
     fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>>;
     fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()>;
     fn register_workflow(&self, workflow_name: &str) -> anyhow::Result<()>;

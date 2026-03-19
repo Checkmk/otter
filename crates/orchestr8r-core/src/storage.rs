@@ -92,6 +92,23 @@ impl StorageBackend for InMemoryStorage {
         Ok(runs)
     }
 
+    fn load_all_runs(&self) -> anyhow::Result<Vec<WorkflowRun>> {
+        let workflows = self.workflows.lock().unwrap();
+        let mut runs: Vec<WorkflowRun> = self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let mut run = r.clone();
+                run.orphaned = !workflows.contains(&run.workflow_name);
+                run
+            })
+            .collect();
+        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        Ok(runs)
+    }
+
     fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>> {
         let logs: Vec<LogEntry> = self
             .logs
