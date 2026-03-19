@@ -17,10 +17,10 @@ use uuid::Uuid;
 use orchestr8r_core::triggers::polling::{consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers};
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    StorageBackend, WorkflowDef, WorkflowRun,
+    RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
 };
 use orchestr8r_core::WorkflowManager;
-use orchestr8r_notify::{DesktopNotifier, Notifier};
+use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
 use orchestr8r_storage::SqliteStorage;
 
 use crate::{dirs_config_dir, dirs_data_dir, socket_path};
@@ -59,6 +59,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
     let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
+
+    mark_interrupted_runs_failed(storage.as_ref(), notifier.as_ref()).await;
 
     let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(256);
     let manager = Arc::new(Mutex::new(WorkflowManager::new(
@@ -492,6 +494,35 @@ fn action_to_checkpoint_response(action: CheckpointAction) -> CheckpointResponse
     }
 }
 
+async fn mark_interrupted_runs_failed(storage: &dyn StorageBackend, notifier: &dyn Notifier) {
+    let runs = match storage.load_all_runs() {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to load runs on startup: {e}");
+            return;
+        }
+    };
+
+    let interrupted: Vec<_> = runs
+        .into_iter()
+        .filter(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
+        .collect();
+
+    for mut run in interrupted {
+        info!(run_id = %run.id, workflow = %run.workflow_name, "Marking interrupted run as failed");
+        run.status = RunStatus::Failed;
+        if let Err(e) = storage.update_workflow_run(&run) {
+            warn!(run_id = %run.id, "Failed to update interrupted run: {e}");
+        }
+        let _ = notifier
+            .send(&Notification {
+                summary: format!("Workflow '{}' interrupted", run.workflow_name),
+                body: format!("Run {} was interrupted when the daemon stopped.", run.id),
+            })
+            .await;
+    }
+}
+
 async fn write_json<T: serde::Serialize>(
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
     value: &T,
@@ -500,4 +531,91 @@ async fn write_json<T: serde::Serialize>(
     line.push('\n');
     writer.write_all(line.as_bytes()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orchestr8r_core::storage::InMemoryStorage;
+    use orchestr8r_core::types::{RunStatus, WorkflowRun};
+    use orchestr8r_notify::NoOpNotifier;
+    use std::sync::Mutex;
+
+    struct TrackingNotifier {
+        sent: Mutex<Vec<String>>,
+    }
+
+    impl TrackingNotifier {
+        fn new() -> Self {
+            Self { sent: Mutex::new(Vec::new()) }
+        }
+
+        fn summaries(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Notifier for TrackingNotifier {
+        fn name(&self) -> &str { "tracking" }
+        async fn send(&self, n: &orchestr8r_notify::Notification) -> Result<(), orchestr8r_notify::NotifyError> {
+            self.sent.lock().unwrap().push(n.summary.clone());
+            Ok(())
+        }
+    }
+
+    fn run_with_status(name: &str, status: RunStatus) -> WorkflowRun {
+        let mut run = WorkflowRun::new(name.to_string());
+        run.status = status;
+        run
+    }
+
+    #[tokio::test]
+    async fn running_and_waiting_checkpoint_runs_are_marked_failed() {
+        // GIVEN one run in each non-terminal state
+        let storage = InMemoryStorage::new();
+        storage.save_workflow_run(&run_with_status("wf-a", RunStatus::Running)).unwrap();
+        storage.save_workflow_run(&run_with_status("wf-b", RunStatus::WaitingCheckpoint)).unwrap();
+
+        // WHEN
+        mark_interrupted_runs_failed(&storage, &NoOpNotifier).await;
+
+        // THEN
+        assert_eq!(storage.load_latest_run("wf-a").unwrap().unwrap().status, RunStatus::Failed);
+        assert_eq!(storage.load_latest_run("wf-b").unwrap().unwrap().status, RunStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn terminal_runs_are_not_touched() {
+        // GIVEN runs already in terminal states
+        let storage = InMemoryStorage::new();
+        storage.save_workflow_run(&run_with_status("wf-a", RunStatus::Completed)).unwrap();
+        storage.save_workflow_run(&run_with_status("wf-b", RunStatus::Failed)).unwrap();
+
+        // WHEN
+        mark_interrupted_runs_failed(&storage, &NoOpNotifier).await;
+
+        // THEN
+        assert_eq!(storage.load_latest_run("wf-a").unwrap().unwrap().status, RunStatus::Completed);
+        assert_eq!(storage.load_latest_run("wf-b").unwrap().unwrap().status, RunStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn notification_sent_per_interrupted_run() {
+        // GIVEN two non-terminal runs and one terminal run
+        let storage = InMemoryStorage::new();
+        storage.save_workflow_run(&run_with_status("alpha", RunStatus::Running)).unwrap();
+        storage.save_workflow_run(&run_with_status("beta", RunStatus::WaitingCheckpoint)).unwrap();
+        storage.save_workflow_run(&run_with_status("gamma", RunStatus::Completed)).unwrap();
+        let notifier = TrackingNotifier::new();
+
+        // WHEN
+        mark_interrupted_runs_failed(&storage, &notifier).await;
+
+        // THEN — exactly two notifications, one per interrupted run
+        let summaries = notifier.summaries();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().any(|s| s.contains("alpha")));
+        assert!(summaries.iter().any(|s| s.contains("beta")));
+    }
 }
