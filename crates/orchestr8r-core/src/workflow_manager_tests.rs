@@ -15,21 +15,27 @@ fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
     )
 }
 
+fn shell_step() -> StepDef {
+    StepDef {
+        step_type: StepType::Shell,
+        command: Some(vec!["true".to_string()]),
+        message: None,
+        session: None,
+        notify: None,
+        agent: Default::default(),
+    }
+}
+
 fn looping_workflow(name: &str) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
         workflow_type: WorkflowType::Looping,
+        schema: None,
+        version: None,
         trigger: None,
         workspace: None,
         resources: None,
-        steps: vec![StepDef {
-            step_type: StepType::Shell,
-            command: Some(vec!["true".to_string()]),
-            message: None,
-            session: None,
-            notify: None,
-            agent: Default::default(),
-        }],
+        steps: vec![shell_step()],
     }
 }
 
@@ -37,17 +43,12 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
         workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
         trigger: None,
         workspace: None,
         resources: None,
-        steps: vec![StepDef {
-            step_type: StepType::Shell,
-            command: Some(vec!["true".to_string()]),
-            message: None,
-            session: None,
-            notify: None,
-            agent: Default::default(),
-        }],
+        steps: vec![shell_step()],
     }
 }
 
@@ -55,17 +56,12 @@ fn manual_workflow(name: &str) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
         workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
         resources: None,
-        steps: vec![StepDef {
-            step_type: StepType::Shell,
-            command: Some(vec!["true".to_string()]),
-            message: None,
-            session: None,
-            notify: None,
-            agent: Default::default(),
-        }],
+        steps: vec![shell_step()],
     }
 }
 
@@ -73,6 +69,8 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
     WorkflowDef {
         name: name.to_string(),
         workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: command,
             context_command: None,
@@ -80,14 +78,7 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
         }),
         workspace: None,
         resources: None,
-        steps: vec![StepDef {
-            step_type: StepType::Shell,
-            command: Some(vec!["true".to_string()]),
-            message: None,
-            session: None,
-            notify: None,
-            agent: Default::default(),
-        }],
+        steps: vec![shell_step()],
     }
 }
 
@@ -440,4 +431,134 @@ async fn manual_trigger_fires_immediately_on_start() {
         WorkflowState::Dormant,
         "manual trigger workflow should return to dormant after being started"
     );
+}
+
+#[test]
+fn unregister_removes_dormant_workflow_and_emits_removed_event() {
+    // GIVEN
+    let (tx, mut rx) = mpsc::channel(32);
+    let storage = Arc::new(InMemoryStorage::new());
+    let mut manager = WorkflowManager::new(
+        storage.clone(),
+        std::env::temp_dir(),
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+    manager.register(looping_workflow("wf"));
+    // drain registration events
+    while rx.try_recv().is_ok() {}
+
+    // WHEN
+    manager.unregister("wf").unwrap();
+
+    // THEN — workflow is no longer listed
+    assert!(manager.status().is_empty());
+
+    // AND — WorkflowRemoved event emitted
+    let ev = rx.try_recv().expect("WorkflowRemoved event");
+    assert!(matches!(ev, EngineEvent::WorkflowRemoved { ref name } if name == "wf"));
+}
+
+#[tokio::test]
+async fn unregister_fails_if_workflow_is_running() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let mut manager = make_manager(tx);
+    manager.register(looping_workflow("wf"));
+    manager.start("wf").await.unwrap();
+
+    // WHEN / THEN
+    assert!(manager.unregister("wf").is_err());
+
+    manager.stop("wf").await.unwrap();
+}
+
+#[test]
+fn unregister_marks_runs_orphaned() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let storage = Arc::new(InMemoryStorage::new());
+    let mut manager = WorkflowManager::new(
+        storage.clone(),
+        std::env::temp_dir(),
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+    let run = crate::types::WorkflowRun::new("wf".to_string());
+    storage.save_workflow_run(&run).unwrap();
+    manager.register(looping_workflow("wf"));
+
+    // WHEN
+    manager.unregister("wf").unwrap();
+
+    // THEN
+    let runs = storage.runs();
+    assert_eq!(runs.len(), 1);
+    assert!(runs[0].orphaned);
+}
+
+#[test]
+fn reload_adds_new_workflow() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let mut manager = make_manager(tx);
+
+    // WHEN
+    manager.reload(vec![(looping_workflow("new-wf"), None)]);
+
+    // THEN
+    let status = manager.status();
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0].name, "new-wf");
+}
+
+#[test]
+fn reload_removes_dormant_workflow_not_in_new_list() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let mut manager = make_manager(tx);
+    manager.register(looping_workflow("old-wf"));
+    manager.register(looping_workflow("keep-wf"));
+
+    // WHEN — reload with only keep-wf
+    manager.reload(vec![(looping_workflow("keep-wf"), None)]);
+
+    // THEN
+    let names: Vec<_> = manager.status().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, vec!["keep-wf"]);
+}
+
+#[tokio::test]
+async fn reload_leaves_running_workflow_unchanged() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(64);
+    let mut manager = make_manager(tx);
+    manager.register(looping_workflow("running-wf"));
+    manager.start("running-wf").await.unwrap();
+
+    // WHEN — reload without running-wf
+    manager.reload(vec![]);
+
+    // THEN — running workflow is still registered (not removed)
+    let status = manager.status();
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0].state, WorkflowState::Running);
+
+    manager.stop("running-wf").await.unwrap();
+}
+
+#[test]
+fn register_with_scripts_dir_stores_scripts_dir() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let mut manager = make_manager(tx);
+    let scripts_dir = std::path::PathBuf::from("/tmp/scripts");
+
+    // WHEN
+    manager.register_with_scripts_dir(looping_workflow("wf"), Some(scripts_dir.clone()));
+
+    // THEN — workflow is registered (we can't inspect scripts_dir directly, but start should work)
+    let status = manager.status();
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0].name, "wf");
 }

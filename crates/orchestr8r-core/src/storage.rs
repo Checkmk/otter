@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -7,6 +8,7 @@ use crate::types::{LogEntry, StorageBackend, WorkflowRun};
 pub struct InMemoryStorage {
     runs: Mutex<Vec<WorkflowRun>>,
     logs: Mutex<Vec<LogEntry>>,
+    workflows: Mutex<HashSet<String>>,
 }
 
 impl InMemoryStorage {
@@ -14,11 +16,18 @@ impl InMemoryStorage {
         Self {
             runs: Mutex::new(Vec::new()),
             logs: Mutex::new(Vec::new()),
+            workflows: Mutex::new(HashSet::new()),
         }
     }
 
     pub fn runs(&self) -> Vec<WorkflowRun> {
-        self.runs.lock().unwrap().clone()
+        let runs = self.runs.lock().unwrap();
+        let workflows = self.workflows.lock().unwrap();
+        runs.iter().map(|r| {
+            let mut run = r.clone();
+            run.orphaned = !workflows.contains(&run.workflow_name);
+            run
+        }).collect()
     }
 
     pub fn logs(&self) -> Vec<LogEntry> {
@@ -53,21 +62,31 @@ impl StorageBackend for InMemoryStorage {
 
     fn load_latest_run(&self, workflow_name: &str) -> anyhow::Result<Option<WorkflowRun>> {
         let runs = self.runs.lock().unwrap();
+        let is_active = self.workflows.lock().unwrap().contains(workflow_name);
         let latest = runs
             .iter()
             .filter(|r| r.workflow_name == workflow_name)
             .max_by_key(|r| r.started_at);
-        Ok(latest.cloned())
+        Ok(latest.map(|r| {
+            let mut run = r.clone();
+            run.orphaned = !is_active;
+            run
+        }))
     }
 
     fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>> {
+        let is_active = self.workflows.lock().unwrap().contains(workflow_name);
         let mut runs: Vec<WorkflowRun> = self
             .runs
             .lock()
             .unwrap()
             .iter()
             .filter(|r| r.workflow_name == workflow_name)
-            .cloned()
+            .map(|r| {
+                let mut run = r.clone();
+                run.orphaned = !is_active;
+                run
+            })
             .collect();
         runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         Ok(runs)
@@ -90,6 +109,16 @@ impl StorageBackend for InMemoryStorage {
         runs.retain(|r| r.id != run_id);
         let mut logs = self.logs.lock().unwrap();
         logs.retain(|l| l.run_id != run_id);
+        Ok(())
+    }
+
+    fn register_workflow(&self, workflow_name: &str) -> anyhow::Result<()> {
+        self.workflows.lock().unwrap().insert(workflow_name.to_string());
+        Ok(())
+    }
+
+    fn deregister_workflow(&self, workflow_name: &str) -> anyhow::Result<()> {
+        self.workflows.lock().unwrap().remove(workflow_name);
         Ok(())
     }
 }
@@ -323,5 +352,27 @@ mod tests {
         let remaining_logs = storage.logs();
         assert!(remaining_logs.iter().all(|l| l.run_id == run2.id));
         assert_eq!(remaining_logs.len(), 2);
+    }
+
+    #[test]
+    fn orphaned_computed_from_workflows_set() {
+        // GIVEN a run saved for a registered workflow
+        let storage = InMemoryStorage::new();
+        let run = make_run("wf");
+        storage.save_workflow_run(&run).unwrap();
+        storage.register_workflow("wf").unwrap();
+
+        // WHEN — workflow is active
+        let loaded = storage.load_latest_run("wf").unwrap().unwrap();
+
+        // THEN — not orphaned
+        assert!(!loaded.orphaned);
+
+        // WHEN — workflow is deregistered
+        storage.deregister_workflow("wf").unwrap();
+        let loaded = storage.load_latest_run("wf").unwrap().unwrap();
+
+        // THEN — orphaned
+        assert!(loaded.orphaned);
     }
 }

@@ -21,6 +21,7 @@ struct WorkflowHandle {
     paused: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     task: Option<JoinHandle<()>>,
+    scripts_dir: Option<PathBuf>,
 }
 
 pub struct WorkflowManager {
@@ -49,6 +50,11 @@ impl WorkflowManager {
 
     /// Register a workflow definition. The workflow starts in Dormant state.
     pub fn register(&mut self, def: WorkflowDef) {
+        self.register_with_scripts_dir(def, None);
+    }
+
+    /// Register a workflow definition with an optional scripts directory.
+    pub fn register_with_scripts_dir(&mut self, def: WorkflowDef, scripts_dir: Option<PathBuf>) {
         let name = def.name.clone();
         let kind = def.workflow_type.clone();
         let trigger = def.trigger.clone();
@@ -58,8 +64,10 @@ impl WorkflowManager {
             paused: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             task: None,
+            scripts_dir,
         };
         self.handles.insert(name.clone(), handle);
+        let _ = self.storage.register_workflow(&name);
         let _ = self
             .event_tx
             .try_send(EngineEvent::WorkflowRegistered { name: name.clone(), kind, trigger });
@@ -69,11 +77,73 @@ impl WorkflowManager {
         });
     }
 
+    pub fn unregister(&mut self, name: &str) -> anyhow::Result<()> {
+        let handle = self
+            .handles
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
+
+        {
+            let state = handle.state.lock().unwrap();
+            if *state != WorkflowState::Dormant {
+                bail!("cannot remove workflow '{}': it is {:?}", name, *state);
+            }
+        }
+
+        let _ = self.storage.deregister_workflow(name);
+        self.handles.remove(name);
+        let _ = self.event_tx.try_send(EngineEvent::WorkflowRemoved { name: name.to_string() });
+        Ok(())
+    }
+
+    /// Reconcile the registered workflows against a freshly loaded set.
+    pub fn reload(&mut self, new_workflows: Vec<(WorkflowDef, Option<PathBuf>)>) {
+        let new_names: std::collections::HashSet<String> =
+            new_workflows.iter().map(|(d, _)| d.name.clone()).collect();
+
+        for (def, scripts_dir) in new_workflows {
+            let name = def.name.clone();
+            let is_dormant = self
+                .handles
+                .get(&name)
+                .map(|h| *h.state.lock().unwrap() == WorkflowState::Dormant)
+                .unwrap_or(false);
+
+            if !self.handles.contains_key(&name) {
+                self.register_with_scripts_dir(def, scripts_dir);
+            } else if is_dormant {
+                // Unregister old handle (emits WorkflowRemoved), then re-register with updated def
+                let _ = self.unregister(&name);
+                self.register_with_scripts_dir(def, scripts_dir);
+            }
+            // else: Running/Paused — leave as-is
+        }
+
+        // Remove dormant workflows no longer in the config dir
+        let to_remove: Vec<String> = self
+            .handles
+            .keys()
+            .filter(|n| !new_names.contains(*n))
+            .cloned()
+            .collect();
+        for name in to_remove {
+            let is_dormant = self
+                .handles
+                .get(&name)
+                .map(|h| *h.state.lock().unwrap() == WorkflowState::Dormant)
+                .unwrap_or(false);
+            if is_dormant {
+                let _ = self.unregister(&name);
+            }
+            // else: Running/Paused — leave; it will disappear after finishing
+        }
+    }
+
     /// Start a dormant workflow. For looping workflows this begins the continuous loop;
     /// for triggered workflows this fires one immediate run.
     pub async fn start(&mut self, name: &str) -> anyhow::Result<()> {
         // Check workflow exists and is dormant, extract def early
-        let (def, _is_triggered) = {
+        let (def, scripts_dir) = {
             let handle = self
                 .handles
                 .get_mut(name)
@@ -95,15 +165,16 @@ impl WorkflowManager {
             handle.shutdown.store(false, Ordering::Relaxed);
 
             let def = handle.def.clone();
-            let is_triggered = matches!(def.workflow_type, WorkflowType::Triggered);
-            (def, is_triggered)
+            let scripts_dir = handle.scripts_dir.clone();
+            (def, scripts_dir)
         };
 
         // Now that we've released the mutable borrow, we can call methods on self
-        let engine = Engine::new(
+        let engine = Engine::new_with_scripts_dir(
             self.storage.clone(),
             self.data_dir.join("runs"),
             self.notifier.clone(),
+            scripts_dir,
         );
 
         // Re-acquire mutable borrow to update handle
@@ -118,17 +189,8 @@ impl WorkflowManager {
         let state = handle.state.clone();
 
         let task = tokio::spawn(async move {
-            match &def.workflow_type {
-                crate::types::WorkflowType::Looping => {
-                    if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
-                        tracing::error!(workflow = %def.name, error = ?e, "Engine error");
-                    }
-                }
-                crate::types::WorkflowType::Triggered => {
-                    if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
-                        tracing::error!(workflow = %def.name, error = ?e, "Engine error");
-                    }
-                }
+            if let Err(e) = engine.run(&def, shutdown, Some(event_tx.clone())).await {
+                tracing::error!(workflow = %def.name, error = ?e, "Engine error");
             }
 
             *state.lock().unwrap() = WorkflowState::Dormant;

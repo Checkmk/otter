@@ -25,6 +25,7 @@ pub fn build_trigger(
     data_dir: &Path,
     _scratch_base: &Path,
     _workspace_config: Option<&crate::types::WorkspaceConfig>,
+    scripts_dir: Option<&Path>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -42,6 +43,7 @@ pub fn build_trigger(
                 context_command.clone(),
                 std::time::Duration::from_secs(*interval_secs),
                 seen_path,
+                scripts_dir.map(|p| p.to_path_buf()),
             )))
         }
     }

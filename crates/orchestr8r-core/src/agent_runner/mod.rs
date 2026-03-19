@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::process::PrependScriptsDir;
 use crate::resource_limiter::ResourceLimiter;
 use crate::types::ProgressChunk;
 
@@ -17,6 +18,7 @@ pub struct AgentSpec {
     pub message: String,
     pub working_dir: PathBuf,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
+    pub scripts_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -24,6 +26,7 @@ pub struct AgentSessionHandle {
     pub id: String,
     pub working_dir: PathBuf,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
+    pub scripts_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,10 +85,11 @@ impl AgentRunner for CustomRunner {
             id: uuid::Uuid::new_v4().to_string(),
             working_dir: spec.working_dir.clone(),
             resource_limiter: spec.resource_limiter.clone(),
+            scripts_dir: spec.scripts_dir.clone(),
         };
 
         let cmd = spec.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message).await?;
+        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -103,7 +107,7 @@ impl AgentRunner for CustomRunner {
         _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<AgentOutput, AgentError> {
         let cmd = session.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &session.working_dir, message).await?;
+        let output = run_subprocess(&cmd, &session.working_dir, message, session.scripts_dir.as_deref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -162,18 +166,20 @@ pub(super) async fn run_subprocess(
     cmd_args: &[String],
     working_dir: &std::path::Path,
     message: &str,
+    scripts_dir: Option<&std::path::Path>,
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut child = tokio::process::Command::new(&cmd_args[0])
-        .args(&cmd_args[1..])
+    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
+    cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .stderr(std::process::Stdio::piped());
+    cmd.prepend_scripts_dir(scripts_dir);
+    let mut child = cmd.spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
@@ -194,6 +200,7 @@ pub(super) async fn run_subprocess_streaming(
     working_dir: &std::path::Path,
     message: &str,
     progress_tx: &mpsc::Sender<ProgressChunk>,
+    scripts_dir: Option<&std::path::Path>,
 ) -> Result<AgentOutput, AgentError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -201,13 +208,14 @@ pub(super) async fn run_subprocess_streaming(
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut child = tokio::process::Command::new(&cmd_args[0])
-        .args(&cmd_args[1..])
+    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
+    cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .stderr(std::process::Stdio::piped());
+    cmd.prepend_scripts_dir(scripts_dir);
+    let mut child = cmd.spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(message.as_bytes()).await?;
@@ -277,18 +285,19 @@ pub(super) async fn run_subprocess_streaming(
 pub(super) async fn run_subprocess_no_stdin(
     cmd_args: &[String],
     working_dir: &std::path::Path,
+    scripts_dir: Option<&std::path::Path>,
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let output = tokio::process::Command::new(&cmd_args[0])
-        .args(&cmd_args[1..])
+    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
+    cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await?;
+        .stderr(std::process::Stdio::piped());
+    cmd.prepend_scripts_dir(scripts_dir);
+    let output = cmd.output().await?;
 
     Ok(AgentOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),

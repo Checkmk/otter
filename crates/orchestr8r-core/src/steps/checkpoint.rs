@@ -150,7 +150,7 @@ mod tests {
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push("start".into());
             Ok((
-                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter) },
+                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None },
                 AgentOutput { stdout: "initial".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -184,6 +184,7 @@ mod tests {
             log_fn: None,
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         }
     }
 
@@ -205,6 +206,7 @@ mod tests {
             log_fn: None,
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         }
     }
 
@@ -289,6 +291,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 None,
                 Arc::new(NoOpLimiter),
+                None,
             )
             .await
             .unwrap();
@@ -336,6 +339,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 None,
                 Arc::new(NoOpLimiter),
+                None,
             )
             .await
             .unwrap();
@@ -414,6 +418,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 None,
                 Arc::new(NoOpLimiter),
+                None,
             )
             .await
             .unwrap();
@@ -440,6 +445,7 @@ mod tests {
             log_fn: Some(log_fn),
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         };
 
         // WHEN
@@ -495,6 +501,7 @@ mod tests {
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         };
 
         // WHEN
@@ -532,6 +539,7 @@ mod tests {
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         };
 
         // WHEN

@@ -7,6 +7,8 @@ use uuid::Uuid;
 use crate::resource_limiter::ResourceLimiter;
 use crate::session::AgentSessionManager;
 
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ResourceConfig {
     pub cpu_quota: Option<String>,
@@ -17,6 +19,12 @@ pub struct WorkflowDef {
     pub name: String,
     #[serde(rename = "type")]
     pub workflow_type: WorkflowType,
+    /// TOML schema version. Absent means version 1 (full backward compatibility).
+    #[serde(default)]
+    pub schema: Option<u32>,
+    /// Human-readable package version (e.g. "1.0.0"). Display only.
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub trigger: Option<TriggerDef>,
     #[serde(default)]
@@ -132,6 +140,8 @@ pub struct WorkflowRun {
     pub iteration: u64,
     pub started_at: DateTime<Utc>,
     pub trigger_payload: Option<String>,
+    #[serde(default)]
+    pub orphaned: bool,
 }
 
 impl WorkflowRun {
@@ -144,6 +154,7 @@ impl WorkflowRun {
             iteration: 0,
             started_at: Utc::now(),
             trigger_payload: None,
+            orphaned: false,
         }
     }
 }
@@ -176,6 +187,7 @@ pub struct StepContext {
     pub step_index: usize,
     pub scratch_dir: std::path::PathBuf,
     pub workspace_dir: Option<std::path::PathBuf>,
+    pub scripts_dir: Option<std::path::PathBuf>,
     pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
     pub session_manager: Option<Arc<AgentSessionManager>>,
     pub notifier: Arc<dyn orchestr8r_notify::Notifier>,
@@ -199,6 +211,7 @@ pub enum EngineEvent {
     RunUpdated(WorkflowRun),
     WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef> },
     WorkflowStateChanged { name: String, state: WorkflowState },
+    WorkflowRemoved { name: String },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,
@@ -288,6 +301,7 @@ pub enum DaemonEvent {
     RunUpdated(WorkflowRun),
     WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef>, toml_content: Option<String> },
     WorkflowStateChanged { name: String, state: WorkflowState },
+    WorkflowRemoved { name: String },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,
@@ -317,6 +331,7 @@ pub enum DaemonCommand {
     DeleteRun { run_id: Uuid },
     ListConsumedTriggers { workflow: String },
     DeleteConsumedTrigger { workflow: String, trigger: String },
+    ReloadWorkflows,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +350,8 @@ pub trait StorageBackend: Send + Sync {
     fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>>;
     fn load_run_logs(&self, run_id: Uuid) -> anyhow::Result<Vec<LogEntry>>;
     fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()>;
+    fn register_workflow(&self, workflow_name: &str) -> anyhow::Result<()>;
+    fn deregister_workflow(&self, workflow_name: &str) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]

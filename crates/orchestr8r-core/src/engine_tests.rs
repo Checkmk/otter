@@ -25,6 +25,8 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
     WorkflowDef {
         name: name.to_string(),
         workflow_type,
+        schema: None,
+        version: None,
         trigger: None,
         workspace: None,
         resources: None,
@@ -176,6 +178,8 @@ async fn triggered_workflow_runs_once_per_event() {
     let wf = WorkflowDef {
         name: "my-workflow".to_string(),
         workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
         resources: None,
@@ -436,6 +440,8 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     let wf = WorkflowDef {
         name: "test-script-ws-trigger".to_string(),
         workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![ctx_script.to_string_lossy().into_owned()]),
@@ -513,5 +519,92 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     assert!(
         !context_in_scratch,
         "context should not have been placed in the scratch dir"
+    );
+}
+
+#[tokio::test]
+async fn context_command_resolves_via_scripts_dir_path() {
+    // GIVEN
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path().join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+
+    // Poll script: absolute path (polls are resolved before scripts_dir is known to engine)
+    let poll_script = write_executable_script(
+        temp.path(),
+        "poll.sh",
+        "#!/bin/bash\necho '[\"hash-abc\"]'",
+    )
+    .unwrap();
+
+    // Context script: lives in scripts_dir, referenced by bare name only
+    write_executable_script(
+        &scripts_dir,
+        "ctx.sh",
+        "#!/bin/bash\nmkdir -p \"$2\"\necho 'ctx' > \"$2/ctx.txt\"",
+    )
+    .unwrap();
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    let engine = Engine::new_with_scripts_dir(
+        storage.clone(),
+        scratch.clone(),
+        Arc::new(orchestr8r_notify::NoOpNotifier),
+        Some(scripts_dir),
+    );
+
+    let wf = WorkflowDef {
+        name: "test-ctx-scripts-dir".to_string(),
+        workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
+        trigger: Some(TriggerDef::Polling {
+            poll_command: vec![poll_script.to_string_lossy().into_owned()],
+            context_command: Some(vec!["ctx.sh".to_string()]), // bare name — requires scripts_dir in PATH
+            interval_secs: 3600,
+        }),
+        workspace: None,
+        resources: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "test -f trigger-context/ctx.txt".to_string(),
+            ]),
+            ..step_def(StepType::Shell)
+        }],
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let storage_clone = storage.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+        storage_clone
+    });
+
+    // WHEN: wait for the run to complete
+    let start = tokio::time::Instant::now();
+    loop {
+        if storage.runs().iter().any(|r| r.status == RunStatus::Completed) {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "run did not complete within timeout"
+        );
+        tokio::task::yield_now().await;
+    }
+    shutdown.store(true, Ordering::Relaxed);
+    handle.await.unwrap();
+
+    // THEN: the run completed (context command was found via PATH and ctx.txt was written)
+    assert!(
+        storage.runs().iter().any(|r| r.status == RunStatus::Completed),
+        "run should have completed — context command must be resolved via scripts_dir"
     );
 }

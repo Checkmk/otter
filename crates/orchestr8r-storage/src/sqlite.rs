@@ -8,7 +8,7 @@ use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
 /// Current schema version. Increment this and add a corresponding entry to `MIGRATIONS` when
 /// making schema changes.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     // v0 -> v1: initial schema
@@ -42,6 +42,16 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     |conn| {
         conn.execute_batch(
             "ALTER TABLE workflow_runs ADD COLUMN trigger_payload TEXT;",
+        )?;
+        Ok(())
+    },
+    // v2 -> v3: add workflows table; orphaned runs are those whose workflow_name
+    // has no entry here.
+    |conn| {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS workflows (
+                name TEXT PRIMARY KEY
+            );",
         )?;
         Ok(())
     },
@@ -86,6 +96,28 @@ impl SqliteStorage {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn row_to_run(row: &rusqlite::Row<'_>) -> anyhow::Result<WorkflowRun> {
+    let id_str: String = row.get(0)?;
+    let status_str: String = row.get(2)?;
+    let started_at_str: String = row.get(5)?;
+    let orphaned_i: i64 = row.get::<_, Option<i64>>(7)?.unwrap_or(0);
+    Ok(WorkflowRun {
+        id: id_str.parse().context("invalid UUID in DB")?,
+        workflow_name: row.get(1)?,
+        status: match status_str.as_str() {
+            "running" => RunStatus::Running,
+            "waiting_checkpoint" => RunStatus::WaitingCheckpoint,
+            "completed" => RunStatus::Completed,
+            _ => RunStatus::Failed,
+        },
+        current_step: row.get::<_, i64>(3)? as usize,
+        iteration: row.get::<_, i64>(4)? as u64,
+        started_at: started_at_str.parse().context("invalid datetime in DB")?,
+        trigger_payload: row.get(6)?,
+        orphaned: orphaned_i != 0,
+    })
 }
 
 impl StorageBackend for SqliteStorage {
@@ -145,32 +177,17 @@ impl StorageBackend for SqliteStorage {
     fn load_latest_run(&self, workflow_name: &str) -> anyhow::Result<Option<WorkflowRun>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workflow_name, status, current_step, iteration, started_at, trigger_payload
-             FROM workflow_runs WHERE workflow_name=?1
-             ORDER BY started_at DESC LIMIT 1",
+            "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
+                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+             FROM workflow_runs wr
+             LEFT JOIN workflows w ON wr.workflow_name = w.name
+             WHERE wr.workflow_name=?1
+             ORDER BY wr.started_at DESC LIMIT 1",
         )?;
 
         let mut rows = stmt.query(params![workflow_name])?;
         if let Some(row) = rows.next()? {
-            let id_str: String = row.get(0)?;
-            let status_str: String = row.get(2)?;
-            let started_at_str: String = row.get(5)?;
-
-            let run = WorkflowRun {
-                id: id_str.parse().context("invalid UUID in DB")?,
-                workflow_name: row.get(1)?,
-                status: match status_str.as_str() {
-                    "running" => RunStatus::Running,
-                    "waiting_checkpoint" => RunStatus::WaitingCheckpoint,
-                    "completed" => RunStatus::Completed,
-                    _ => RunStatus::Failed,
-                },
-                current_step: row.get::<_, i64>(3)? as usize,
-                iteration: row.get::<_, i64>(4)? as u64,
-                started_at: started_at_str.parse().context("invalid datetime in DB")?,
-                trigger_payload: row.get(6)?,
-            };
-            Ok(Some(run))
+            Ok(Some(row_to_run(row)?))
         } else {
             Ok(None)
         }
@@ -179,33 +196,18 @@ impl StorageBackend for SqliteStorage {
     fn load_workflow_runs(&self, workflow_name: &str) -> anyhow::Result<Vec<WorkflowRun>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workflow_name, status, current_step, iteration, started_at, trigger_payload
-             FROM workflow_runs WHERE workflow_name=?1
-             ORDER BY started_at DESC",
+            "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
+                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+             FROM workflow_runs wr
+             LEFT JOIN workflows w ON wr.workflow_name = w.name
+             WHERE wr.workflow_name=?1
+             ORDER BY wr.started_at DESC",
         )?;
 
         let mut runs = Vec::new();
         let mut rows = stmt.query(params![workflow_name])?;
         while let Some(row) = rows.next()? {
-            let id_str: String = row.get(0)?;
-            let status_str: String = row.get(2)?;
-            let started_at_str: String = row.get(5)?;
-
-            let run = WorkflowRun {
-                id: id_str.parse().context("invalid UUID in DB")?,
-                workflow_name: row.get(1)?,
-                status: match status_str.as_str() {
-                    "running" => RunStatus::Running,
-                    "waiting_checkpoint" => RunStatus::WaitingCheckpoint,
-                    "completed" => RunStatus::Completed,
-                    _ => RunStatus::Failed,
-                },
-                current_step: row.get::<_, i64>(3)? as usize,
-                iteration: row.get::<_, i64>(4)? as u64,
-                started_at: started_at_str.parse().context("invalid datetime in DB")?,
-                trigger_payload: row.get(6)?,
-            };
-            runs.push(run);
+            runs.push(row_to_run(row)?);
         }
         Ok(runs)
     }
@@ -251,6 +253,24 @@ impl StorageBackend for SqliteStorage {
         conn.execute(
             "DELETE FROM step_logs WHERE run_id=?1",
             params![&run_id_str],
+        )?;
+        Ok(())
+    }
+
+    fn register_workflow(&self, workflow_name: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO workflows (name) VALUES (?1)",
+            params![workflow_name],
+        )?;
+        Ok(())
+    }
+
+    fn deregister_workflow(&self, workflow_name: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM workflows WHERE name=?1",
+            params![workflow_name],
         )?;
         Ok(())
     }
@@ -544,5 +564,67 @@ mod tests {
 
         // THEN
         assert_eq!(loaded.trigger_payload, Some("hash-abc123".to_string()));
+    }
+
+    #[test]
+    fn orphaned_via_join_when_workflow_not_registered() {
+        // GIVEN a run saved without registering the workflow
+        let storage = in_memory_storage();
+        let run = make_run("removed-wf");
+        storage.save_workflow_run(&run).unwrap();
+
+        // WHEN
+        let loaded = storage.load_latest_run("removed-wf").unwrap().unwrap();
+
+        // THEN — no entry in workflows table → orphaned
+        assert!(loaded.orphaned);
+    }
+
+    #[test]
+    fn not_orphaned_when_workflow_registered() {
+        // GIVEN a run saved for a registered workflow
+        let storage = in_memory_storage();
+        let run = make_run("active-wf");
+        storage.save_workflow_run(&run).unwrap();
+        storage.register_workflow("active-wf").unwrap();
+
+        // WHEN
+        let loaded = storage.load_latest_run("active-wf").unwrap().unwrap();
+
+        // THEN
+        assert!(!loaded.orphaned);
+    }
+
+    #[test]
+    fn mark_runs_orphaned_removes_from_workflows_table() {
+        // GIVEN a registered workflow with runs
+        let storage = in_memory_storage();
+        let run = make_run("wf");
+        storage.save_workflow_run(&run).unwrap();
+        storage.register_workflow("wf").unwrap();
+
+        // WHEN — deregister
+        storage.deregister_workflow("wf").unwrap();
+        let loaded = storage.load_latest_run("wf").unwrap().unwrap();
+
+        // THEN — orphaned
+        assert!(loaded.orphaned);
+    }
+
+    #[test]
+    fn register_workflow_is_idempotent() {
+        // GIVEN
+        let storage = in_memory_storage();
+
+        // WHEN — register same workflow twice
+        storage.register_workflow("wf").unwrap();
+        storage.register_workflow("wf").unwrap();
+
+        // THEN — no error, still one entry
+        let conn = storage.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflows WHERE name='wf'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

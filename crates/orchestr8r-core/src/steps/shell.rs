@@ -1,4 +1,5 @@
 use super::StepExecutor;
+use crate::process::PrependScriptsDir;
 use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 
@@ -28,11 +29,10 @@ impl StepExecutor for ShellExecutor {
 
         let display_cmd = command.join(" ");
         let command = ctx.resource_limiter.apply(command);
-        let output = tokio::process::Command::new(&command[0])
-            .args(&command[1..])
-            .current_dir(working_dir)
-            .output()
-            .await?;
+        let mut cmd = tokio::process::Command::new(&command[0]);
+        cmd.args(&command[1..]).current_dir(working_dir);
+        cmd.prepend_scripts_dir(ctx.scripts_dir.as_deref());
+        let output = cmd.output().await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -73,6 +73,7 @@ mod tests {
             step_index: 0,
             scratch_dir: scratch.to_path_buf(),
             workspace_dir: None,
+            scripts_dir: None,
             checkpoint_tx: None,
             session_manager: None,
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),

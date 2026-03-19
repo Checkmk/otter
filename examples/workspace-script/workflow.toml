@@ -3,7 +3,7 @@ type = "triggered"
 
 [workspace]
 type = "script"
-command = ["bash", "examples/workspace-script-setup.sh"]
+command = ["workspace-script-setup.sh"]
 
 [trigger]
 type = "manual"

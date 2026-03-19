@@ -46,6 +46,7 @@ impl AgentRunner for ClaudeCodeRunner {
             id: session_id.clone(),
             working_dir: spec.working_dir.clone(),
             resource_limiter: spec.resource_limiter.clone(),
+            scripts_dir: spec.scripts_dir.clone(),
         };
 
         let mut cmd_args = vec!["claude".to_string()];
@@ -58,12 +59,12 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_subprocess_streaming(&cmd_args, &spec.working_dir, &spec.message, &tx).await?
+            run_subprocess_streaming(&cmd_args, &spec.working_dir, &spec.message, &tx, spec.scripts_dir.as_deref()).await?
         } else {
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_subprocess(&cmd_args, &spec.working_dir, &spec.message).await?
+            run_subprocess(&cmd_args, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref()).await?
         };
 
         if let Some(code) = output.exit_code {
@@ -91,12 +92,12 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_subprocess_streaming(&cmd_args, &session.working_dir, message, &tx).await?
+            run_subprocess_streaming(&cmd_args, &session.working_dir, message, &tx, session.scripts_dir.as_deref()).await?
         } else {
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_subprocess(&cmd_args, &session.working_dir, message).await?
+            run_subprocess(&cmd_args, &session.working_dir, message, session.scripts_dir.as_deref()).await?
         };
 
         if let Some(code) = output.exit_code {
@@ -312,7 +313,7 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         let cmd = vec![script.to_string_lossy().to_string()];
 
         // WHEN
-        let output = run_subprocess_streaming(&cmd, dir.path(), "", &tx).await.unwrap();
+        let output = run_subprocess_streaming(&cmd, dir.path(), "", &tx, None).await.unwrap();
 
         // THEN — output contains the result text
         assert_eq!(output.stdout, "done");

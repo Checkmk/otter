@@ -1,11 +1,10 @@
-name = "polling-debug"
+name = "polling-simple"
 type = "triggered"
 
 [trigger]
 type = "polling"
-# Paths are relative to daemon's working directory (usually repo root when running with cargo)
-poll_command = ["examples/polling-simple.sh", "--poll"]
-context_command = ["examples/polling-simple.sh", "--context"]
+poll_command = ["polling-simple.sh", "--poll"]
+context_command = ["polling-simple.sh", "--context"]
 interval_secs = 5
 
 [[steps]]

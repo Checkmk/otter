@@ -24,58 +24,30 @@ cargo build --release
 
 ## Quick Start
 
-1. Create workflow directory:
+```bash
+# Install workflow
+orchestr8r workflow install examples/hello-world.toml
 
-   ```bash
-   mkdir -p ~/.config/orchestr8r/workflows
-   ```
+# Start the daemon
+orchestr8r daemon
 
-2. Add a workflow (e.g. `~/.config/orchestr8r/workflows/hello.toml`)
+# Open the TUI
+orchestr8r
 
-   ```toml
-   name = "hello-world"
-   type = "looping"
-
-   [[steps]]
-   type = "shell"
-   command = ["echo", "Hello from orchestr8r!"]
-
-   [[steps]]
-   type = "checkpoint"
-   message = "Continue to next iteration?"
-   ```
-
-3. Start the daemon:
-
-   ```
-   orchestr8r daemon
-   ```
-
-4. Open the dashboard:
-
-   ```
-   orchestr8r
-   ```
-
-   or start a workflow directly:
-
-   ```
-   orchestr8r start hello-world
-   ```
-
-The dashboard connects to the daemon via a Unix socket. It shows workflow states, live step output, and checkpoint prompts. If no daemon is running, it prints a helpful error with setup instructions.
+# or start workflow via CLI:
+orchestr8r start hello-world
+```
 
 ## Common Commands
 
 ```bash
-orchestr8r                   # open the TUI dashboard
-orchestr8r help              # show all commands
-orchestr8r daemon            # start the background daemon
-orchestr8r status            # list all workflows and their state
-orchestr8r start <name>      # start a workflow
-orchestr8r pause <name>      # pause running looping workflow
-orchestr8r resume <name>     # resume a paused workflow
-orchestr8r stop <name>       # stop a running workflow
+orchestr8r                         # open the TUI dashboard
+orchestr8r help                    # show all commands
+orchestr8r daemon                  # start the background daemon
+orchestr8r status                  # list all workflows and their state
+orchestr8r workflow install <path> # install a workflow (.toml or package dir)
+orchestr8r start <name>            # start or resume a workflow
+orchestr8r stop <name>             # stop a running workflow
 ```
 
 ## Example Workflows

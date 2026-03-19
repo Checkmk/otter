@@ -63,6 +63,7 @@ impl StepExecutor for AgentExecutor {
                 working_dir,
                 progress_tx,
                 ctx.resource_limiter.clone(),
+                ctx.scripts_dir.as_deref(),
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -101,7 +102,7 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
-                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter) },
+                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None },
                 AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -132,6 +133,7 @@ mod tests {
             step_index: 2,
             scratch_dir: scratch.path().to_path_buf(),
             workspace_dir: None,
+            scripts_dir: None,
             checkpoint_tx: None,
             session_manager: Some(manager),
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),

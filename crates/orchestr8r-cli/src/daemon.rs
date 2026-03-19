@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -40,11 +41,11 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     #[cfg(not(target_os = "windows"))]
     let _ = std::fs::remove_file(&socket_path); // remove stale socket if present
 
-    let workflows = load_workflows_from_dir(&config_dir.join("workflows"))?;
+    let workflows_dir = config_dir.join("workflows");
+    let workflows = load_workflows_from_dir(&workflows_dir)?;
 
-    let toml_map: Arc<HashMap<String, String>> = Arc::new(
-        workflows.iter().map(|(def, raw)| (def.name.clone(), raw.clone())).collect()
-    );
+    let toml_map: Arc<tokio::sync::Mutex<HashMap<String, String>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     let storage: Arc<dyn StorageBackend> = Arc::new(
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
@@ -59,12 +60,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         notifier,
     )));
 
-    {
-        let mut mgr = manager.lock().await;
-        for (def, _raw) in workflows {
-            mgr.register(def);
-        }
-    }
+    reload_workflows(workflows, &manager, &toml_map).await;
 
     // run_id → pending checkpoint metadata + oneshot sender
     let pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>> =
@@ -82,6 +78,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let pending_cp_fanout = pending_checkpoints.clone();
     let recent_runs_fanout = recent_runs.clone();
     let subscribers_fanout = subscribers.clone();
+    let toml_map_fanout = toml_map.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             let daemon_ev = match ev {
@@ -91,10 +88,15 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     DaemonEvent::RunUpdated(r)
                 }
                 EngineEvent::WorkflowRegistered { name, kind, trigger } => {
-                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content: None }
+                    let toml_content = toml_map_fanout.lock().await.get(&name).cloned();
+                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content }
                 }
                 EngineEvent::WorkflowStateChanged { name, state } => {
                     DaemonEvent::WorkflowStateChanged { name, state }
+                }
+                EngineEvent::WorkflowRemoved { name } => {
+                    toml_map_fanout.lock().await.remove(&name);
+                    DaemonEvent::WorkflowRemoved { name }
                 }
                 EngineEvent::CheckpointPending {
                     run_id,
@@ -158,7 +160,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let subs = subscribers.clone();
                     let st = storage.clone();
                     let tm = toml_map.clone();
-                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm));
+                    let wd = workflows_dir.clone();
+                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm, wd));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -196,7 +199,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let subs = subscribers.clone();
                     let st = storage.clone();
                     let tm = toml_map.clone();
-                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, tm));
+                    let wd = workflows_dir.clone();
+                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, tm, wd));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -218,7 +222,8 @@ async fn handle_connection<S>(
     recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
     storage: Arc<dyn StorageBackend>,
-    toml_map: Arc<HashMap<String, String>>,
+    toml_map: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    workflows_dir: PathBuf,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -245,7 +250,7 @@ async fn handle_connection<S>(
             let current = manager.lock().await.status();
             for wf in current {
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
-                    toml_content: toml_map.get(&wf.name).cloned(),
+                    toml_content: toml_map.lock().await.get(&wf.name).cloned(),
                     name: wf.name.clone(),
                     kind: wf.kind,
                     trigger: wf.trigger.clone(),
@@ -377,27 +382,93 @@ async fn handle_connection<S>(
             };
             let _ = write_json(&mut writer, &resp).await;
         }
+        DaemonCommand::ReloadWorkflows => {
+            let resp = match load_workflows_from_dir(&workflows_dir) {
+                Ok(new_workflows) => {
+                    reload_workflows(new_workflows, &manager, &toml_map).await;
+                    DaemonResponse::Ok
+                }
+                Err(e) => DaemonResponse::Error { message: e.to_string() },
+            };
+            let _ = write_json(&mut writer, &resp).await;
+        }
     }
 }
 
-fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(WorkflowDef, String)>> {
+async fn reload_workflows(
+    workflows: Vec<(WorkflowDef, String, Option<PathBuf>)>,
+    manager: &Mutex<WorkflowManager>,
+    toml_map: &Mutex<HashMap<String, String>>,
+) {
+    {
+        let mut map = toml_map.lock().await;
+        for (def, raw, _) in &workflows {
+            map.insert(def.name.clone(), raw.clone());
+        }
+    }
+    let mapped: Vec<_> = workflows
+        .into_iter()
+        .map(|(def, _, scripts_dir)| (def, scripts_dir))
+        .collect();
+    manager.lock().await.reload(mapped);
+}
+
+/// Returns `(def, raw_toml, scripts_dir)` tuples.
+///
+/// Scans both flat `.toml` files and one level of subdirectories (each containing `workflow.toml`).
+/// Skips workflows with unsupported `schema_version` with a warning.
+pub(crate) fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(WorkflowDef, String, Option<PathBuf>)>> {
+    use orchestr8r_core::types::WORKFLOW_SCHEMA_VERSION;
+
     if !dir.exists() {
         return Ok(Vec::new());
     }
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
-        .collect();
-    files.sort();
+
+    let mut entries: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+
+    for entry in std::fs::read_dir(dir)?.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            // Flat .toml file — no scripts directory
+            entries.push((path, None));
+        } else if path.is_dir() {
+            // Package directory — look for workflow.toml inside
+            let wf_toml = path.join("workflow.toml");
+            if wf_toml.is_file() {
+                entries.push((wf_toml, Some(path)));
+            }
+        }
+    }
+    entries.sort_by_key(|(p, _)| p.clone());
+
     let mut workflows = Vec::new();
-    for path in &files {
+    for (path, scripts_dir) in &entries {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {path:?}"))?;
-        let def: WorkflowDef = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse {path:?}"))?;
+        let def: WorkflowDef = match toml::from_str(&content) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(path = ?path, error = %e, "Skipping workflow: parse error");
+                continue;
+            }
+        };
+
+        // Schema version check
+        let schema_ver = def.schema.unwrap_or(1);
+        if schema_ver > WORKFLOW_SCHEMA_VERSION {
+            warn!(
+                workflow = %def.name,
+                schema_version = schema_ver,
+                current = WORKFLOW_SCHEMA_VERSION,
+                "Skipping workflow: requires schema version {} but this orchestr8r supports up to {}",
+                schema_ver,
+                WORKFLOW_SCHEMA_VERSION
+            );
+            continue;
+        }
+
         info!(workflow = %def.name, "Loaded workflow");
-        workflows.push((def, content));
+        workflows.push((def, content, scripts_dir.clone()));
     }
     Ok(workflows)
 }

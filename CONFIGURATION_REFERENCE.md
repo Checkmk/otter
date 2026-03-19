@@ -8,7 +8,8 @@
 4. [Workspace Configuration](#workspace-configuration)
 5. [Resource Limits](#resource-limits)
 6. [Triggers](#triggers)
-7. [Examples](#examples)
+7. [Workflow Management](#workflow-management)
+8. [Examples](#examples)
 
 ---
 
@@ -414,9 +415,51 @@ $ <context_command...> <hash> <context-dir>
 # exit 0 = success; non-zero = skip this hash (already marked seen)
 ```
 
-Example script and workflow are available in the [examples](examples/) directory:
-- `polling-simple.sh`
-- `polling-trigger.toml`
+Example script and workflow are available in the [examples/polling-simple](examples/polling-simple) directory.
+
+---
+
+## Workflow management
+
+A **workflow package** is a directory containing a `workflow.toml` plus any companion scripts used by the workflow's steps. Packaging them together keeps the workflow self-contained and makes installation atomic.
+
+Companion scripts in the package directory are automatically prepended to `PATH` when any step in that workflow runs
+
+### Package layout
+
+```
+my-workflow/
+├── workflow.toml          # required — the workflow definition
+├── poll.sh                # companion script referenced by trigger or steps
+└── setup-workspace.sh     # companion script for workspace provisioning
+```
+
+### Optional metadata fields
+
+`workflow.toml` may include top-level metadata fields:
+
+```toml
+name = "my-workflow"
+type = "triggered"
+schema = 1            # optional; defaults to 1
+version = "1.2.0"     # optional; human-readable package version
+```
+
+**`schema`** declares the minimum orchestr8r workflow schema version required to run this workflow. If the installed orchestr8r does not support the version, it logs a warning and skips the workflow.
+
+### Installing and removing
+
+```bash
+# Install a flat .toml file — copies to ~/.config/orchestr8r/workflows/<name>.toml
+orchestr8r workflow install ./my-workflow.toml
+
+# Install a package directory — copies to ~/.config/orchestr8r/workflows/<name>/
+# Both signal the daemon to reload without restart
+orchestr8r workflow install ./my-workflow/
+
+# Remove — deletes the installed file or directory and reloads the daemon
+orchestr8r workflow remove my-workflow
+```
 
 ---
 

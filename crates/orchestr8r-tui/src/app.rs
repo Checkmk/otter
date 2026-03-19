@@ -199,6 +199,11 @@ impl App {
             DaemonEvent::StepProgress { run_id, step_index, chunk } => {
                 self.progress.entry(run_id).or_default().push((step_index, chunk));
             }
+            DaemonEvent::WorkflowRemoved { name } => {
+                let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
+                self.workflows.retain(|e| e.name != name);
+                self.ensure_cursor_valid(old_pos);
+            }
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
                 self.consumed_triggers.insert(workflow, triggers);
                 // Clamp right_cursor in case the list shrank

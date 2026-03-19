@@ -79,6 +79,7 @@ mod tests {
             log_fn: None,
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            scripts_dir: None,
         }
     }
 

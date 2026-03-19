@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::process::PrependScriptsDir;
 use crate::types::{PendingContext, TriggerError, TriggerEvent};
 use super::TriggerSource;
 
@@ -58,6 +59,7 @@ pub struct PollingTrigger {
     interval: Duration,
     seen_path: PathBuf,
     in_flight: Arc<Mutex<HashSet<String>>>,
+    scripts_dir: Option<PathBuf>,
 }
 
 impl PollingTrigger {
@@ -67,6 +69,7 @@ impl PollingTrigger {
         context_command: Option<Vec<String>>,
         interval: Duration,
         seen_path: PathBuf,
+        scripts_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             name,
@@ -75,6 +78,7 @@ impl PollingTrigger {
             interval,
             seen_path,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            scripts_dir,
         }
     }
 
@@ -136,8 +140,10 @@ impl TriggerSource for PollingTrigger {
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
         debug!("polling: running {:?}", self.poll_command);
-        let output = Command::new(&self.poll_command[0])
-            .args(&self.poll_command[1..])
+        let mut cmd = Command::new(&self.poll_command[0]);
+        cmd.args(&self.poll_command[1..]);
+        cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
+        let output = cmd
             .output()
             .await
             .map_err(|e| anyhow::anyhow!("failed to run poll command '{}': {}", self.poll_command[0], e))?;
@@ -219,6 +225,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -259,6 +266,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             seen_path,
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -288,6 +296,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             seen_path.clone(),
+            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -330,6 +339,7 @@ mod tests {
             Some(ctx_cmd.clone()),
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -369,6 +379,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             seen_path.clone(),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -409,6 +420,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             seen_path.clone(),
+            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -437,6 +449,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -474,6 +487,7 @@ mod tests {
             Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100),  // 100ms interval
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -525,6 +539,7 @@ mod tests {
             None,
             Duration::from_millis(50),
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -566,6 +581,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(32);

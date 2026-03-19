@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 use uuid::Uuid;
 
-use orchestr8r_core::types::{DaemonCommand, StorageBackend};
+use orchestr8r_core::types::{DaemonCommand, StorageBackend, WORKFLOW_SCHEMA_VERSION};
 use orchestr8r_storage::SqliteStorage;
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
@@ -42,15 +42,34 @@ enum Commands {
     Resume { name: String },
     /// Print the status of all registered workflows
     Status,
-    /// Manage workflow runs
-    Runs {
+    /// Manage installed workflows
+    Workflow {
         #[command(subcommand)]
-        command: RunsCommands,
+        command: WorkflowCommands,
     },
     /// Manage consumed workflow triggers
     Triggers {
         #[command(subcommand)]
         command: TriggersCommands,
+    },
+    /// Manage workflow runs
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommands {
+    /// Install a workflow (.toml file or package directory with workflow.toml) into the config dir
+    Install {
+        /// Path to a .toml file or a workflow package directory
+        path: PathBuf,
+    },
+    /// Remove an installed workflow by name
+    Remove {
+        /// Name of the workflow to remove
+        name: String,
     },
 }
 
@@ -107,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Status) => client::print_status().await,
         Some(Commands::Runs { command }) => handle_runs_command(command).await,
         Some(Commands::Triggers { command }) => handle_triggers_command(command).await,
+        Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
     }
 }
 
@@ -176,6 +196,148 @@ async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()
         }
         TriggersCommands::DeleteConsumed { workflow, trigger } => {
             client::send_command_print(DaemonCommand::DeleteConsumedTrigger { workflow, trigger }).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()> {
+    match command {
+        WorkflowCommands::Install { path } => handle_workflow_install(path).await,
+        WorkflowCommands::Remove { name } => handle_workflow_remove(name).await,
+    }
+}
+
+async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
+    let path = path.canonicalize()
+        .map_err(|e| anyhow::anyhow!("Cannot access '{}': {}", path.display(), e))?;
+
+    let (toml_path, is_package) = if path.is_dir() {
+        let tp = path.join("workflow.toml");
+        anyhow::ensure!(tp.exists(), "No workflow.toml found in '{}'", path.display());
+        (tp, true)
+    } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
+        (path.clone(), false)
+    } else {
+        anyhow::bail!("'{}' is not a .toml file or directory", path.display());
+    };
+
+    // Parse just enough to get the name and check schema_version
+    let toml_content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", toml_path.display(), e))?;
+    let def: orchestr8r_core::types::WorkflowDef = toml::from_str(&toml_content)
+        .map_err(|e| anyhow::anyhow!("Invalid workflow TOML: {}", e))?;
+
+    if let Some(v) = def.schema {
+        anyhow::ensure!(
+            v <= WORKFLOW_SCHEMA_VERSION,
+            "Workflow requires schema version {} but this orchestr8r supports up to {}",
+            v,
+            WORKFLOW_SCHEMA_VERSION
+        );
+    }
+
+    let workflows_dir = dirs_config_dir().join("workflows");
+    std::fs::create_dir_all(&workflows_dir)?;
+
+    // Check for conflicts in both forms regardless of install type
+    let dir_dest = workflows_dir.join(&def.name);
+    let file_dest = workflows_dir.join(format!("{}.toml", def.name));
+    if dir_dest.exists() || file_dest.exists() {
+        anyhow::bail!(
+            "Workflow '{}' is already installed. Remove it first with: orchestr8r workflow remove {}",
+            def.name,
+            def.name
+        );
+    }
+
+    if is_package {
+        copy_dir_all(&path, &dir_dest)?;
+        println!("Installed workflow '{}' to '{}'.", def.name, dir_dest.display());
+    } else {
+        std::fs::copy(&path, &file_dest)?;
+        println!("Installed workflow '{}' to '{}'.", def.name, file_dest.display());
+    }
+
+    // Notify the daemon to reload
+    if client::send_command_once(DaemonCommand::ReloadWorkflows).await.is_ok() {
+        println!("Daemon reloaded.");
+    }
+
+    Ok(())
+}
+
+fn find_workflow_by_name(workflows_dir: &std::path::Path, name: &str) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let Ok(entries) = std::fs::read_dir(workflows_dir) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let toml_path = if path.is_dir() {
+            path.join("workflow.toml")
+        } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            path.clone()
+        } else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&toml_path) else { continue };
+        let Ok(def) = toml::from_str::<orchestr8r_core::types::WorkflowDef>(&content) else { continue };
+        if def.name == name {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
+    let workflows_dir = dirs_config_dir().join("workflows");
+    let dir_path = workflows_dir.join(&name);
+    let file_path = workflows_dir.join(format!("{}.toml", name));
+
+    let dest = if dir_path.exists() {
+        dir_path
+    } else if file_path.exists() {
+        file_path
+    } else {
+        // Fall back: scan directory for any entry whose workflow name field matches
+        find_workflow_by_name(&workflows_dir, &name)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Workflow '{}' is not installed",
+                name,
+            )
+        })?
+    };
+
+    // Ask the daemon to stop the workflow first (ignore errors — it may already be dormant)
+    let _ = client::send_command_once(DaemonCommand::Stop { name: name.clone() }).await;
+
+    if dest.is_dir() {
+        std::fs::remove_dir_all(&dest)
+            .map_err(|e| anyhow::anyhow!("Failed to remove '{}': {}", dest.display(), e))?;
+    } else {
+        std::fs::remove_file(&dest)
+            .map_err(|e| anyhow::anyhow!("Failed to remove '{}': {}", dest.display(), e))?;
+    }
+    println!("Removed workflow '{}'.", name);
+
+    // Notify the daemon to reload
+    if client::send_command_once(DaemonCommand::ReloadWorkflows).await.is_ok() {
+        println!("Daemon reloaded.");
+    }
+
+    Ok(())
+}
+
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
         }
     }
     Ok(())

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::session::AgentSessionManager;
+use crate::process::PrependScriptsDir;
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
@@ -23,6 +24,7 @@ pub struct Engine {
     scratch_base: std::path::PathBuf,
     notifier: Arc<dyn Notifier>,
     paused: Arc<AtomicBool>,
+    scripts_dir: Option<std::path::PathBuf>,
 }
 
 impl Engine {
@@ -37,6 +39,23 @@ impl Engine {
             scratch_base,
             notifier,
             paused: Arc::new(AtomicBool::new(false)),
+            scripts_dir: None,
+        }
+    }
+
+    pub fn new_with_scripts_dir(
+        storage: Arc<dyn StorageBackend>,
+        scratch_base: std::path::PathBuf,
+        notifier: Arc<dyn Notifier>,
+        scripts_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            executors: crate::steps::registry(),
+            storage,
+            scratch_base,
+            notifier,
+            paused: Arc::new(AtomicBool::new(false)),
+            scripts_dir,
         }
     }
 
@@ -51,6 +70,7 @@ impl Engine {
             scratch_base,
             notifier: Arc::new(NoOpNotifier),
             paused: Arc::new(AtomicBool::new(false)),
+            scripts_dir: None,
         }
     }
 
@@ -185,6 +205,7 @@ impl Engine {
             &data_dir,
             &self.scratch_base,
             workflow.workspace.as_ref(),
+            self.scripts_dir.as_deref(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -309,12 +330,12 @@ impl Engine {
             };
             std::fs::create_dir_all(&ctx_dir)?;
             info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
-            let out = tokio::process::Command::new(&ctx.command[0])
-                .args(&ctx.command[1..])
+            let mut cmd = tokio::process::Command::new(&ctx.command[0]);
+            cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
-                .arg(&ctx_dir)
-                .output()
-                .await?;
+                .arg(&ctx_dir);
+            cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
+            let out = cmd.output().await?;
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 warn!(run_id = %run.id, "context command failed for hash {}: {} (stderr: {})", ctx.hash, out.status, stderr);
@@ -397,6 +418,7 @@ impl Engine {
                 step_index: i,
                 scratch_dir: scratch_dir.clone(),
                 workspace_dir: workspace_dir.map(|p| p.to_owned()),
+                scripts_dir: self.scripts_dir.clone(),
                 checkpoint_tx: ui_tx.clone(),
                 session_manager: Some(session_manager.clone()),
                 notifier: self.notifier.clone(),
