@@ -14,8 +14,30 @@ use crate::text::wrap_into_chunks;
 pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new("").style(base_style()), f.area());
 
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // top padding
+            Constraint::Min(0),    // content
+            Constraint::Length(1), // bottom padding
+        ])
+        .split(f.area());
+
+    // render_header(f, rows[1]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(2), // left padding
+            Constraint::Min(0),    // content
+            Constraint::Length(2), // right padding
+        ])
+        .split(rows[1]);
+
+    let content = cols[1];
+
     let status_bar_height = if app.mode == Mode::FeedbackInput {
-        let panel_width = f.area().width as usize;
+        let panel_width = content.width as usize;
         let overhead = 15;
         let available_width = panel_width.saturating_sub(overhead);
         let actual_width = available_width.max(20);
@@ -30,15 +52,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         3
     };
 
-    let outer = Layout::default()
+    let inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(status_bar_height)])
-        .split(f.area());
+        .split(content);
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(26), Constraint::Min(1)])
-        .split(outer[0]);
+        .split(inner[0]);
 
     render_runs(f, app, main[0]);
     render_right_panel(f, app, main[1]);
@@ -46,7 +68,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let status_mode = match app.mode {
         Mode::FeedbackInput => {
             let overhead = 15;
-            let available_width = (outer[1].width as usize).saturating_sub(overhead);
+            let available_width = (inner[1].width as usize).saturating_sub(overhead);
             StatusBarMode::Prompt {
                 input: &app.feedback_input,
                 available_width,
@@ -66,5 +88,5 @@ pub fn render(f: &mut Frame, app: &mut App) {
         },
     };
 
-    render_status_bar(f, status_mode, outer[1]);
+    render_status_bar(f, status_mode, inner[1]);
 }
