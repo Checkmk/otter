@@ -63,6 +63,8 @@ pub struct App {
     pub right_scroll: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
     pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
+    /// Runs saved when a workflow is removed, so they can be restored if the workflow is re-registered
+    removed_workflow_runs: HashMap<String, Vec<WorkflowRun>>,
 }
 
 impl App {
@@ -84,6 +86,7 @@ impl App {
             right_scroll: 0,
             consumed_triggers: HashMap::new(),
             progress: HashMap::new(),
+            removed_workflow_runs: HashMap::new(),
         }
     }
 
@@ -137,11 +140,12 @@ impl App {
             }
             DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content } => {
                 if !self.workflows.iter().any(|e| e.name == name) {
+                    let runs = self.removed_workflow_runs.remove(&name).unwrap_or_default();
                     self.workflows.push(WorkflowEntry {
                         name,
                         kind,
                         state: WorkflowState::Dormant,
-                        runs: Vec::new(),
+                        runs,
                         expanded: false,
                         trigger,
                         toml_content,
@@ -201,7 +205,12 @@ impl App {
             }
             DaemonEvent::WorkflowRemoved { name } => {
                 let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
-                self.workflows.retain(|e| e.name != name);
+                if let Some(pos) = self.workflows.iter().position(|e| e.name == name) {
+                    let entry = self.workflows.remove(pos);
+                    if !entry.runs.is_empty() {
+                        self.removed_workflow_runs.insert(name, entry.runs);
+                    }
+                }
                 self.ensure_cursor_valid(old_pos);
             }
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
@@ -1065,6 +1074,71 @@ mod tests {
         assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
         // AND the log entry was added
         assert_eq!(app.logs.get(&run_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn workflow_removed_then_registered_preserves_runs() {
+        // GIVEN a workflow with runs
+        let mut app = make_test_app();
+        let run = WorkflowRun::new("wf".to_string());
+        let run_id = run.id;
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+        });
+
+        // WHEN the workflow is removed (e.g. during re-install)
+        app.handle_daemon_event(DaemonEvent::WorkflowRemoved { name: "wf".to_string() });
+        assert!(app.workflows.is_empty());
+
+        // AND then re-registered
+        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            trigger: None,
+            toml_content: None,
+        });
+
+        // THEN the runs are preserved
+        assert_eq!(app.workflows.len(), 1);
+        assert_eq!(app.workflows[0].runs.len(), 1);
+        assert_eq!(app.workflows[0].runs[0].id, run_id);
+    }
+
+    #[test]
+    fn workflow_removed_permanently_does_not_leak_runs_into_new_workflow() {
+        // GIVEN two workflows, wf-a gets removed
+        let mut app = make_test_app();
+        let run = WorkflowRun::new("wf-a".to_string());
+        app.workflows.push(WorkflowEntry {
+            name: "wf-a".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![run],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+        });
+
+        // WHEN wf-a is removed permanently
+        app.handle_daemon_event(DaemonEvent::WorkflowRemoved { name: "wf-a".to_string() });
+
+        // AND a completely different workflow wf-b is registered
+        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
+            name: "wf-b".to_string(),
+            kind: WorkflowType::Looping,
+            trigger: None,
+            toml_content: None,
+        });
+
+        // THEN wf-b starts with no runs (wf-a's runs are not leaked)
+        assert_eq!(app.workflows[0].name, "wf-b");
+        assert!(app.workflows[0].runs.is_empty());
     }
 
     #[test]
