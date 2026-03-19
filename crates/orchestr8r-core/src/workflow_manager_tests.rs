@@ -21,6 +21,7 @@ fn looping_workflow(name: &str) -> WorkflowDef {
         workflow_type: WorkflowType::Looping,
         trigger: None,
         workspace: None,
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["true".to_string()]),
@@ -38,6 +39,7 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
         workflow_type: WorkflowType::Triggered,
         trigger: None,
         workspace: None,
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["true".to_string()]),
@@ -55,6 +57,7 @@ fn manual_workflow(name: &str) -> WorkflowDef {
         workflow_type: WorkflowType::Triggered,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["true".to_string()]),
@@ -76,6 +79,7 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
             interval_secs: 3600, // Very long interval (1 hour)
         }),
         workspace: None,
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["true".to_string()]),

@@ -62,6 +62,7 @@ impl StepExecutor for AgentExecutor {
                 message,
                 working_dir,
                 progress_tx,
+                ctx.resource_limiter.clone(),
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -84,6 +85,7 @@ impl StepExecutor for AgentExecutor {
 mod tests {
     use super::*;
     use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::resource_limiter::NoOpLimiter;
     use crate::types::{ProgressChunk, StepType};
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -99,7 +101,7 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
-                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone() },
+                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter) },
                 AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -135,6 +137,7 @@ mod tests {
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         };
         let step_def = StepDef {
             step_type: StepType::Agent,

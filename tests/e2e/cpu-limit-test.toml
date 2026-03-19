@@ -1,0 +1,24 @@
+name = "cpu-limit-test"
+type = "triggered"
+
+[trigger]
+type = "manual"
+
+[resources]
+cpu_quota = "50%"
+
+[[steps]]
+type = "notify"
+message = "CPU stress testing starting — cgroup limit: 50%"
+
+[[steps]]
+type = "shell"
+command = ["bash", "-c", "cat /proc/self/cgroup | grep -i cpu || echo 'no cgroup info'"]
+
+[[steps]]
+type = "shell"
+command = ["bash", "-c", "yes > /dev/null &\nPID=$!\necho \"stress testinging CPU (pid $PID) for 10s...\"\nsleep 10\nkill $PID\necho \"done\""]
+
+[[steps]]
+type = "notify"
+message = "CPU stress testing finished"

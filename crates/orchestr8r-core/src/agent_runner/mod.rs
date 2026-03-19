@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::resource_limiter::ResourceLimiter;
 use crate::types::ProgressChunk;
 
 mod claude;
@@ -11,16 +12,18 @@ mod copilot;
 pub use claude::ClaudeCodeRunner;
 pub use copilot::CopilotRunner;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentSpec {
     pub message: String,
     pub working_dir: PathBuf,
+    pub resource_limiter: Arc<dyn ResourceLimiter>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentSessionHandle {
     pub id: String,
     pub working_dir: PathBuf,
+    pub resource_limiter: Arc<dyn ResourceLimiter>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,9 +81,11 @@ impl AgentRunner for CustomRunner {
         let handle = AgentSessionHandle {
             id: uuid::Uuid::new_v4().to_string(),
             working_dir: spec.working_dir.clone(),
+            resource_limiter: spec.resource_limiter.clone(),
         };
 
-        let output = run_subprocess(&self.command, &spec.working_dir, &spec.message).await?;
+        let cmd = spec.resource_limiter.apply(&self.command);
+        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -97,7 +102,8 @@ impl AgentRunner for CustomRunner {
         message: &str,
         _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<AgentOutput, AgentError> {
-        let output = run_subprocess(&self.command, &session.working_dir, message).await?;
+        let cmd = session.resource_limiter.apply(&self.command);
+        let output = run_subprocess(&cmd, &session.working_dir, message).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {

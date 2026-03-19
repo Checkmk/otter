@@ -12,6 +12,7 @@ use crate::types::{
     EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
     WorkflowDef, WorkflowType, WorkflowRun,
 };
+use crate::resource_limiter::build_limiter;
 use crate::workspace::resolve_workspace;
 use orchestr8r_notify::{NoOpNotifier, Notifier};
 use tokio::sync::mpsc;
@@ -401,6 +402,7 @@ impl Engine {
                 notifier: self.notifier.clone(),
                 log_fn: Some(log_fn),
                 progress_fn,
+                resource_limiter: build_limiter(workflow.resources.as_ref()),
             };
 
             info!(step = i, step_type = %step_def.step_type, command = ?step_def.command, "Executing step");

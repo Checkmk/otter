@@ -6,8 +6,9 @@
 2. [Workflow Types](#workflow-types)
 3. [Step Types](#step-types)
 4. [Workspace Configuration](#workspace-configuration)
-5. [Triggers](#triggers)
-6. [Examples](#examples)
+5. [Resource Limits](#resource-limits)
+6. [Triggers](#triggers)
+7. [Examples](#examples)
 
 ---
 
@@ -22,6 +23,9 @@ type = "triggered"  # or "looping"
 [workspace]         # optional; see Workspace Configuration below
 type = "fixed"
 path = "/home/user/my-project"
+
+[resources]         # optional; see Resource Limits below
+cpu_quota = "200%"
 
 [trigger]  # optional; required if type = "triggered"
 type = "manual"
@@ -276,6 +280,33 @@ echo "/tmp/ws-$RUN_ID"
 **Behavior by workflow type:**
 - **Triggered workflows**: script runs once per trigger event (per run)
 - **Looping workflows**: script runs once per iteration
+
+---
+
+## Resource Limits
+
+The optional `[resources]` table controls resource usage for all subprocess steps in a workflow
+(agent steps and shell steps). If omitted, steps run without CPU limits.
+
+### `cpu_quota`
+
+Limits total CPU time for the entire process tree of each spawned subprocess (the agent CLI and
+all child processes it spawns).
+
+**Fields:**
+- `cpu_quota` (optional): CPU quota in systemd `CPUQuota` format. `"100%"` = 1 core, `"200%"` = 2 cores, etc.
+
+**Example:**
+```toml
+[resources]
+cpu_quota = "200%"  # cap the whole run to 2 CPU cores
+```
+
+**Behavior:**
+- Requires Linux with a running systemd user instance (`systemd --user`)
+- Implemented via `systemd-run --scope --user -p CPUQuota=<value>` wrapping each subprocess invocation
+- The cgroup quota applies to the subprocess and all its children (e.g. `claude` → `bash` → `testing framework`)
+- If `systemd-run` is not available, a warning is logged and the workflow runs without CPU limiting
 
 ---
 

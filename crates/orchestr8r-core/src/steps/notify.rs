@@ -32,6 +32,7 @@ impl StepExecutor for NotifyExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource_limiter::NoOpLimiter;
     use crate::types::{StepDef, StepType};
     use orchestr8r_notify::{Notification, NotifyError, Notifier};
     use std::sync::{Arc, Mutex};
@@ -77,6 +78,7 @@ mod tests {
             notifier,
             log_fn: None,
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         }
     }
 

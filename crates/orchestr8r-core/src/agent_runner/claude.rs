@@ -45,6 +45,7 @@ impl AgentRunner for ClaudeCodeRunner {
         let handle = AgentSessionHandle {
             id: session_id.clone(),
             working_dir: spec.working_dir.clone(),
+            resource_limiter: spec.resource_limiter.clone(),
         };
 
         let mut cmd_args = vec!["claude".to_string()];
@@ -56,10 +57,12 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--verbose".to_string());
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
+            let cmd_args = spec.resource_limiter.apply(&cmd_args);
             run_subprocess_streaming(&cmd_args, &spec.working_dir, &spec.message, &tx).await?
         } else {
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
+            let cmd_args = spec.resource_limiter.apply(&cmd_args);
             run_subprocess(&cmd_args, &spec.working_dir, &spec.message).await?
         };
 
@@ -87,10 +90,12 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--verbose".to_string());
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
+            let cmd_args = session.resource_limiter.apply(&cmd_args);
             run_subprocess_streaming(&cmd_args, &session.working_dir, message, &tx).await?
         } else {
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
+            let cmd_args = session.resource_limiter.apply(&cmd_args);
             run_subprocess(&cmd_args, &session.working_dir, message).await?
         };
 

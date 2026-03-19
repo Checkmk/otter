@@ -26,6 +26,8 @@ impl StepExecutor for ShellExecutor {
 
         let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
+        let display_cmd = command.join(" ");
+        let command = ctx.resource_limiter.apply(command);
         let output = tokio::process::Command::new(&command[0])
             .args(&command[1..])
             .current_dir(working_dir)
@@ -39,7 +41,7 @@ impl StepExecutor for ShellExecutor {
         if !output.status.success() {
             return Err(StepError::ExecutionFailed(format!(
                 "'{}' exited with code {}\nstdout: {}\nstderr: {}",
-                command.join(" "),
+                display_cmd,
                 exit_code.unwrap_or(-1),
                 stdout.trim(),
                 stderr.trim(),
@@ -58,7 +60,9 @@ impl StepExecutor for ShellExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource_limiter::NoOpLimiter;
     use crate::types::{StepDef, StepType};
+    use std::sync::Arc;
     use uuid::Uuid;
 
     fn ctx(scratch: &std::path::Path) -> StepContext {
@@ -74,6 +78,7 @@ mod tests {
             notifier: std::sync::Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         }
     }
 

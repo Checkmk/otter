@@ -4,6 +4,14 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::resource_limiter::ResourceLimiter;
+use crate::session::AgentSessionManager;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ResourceConfig {
+    pub cpu_quota: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowDef {
     pub name: String,
@@ -13,6 +21,8 @@ pub struct WorkflowDef {
     pub trigger: Option<TriggerDef>,
     #[serde(default)]
     pub workspace: Option<WorkspaceConfig>,
+    #[serde(default)]
+    pub resources: Option<ResourceConfig>,
     pub steps: Vec<StepDef>,
 }
 
@@ -167,13 +177,14 @@ pub struct StepContext {
     pub scratch_dir: std::path::PathBuf,
     pub workspace_dir: Option<std::path::PathBuf>,
     pub checkpoint_tx: Option<mpsc::Sender<EngineEvent>>,
-    pub session_manager: Option<Arc<crate::session::AgentSessionManager>>,
+    pub session_manager: Option<Arc<AgentSessionManager>>,
     pub notifier: Arc<dyn orchestr8r_notify::Notifier>,
     /// Called by step executors to persist and broadcast a log entry immediately,
     /// rather than waiting until the step's execute() returns.
     pub log_fn: Option<Arc<dyn Fn(LogEntry) + Send + Sync>>,
     /// Called by step executors to emit ephemeral progress chunks for live TUI display.
     pub progress_fn: Option<Arc<dyn Fn(ProgressChunk) + Send + Sync>>,
+    pub resource_limiter: Arc<dyn ResourceLimiter>,
 }
 
 #[derive(Debug)]

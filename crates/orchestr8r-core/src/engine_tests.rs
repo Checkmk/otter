@@ -27,6 +27,7 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
         workflow_type,
         trigger: None,
         workspace: None,
+        resources: None,
         steps,
     }
 }
@@ -177,6 +178,7 @@ async fn triggered_workflow_runs_once_per_event() {
         workflow_type: WorkflowType::Triggered,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["echo".to_string(), "triggered".to_string()]),
@@ -442,6 +444,7 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
         workspace: Some(WorkspaceConfig::Script {
             command: vec![ws_script.to_string_lossy().into_owned()],
         }),
+        resources: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             // Fail explicitly if context.txt is not in the workspace; write marker if it is.

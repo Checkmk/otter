@@ -42,6 +42,7 @@ impl AgentRunner for CopilotRunner {
         let handle = AgentSessionHandle {
             id: session_id.clone(),
             working_dir: spec.working_dir.clone(),
+            resource_limiter: spec.resource_limiter.clone(),
         };
 
         let mut cmd_args = vec!["copilot".to_string()];
@@ -49,6 +50,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(format!("--resume={session_id}"));
         cmd_args.push("-p".to_string());
         cmd_args.push(spec.message.clone());
+        let cmd_args = spec.resource_limiter.apply(&cmd_args);
 
         let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir).await?;
 
@@ -72,6 +74,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(format!("--resume={}", session.id));
         cmd_args.push("-p".to_string());
         cmd_args.push(message.to_string());
+        let cmd_args = session.resource_limiter.apply(&cmd_args);
 
         let output = run_subprocess_no_stdin(&cmd_args, &session.working_dir).await?;
 

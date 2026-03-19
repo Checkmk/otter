@@ -119,6 +119,7 @@ fn log_immediate(ctx: &StepContext, step_type: &str, stdout: String, stderr: Str
 mod tests {
     use super::*;
     use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::resource_limiter::NoOpLimiter;
     use crate::session::AgentSessionManager;
     use crate::types::ProgressChunk;
     use std::path::PathBuf;
@@ -149,7 +150,7 @@ mod tests {
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push("start".into());
             Ok((
-                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir },
+                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter) },
                 AgentOutput { stdout: "initial".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -182,6 +183,7 @@ mod tests {
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         }
     }
 
@@ -202,6 +204,7 @@ mod tests {
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: None,
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         }
     }
 
@@ -285,6 +288,7 @@ mod tests {
                 "initial",
                 std::path::Path::new("/tmp"),
                 None,
+                Arc::new(NoOpLimiter),
             )
             .await
             .unwrap();
@@ -331,6 +335,7 @@ mod tests {
                 "initial",
                 std::path::Path::new("/tmp"),
                 None,
+                Arc::new(NoOpLimiter),
             )
             .await
             .unwrap();
@@ -408,6 +413,7 @@ mod tests {
                 "hi",
                 std::path::Path::new("/tmp"),
                 None,
+                Arc::new(NoOpLimiter),
             )
             .await
             .unwrap();
@@ -433,6 +439,7 @@ mod tests {
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(log_fn),
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         };
 
         // WHEN
@@ -487,6 +494,7 @@ mod tests {
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         };
 
         // WHEN
@@ -523,6 +531,7 @@ mod tests {
             notifier: Arc::new(orchestr8r_notify::NoOpNotifier),
             log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
             progress_fn: None,
+            resource_limiter: Arc::new(NoOpLimiter),
         };
 
         // WHEN
