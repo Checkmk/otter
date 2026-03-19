@@ -57,15 +57,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
         KeyCode::Enter if !has_checkpoint => {
             let state = app.selected_workflow_state();
             match state {
-                Some(WorkflowState::Dormant) => app.start_selected(),
-                Some(WorkflowState::Paused) => {
-                    if let Some(entry) = app.selected_workflow() {
-                        let name = entry.name.clone();
-                        let _ = app.cmd_tx.try_send(
-                            orchestr8r_core::types::DaemonCommand::Resume { name }
-                        );
-                    }
-                }
+                Some(WorkflowState::Dormant) | Some(WorkflowState::Paused) => app.start_selected(),
                 Some(WorkflowState::Running) => app.stop_selected(),
                 _ => {}
             }

@@ -139,21 +139,39 @@ impl WorkflowManager {
         }
     }
 
-    /// Start a dormant workflow. For looping workflows this begins the continuous loop;
-    /// for triggered workflows this fires one immediate run.
+    /// Start a dormant workflow, or resume a paused one.
+    /// For looping workflows this begins the continuous loop; for triggered workflows this fires one immediate run.
     pub async fn start(&mut self, name: &str) -> anyhow::Result<()> {
-        // Check workflow exists and is dormant, extract def early
-        let (def, scripts_dir) = {
+        // Check state first with a shared borrow
+        let current_state = {
             let handle = self
                 .handles
-                .get_mut(name)
+                .get(name)
                 .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
+            handle.state.lock().unwrap().clone()
+        };
+
+        // If paused, just clear the flag — the existing engine task is still running
+        if current_state == WorkflowState::Paused {
+            let handle = self.handles.get_mut(name).unwrap();
+            handle.paused.store(false, Ordering::Relaxed);
+            *handle.state.lock().unwrap() = WorkflowState::Running;
+            let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
+                name: name.to_string(),
+                state: WorkflowState::Running,
+            });
+            return Ok(());
+        }
+
+        // Check workflow exists and is dormant, extract def early
+        let (def, scripts_dir) = {
+            let handle = self.handles.get_mut(name).unwrap();
 
             {
                 let state = handle.state.lock().unwrap();
                 if *state != WorkflowState::Dormant {
                     bail!(
-                        "workflow '{}' is not dormant (current state: {:?})",
+                        "workflow '{}' is not dormant or paused (current state: {:?})",
                         name,
                         *state
                     );
@@ -234,30 +252,6 @@ impl WorkflowManager {
         let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
             name: name.to_string(),
             state: WorkflowState::Paused,
-        });
-
-        Ok(())
-    }
-
-    /// Resume a paused looping workflow.
-    pub fn resume(&mut self, name: &str) -> anyhow::Result<()> {
-        let handle = self
-            .handles
-            .get_mut(name)
-            .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
-
-        {
-            let state = handle.state.lock().unwrap();
-            if *state != WorkflowState::Paused {
-                bail!("workflow '{}' is not paused", name);
-            }
-        }
-
-        handle.paused.store(false, Ordering::Relaxed);
-        *handle.state.lock().unwrap() = WorkflowState::Running;
-        let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
-            name: name.to_string(),
-            state: WorkflowState::Running,
         });
 
         Ok(())

@@ -323,7 +323,6 @@ pub enum DaemonCommand {
     Start { name: String },
     Pause { name: String },
     Stop { name: String },
-    Resume { name: String },
     Status,
     /// Persistent subscription: server streams DaemonEvent JSON lines until disconnect.
     Subscribe,

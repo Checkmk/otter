@@ -321,10 +321,6 @@ async fn handle_connection<S>(
             let result = manager.lock().await.stop(&name).await;
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
-        DaemonCommand::Resume { name } => {
-            let result = manager.lock().await.resume(&name);
-            let _ = write_json(&mut writer, &result_to_response(result)).await;
-        }
         DaemonCommand::Status => {
             let workflows = manager.lock().await.status();
             let _ = write_json(&mut writer, &DaemonResponse::StatusResponse { workflows }).await;

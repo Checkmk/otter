@@ -151,7 +151,7 @@ async fn pause_and_resume_lifecycle() {
     assert_eq!(manager.status()[0].state, WorkflowState::Paused);
 
     // WHEN
-    manager.resume("hello").unwrap();
+    manager.start("hello").await.unwrap();
 
     // THEN
     assert_eq!(manager.status()[0].state, WorkflowState::Running);

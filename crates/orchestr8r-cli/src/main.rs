@@ -38,8 +38,6 @@ enum Commands {
     Pause { name: String },
     /// Stop a running workflow
     Stop { name: String },
-    /// Resume a paused workflow
-    Resume { name: String },
     /// Print the status of all registered workflows
     Status,
     /// Manage installed workflows
@@ -123,9 +121,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Stop { name }) => {
             client::send_command_print(DaemonCommand::Stop { name }).await
-        }
-        Some(Commands::Resume { name }) => {
-            client::send_command_print(DaemonCommand::Resume { name }).await
         }
         Some(Commands::Status) => client::print_status().await,
         Some(Commands::Run { command }) => handle_runs_command(command).await,
