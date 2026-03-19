@@ -121,6 +121,10 @@ impl Engine {
                 &workflow.name,
                 run.id,
             )?;
+            match &workspace_dir {
+                Some(ws) => info!(run_id = %run.id, workspace = %ws.display(), "workspace ready"),
+                None => info!(run_id = %run.id, workspace = %scratch_dir.display(), "using scratch directory as workspace"),
+            }
 
             self.storage.save_workflow_run(&run)?;
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
@@ -291,6 +295,10 @@ impl Engine {
         let session_manager = Arc::new(AgentSessionManager::new());
 
         let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?;
+        match &workspace_dir {
+            Some(ws) => info!(run_id = %run.id, workspace = %ws.display(), "workspace ready"),
+            None => info!(run_id = %run.id, workspace = %scratch_dir.display(), "using scratch directory as workspace"),
+        }
 
         // Run the pending context command (from a polling trigger) now that the workspace is ready.
         if let Some(ctx) = event.and_then(|e| e.pending_context.as_ref()) {
