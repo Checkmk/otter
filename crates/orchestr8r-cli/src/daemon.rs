@@ -39,7 +39,15 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
     #[cfg(not(target_os = "windows"))]
-    let _ = std::fs::remove_file(&socket_path); // remove stale socket if present
+    {
+        if socket_path.exists() {
+            if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                anyhow::bail!("daemon is already running");
+            }
+            // Socket exists but no listener — stale; remove it.
+            let _ = std::fs::remove_file(&socket_path);
+        }
+    }
 
     let workflows_dir = config_dir.join("workflows");
     let workflows = load_workflows_from_dir(&workflows_dir)?;
