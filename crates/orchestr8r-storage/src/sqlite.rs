@@ -110,6 +110,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> anyhow::Result<WorkflowRun> {
             "running" => RunStatus::Running,
             "waiting_checkpoint" => RunStatus::WaitingCheckpoint,
             "completed" => RunStatus::Completed,
+            "stopped" => RunStatus::Stopped,
             _ => RunStatus::Failed,
         },
         current_step: row.get::<_, i64>(3)? as usize,

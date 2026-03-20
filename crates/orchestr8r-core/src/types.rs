@@ -32,6 +32,9 @@ pub struct WorkflowDef {
     #[serde(default)]
     pub resources: Option<ResourceConfig>,
     pub steps: Vec<StepDef>,
+    /// Steps that always run after main steps, regardless of outcome.
+    #[serde(default)]
+    pub finally: Vec<FinallyStepDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +134,25 @@ pub struct StepDef {
     pub agent: AgentConfig,
 }
 
+/// A step in the `[[finally]]` section — runs after main steps regardless of outcome.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FinallyStepDef {
+    #[serde(flatten)]
+    pub step: StepDef,
+    /// Outcomes that trigger this step. `None` means all outcomes.
+    #[serde(default)]
+    pub on: Option<Vec<RunOutcome>>,
+}
+
+impl FinallyStepDef {
+    pub fn applies_to(&self, outcome: &RunOutcome) -> bool {
+        match &self.on {
+            None => true,
+            Some(filters) => filters.contains(outcome),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRun {
     pub id: Uuid,
@@ -166,6 +188,8 @@ pub enum RunStatus {
     WaitingCheckpoint,
     Completed,
     Failed,
+    /// User explicitly stopped the workflow at a checkpoint.
+    Stopped,
 }
 
 impl std::fmt::Display for RunStatus {
@@ -175,6 +199,29 @@ impl std::fmt::Display for RunStatus {
             RunStatus::WaitingCheckpoint => write!(f, "waiting_checkpoint"),
             RunStatus::Completed => write!(f, "completed"),
             RunStatus::Failed => write!(f, "failed"),
+            RunStatus::Stopped => write!(f, "stopped"),
+        }
+    }
+}
+
+/// Terminal outcome of a workflow run, used to filter `[[finally]]` steps.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Success,
+    Failed,
+    Stopped,
+}
+
+impl RunStatus {
+    /// Convert a terminal `RunStatus` to a `RunOutcome` for finally-step filtering.
+    /// Returns `None` for non-terminal statuses.
+    pub fn as_outcome(&self) -> Option<RunOutcome> {
+        match self {
+            RunStatus::Completed => Some(RunOutcome::Success),
+            RunStatus::Failed => Some(RunOutcome::Failed),
+            RunStatus::Stopped => Some(RunOutcome::Stopped),
+            _ => None,
         }
     }
 }
@@ -389,6 +436,94 @@ mod tests {
         );
         assert_eq!(RunStatus::Completed.to_string(), "completed");
         assert_eq!(RunStatus::Failed.to_string(), "failed");
+        assert_eq!(RunStatus::Stopped.to_string(), "stopped");
+    }
+
+    #[test]
+    fn run_status_as_outcome_mapping() {
+        // GIVEN / WHEN / THEN
+        assert_eq!(RunStatus::Completed.as_outcome(), Some(RunOutcome::Success));
+        assert_eq!(RunStatus::Failed.as_outcome(), Some(RunOutcome::Failed));
+        assert_eq!(RunStatus::Stopped.as_outcome(), Some(RunOutcome::Stopped));
+        assert_eq!(RunStatus::Running.as_outcome(), None);
+        assert_eq!(RunStatus::WaitingCheckpoint.as_outcome(), None);
+    }
+
+    #[test]
+    fn finally_step_applies_to_all_when_on_is_none() {
+        // GIVEN
+        let step = FinallyStepDef {
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, agent: Default::default() },
+            on: None,
+        };
+        // WHEN / THEN
+        assert!(step.applies_to(&RunOutcome::Success));
+        assert!(step.applies_to(&RunOutcome::Failed));
+        assert!(step.applies_to(&RunOutcome::Stopped));
+    }
+
+    #[test]
+    fn finally_step_applies_to_matching_outcome() {
+        // GIVEN
+        let step = FinallyStepDef {
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, agent: Default::default() },
+            on: Some(vec![RunOutcome::Failed]),
+        };
+        // WHEN / THEN
+        assert!(step.applies_to(&RunOutcome::Failed));
+        assert!(!step.applies_to(&RunOutcome::Success));
+        assert!(!step.applies_to(&RunOutcome::Stopped));
+    }
+
+    #[test]
+    fn workflow_def_with_finally_deserializes() {
+        // GIVEN
+        let toml_str = r#"
+            name = "test"
+            type = "looping"
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "main"]
+
+            [[finally]]
+            type = "shell"
+            command = ["cleanup.sh"]
+
+            [[finally]]
+            type = "notify"
+            message = "done"
+            on = ["success"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        assert_eq!(def.steps.len(), 1);
+        assert_eq!(def.finally.len(), 2);
+        assert_eq!(def.finally[0].step.step_type, StepType::Shell);
+        assert!(def.finally[0].on.is_none());
+        assert_eq!(def.finally[1].step.step_type, StepType::Notify);
+        assert_eq!(def.finally[1].on, Some(vec![RunOutcome::Success]));
+    }
+
+    #[test]
+    fn workflow_def_without_finally_deserializes() {
+        // GIVEN
+        let toml_str = r#"
+            name = "test"
+            type = "looping"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        assert!(def.finally.is_empty());
     }
 
     #[test]

@@ -10,8 +10,8 @@ use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
 use crate::types::{
-    EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
-    WorkflowDef, WorkflowType, WorkflowRun, WorkspaceConfig,
+    EngineEvent, LogEntry, RunOutcome, RunStatus, StepContext, StepType,
+    StorageBackend, TriggerEvent, WorkflowDef, WorkflowType, WorkflowRun, WorkspaceConfig,
 };
 use crate::resource_limiter::build_limiter;
 use crate::workspace::resolve_workspace;
@@ -162,15 +162,25 @@ impl Engine {
                 )
                 .await?;
 
+            let outcome = if stop {
+                run.status.as_outcome().unwrap_or(RunOutcome::Stopped)
+            } else {
+                run.status = RunStatus::Completed;
+                self.storage.update_workflow_run(&run)?;
+                Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+                RunOutcome::Success
+            };
+
+            if !workflow.finally.is_empty() {
+                self.execute_finally_steps(workflow, &run, &outcome, &scratch_dir, workspace_dir.as_deref(), &ui_tx).await;
+            }
+
             session_manager.cleanup().await;
 
             if stop {
                 break;
             }
 
-            run.status = RunStatus::Completed;
-            self.storage.update_workflow_run(&run)?;
-            Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
             info!(run_id = %run.id, "Looping workflow iteration completed");
         }
 
@@ -372,10 +382,17 @@ impl Engine {
             )
             .await?;
 
-        if !stop {
+        let outcome = if !stop {
             run.status = RunStatus::Completed;
             self.storage.update_workflow_run(&run)?;
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+            RunOutcome::Success
+        } else {
+            run.status.as_outcome().unwrap_or(RunOutcome::Stopped)
+        };
+
+        if !workflow.finally.is_empty() {
+            self.execute_finally_steps(workflow, &run, &outcome, &scratch_dir, workspace_dir.as_deref(), &ui_tx).await;
         }
 
         session_manager.cleanup().await;
@@ -489,7 +506,7 @@ impl Engine {
                     };
                     self.storage.append_log(entry.clone())?;
                     Self::emit(ui_tx, EngineEvent::LogAppended(entry));
-                    run.status = RunStatus::Failed;
+                    run.status = RunStatus::Stopped;
                     self.storage.update_workflow_run(run)?;
                     Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
                     return Ok(true);
@@ -519,6 +536,98 @@ impl Engine {
         }
 
         Ok(false)
+    }
+
+    /// Runs `[[finally]]` steps that match the given run outcome.
+    /// Errors from individual steps are logged as warnings and do not change `run.status`.
+    async fn execute_finally_steps(
+        &self,
+        workflow: &WorkflowDef,
+        run: &WorkflowRun,
+        outcome: &RunOutcome,
+        scratch_dir: &std::path::PathBuf,
+        workspace_dir: Option<&std::path::Path>,
+        ui_tx: &Option<mpsc::Sender<EngineEvent>>,
+    ) {
+        for (i, finally_def) in workflow.finally.iter().enumerate() {
+            if !finally_def.applies_to(outcome) {
+                continue;
+            }
+
+            let step_index = workflow.steps.len() + i;
+            let step_def = &finally_def.step;
+
+            let storage_log = self.storage.clone();
+            let ui_tx_log = ui_tx.clone();
+            let log_fn: Arc<dyn Fn(LogEntry) + Send + Sync> =
+                Arc::new(move |entry: LogEntry| {
+                    let _ = storage_log.append_log(entry.clone());
+                    Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
+                });
+
+            let ctx = StepContext {
+                run_id: run.id,
+                workflow_name: workflow.name.clone(),
+                iteration: run.iteration,
+                step_index,
+                scratch_dir: scratch_dir.clone(),
+                workspace_dir: workspace_dir.map(|p| p.to_owned()),
+                scripts_dir: self.scripts_dir.clone(),
+                checkpoint_tx: None,
+                session_manager: None,
+                notifier: self.notifier.clone(),
+                log_fn: Some(log_fn),
+                progress_fn: None,
+                resource_limiter: build_limiter(workflow.resources.as_ref()),
+            };
+
+            info!(step = i, step_type = %step_def.step_type, "Executing finally step");
+
+            let executor = match self.find_executor(step_def.step_type) {
+                Some(e) => e,
+                None => {
+                    warn!(step_type = %step_def.step_type, "No executor for finally step, skipping");
+                    continue;
+                }
+            };
+
+            match executor.execute(step_def, &ctx).await {
+                Ok(output) => {
+                    let entry = LogEntry {
+                        run_id: run.id,
+                        iteration: run.iteration,
+                        step_index,
+                        step_type: format!("finally:{}", step_def.step_type),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                        exit_code: output.exit_code,
+                        accepted: output.accepted,
+                        feedback: None,
+                        timestamp: Utc::now(),
+                    };
+                    let _ = self.storage.append_log(entry.clone());
+                    Self::emit(ui_tx, EngineEvent::LogAppended(entry));
+                    info!(step = i, "Finally step completed");
+                }
+                Err(e) => {
+                    warn!(step = i, error = %e, "Finally step failed (ignoring)");
+                    let entry = LogEntry {
+                        run_id: run.id,
+                        iteration: run.iteration,
+                        step_index,
+                        step_type: format!("finally:{}", step_def.step_type),
+                        stdout: String::new(),
+                        stderr: e.to_string(),
+                        exit_code: Some(1),
+                        accepted: None,
+                        feedback: None,
+                        timestamp: Utc::now(),
+                    };
+                    let _ = self.storage.append_log(entry.clone());
+                    Self::emit(ui_tx, EngineEvent::LogAppended(entry));
+                }
+            }
+        }
     }
 }
 

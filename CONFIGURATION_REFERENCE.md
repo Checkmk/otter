@@ -5,11 +5,12 @@
 1. [Workflow Structure](#workflow-structure)
 2. [Workflow Types](#workflow-types)
 3. [Step Types](#step-types)
-4. [Workspace Configuration](#workspace-configuration)
-5. [Resource Limits](#resource-limits)
-6. [Triggers](#triggers)
-7. [Workflow Management](#workflow-management)
-8. [Examples](#examples)
+4. [Finally Steps](#finally-steps)
+5. [Workspace Configuration](#workspace-configuration)
+6. [Resource Limits](#resource-limits)
+7. [Triggers](#triggers)
+8. [Workflow Management](#workflow-management)
+9. [Examples](#examples)
 
 ---
 
@@ -222,6 +223,34 @@ message = "Build completed successfully!"
 - Does not pause the workflow
 - If no `message` is provided, a generic "Workflow step completed" notification is sent
 - Notification sending is fire-and-forget; failures do not stop the workflow
+
+---
+
+## Finally Steps
+
+The optional `[[finally]]` section defines steps that run after all main steps complete, regardless of outcome. This is useful for cleanup tasks such as releasing workspace resources that would otherwise be skipped when a step fails.
+
+**Fields:**
+- All `[[steps]]` fields apply (same step types: `shell`, `agent`, `notify`, `checkpoint`)
+- `on` (optional): List of outcomes that trigger this step. Values: `"success"`, `"failed"`, `"stopped"`. If omitted, runs for all outcomes.
+
+**Example:**
+```toml
+[[finally]]
+type = "shell"
+command = ["workspace-pool.sh", "release"]
+# no `on` — runs for all outcomes
+
+[[finally]]
+type = "notify"
+message = "Done!"
+on = ["success"]
+```
+
+**Behavior:**
+- If a finally step fails, a warning is logged and execution continues to the next finally step; the run's final status is unchanged
+- If workspace setup itself fails before any steps run, finally steps are skipped
+- `checkpoint` steps in `[[finally]]` degrade gracefully: if no UI is connected the step is skipped with a warning
 
 ---
 

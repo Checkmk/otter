@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::InMemoryStorage;
 use crate::test_helpers::write_executable_script;
-use crate::types::{RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowType, WorkspaceConfig};
+use crate::types::{FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowType, WorkspaceConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -31,6 +31,7 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
         workspace: None,
         resources: None,
         steps,
+        finally: vec![],
     }
 }
 
@@ -81,9 +82,8 @@ async fn shell_step_runs_and_logs() {
 
     // THEN
     let logs = storage.logs();
-    assert!(!logs.is_empty());
-    assert_eq!(logs[0].step_type, "shell");
-    assert!(logs[0].stdout.contains("hello"));
+    let shell_log = logs.iter().find(|l| l.step_type == "shell").expect("shell log not found");
+    assert!(shell_log.stdout.contains("hello"));
 }
 
 #[tokio::test]
@@ -188,6 +188,7 @@ async fn triggered_workflow_runs_once_per_event() {
             command: Some(vec!["echo".to_string(), "triggered".to_string()]),
             ..step_def(StepType::Shell)
         }],
+        finally: vec![],
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -207,8 +208,7 @@ async fn triggered_workflow_runs_once_per_event() {
     assert_eq!(runs[0].status, RunStatus::Completed);
 
     let logs = storage.logs();
-    assert!(!logs.is_empty());
-    assert!(logs[0].stdout.contains("triggered"));
+    assert!(logs.iter().any(|l| l.stdout.contains("triggered")), "no log containing 'triggered' found");
 
     // Cleanup
     shutdown.store(true, Ordering::Relaxed);
@@ -368,6 +368,7 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
             ]),
             ..step_def(StepType::Shell)
         }],
+        finally: vec![],
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -484,6 +485,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
             ]),
             ..step_def(StepType::Shell)
         }],
+        finally: vec![],
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -514,4 +516,297 @@ async fn context_command_resolves_via_scripts_dir_path() {
         storage.runs().iter().any(|r| r.status == RunStatus::Completed),
         "run should have completed — context command must be resolved via scripts_dir"
     );
+}
+
+// ── Finally step integration tests ───────────────────────────────────────────
+
+#[tokio::test]
+async fn finally_step_runs_on_success() {
+    // GIVEN a workflow with one successful shell step and a finally shell step
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-success",
+        WorkflowType::Looping,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "cleanup".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: None,
+    }];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let storage_clone = storage.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+        storage_clone
+    });
+    wait_for_logs(&storage, 5).await;
+    shutdown.store(true, Ordering::Relaxed);
+    let storage = handle.await.unwrap();
+
+    // THEN
+    let logs = storage.logs();
+    assert!(
+        logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup")),
+        "finally:shell log not found"
+    );
+}
+
+#[tokio::test]
+async fn finally_step_runs_on_failure() {
+    // GIVEN a workflow with a failing shell step and a finally shell step (no `on`)
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-on-fail",
+        WorkflowType::Looping,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["false".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "cleanup-on-fail".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: None,
+    }];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    engine.run(&wf, shutdown, None).await.unwrap();
+
+    // THEN — run is Failed AND finally step logged
+    let runs = storage.runs();
+    assert_eq!(runs.last().unwrap().status, RunStatus::Failed);
+    let logs = storage.logs();
+    assert!(
+        logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup-on-fail")),
+        "finally:shell log not found on failure"
+    );
+}
+
+#[tokio::test]
+async fn finally_step_filtered_on_success_only_skipped_on_failure() {
+    // GIVEN a finally step with `on = [success]` and a failing main step
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-filter-fail",
+        WorkflowType::Looping,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["false".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "success-only".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: Some(vec![RunOutcome::Success]),
+    }];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    engine.run(&wf, shutdown, None).await.unwrap();
+
+    // THEN — finally step NOT executed (run failed, on = [success])
+    let logs = storage.logs();
+    assert!(
+        !logs.iter().any(|l| l.step_type == "finally:shell"),
+        "finally:shell should NOT have run when on=[success] and run failed"
+    );
+}
+
+#[tokio::test]
+async fn finally_step_filtered_on_failure_only_skipped_on_success() {
+    // GIVEN a finally step with `on = [failed]` and a successful main step
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-filter-success",
+        WorkflowType::Looping,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "fail-only".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: Some(vec![RunOutcome::Failed]),
+    }];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let storage_clone = storage.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+        storage_clone
+    });
+    wait_for_logs(&storage, 5).await;
+    shutdown.store(true, Ordering::Relaxed);
+    let storage = handle.await.unwrap();
+
+    // THEN — finally step NOT executed (run succeeded, on = [failed])
+    let logs = storage.logs();
+    assert!(
+        !logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("fail-only")),
+        "finally:shell should NOT have run when on=[failed] and run succeeded"
+    );
+}
+
+#[tokio::test]
+async fn finally_step_failure_does_not_change_run_status() {
+    // GIVEN a successful main step and a failing finally step
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-fail-no-status-change",
+        WorkflowType::Triggered,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["false".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: None,
+    }];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let result = engine.run_once(&wf, None, shutdown, None).await.unwrap();
+
+    // THEN — run status is still Completed despite finally step failing
+    assert_eq!(result, RunStatus::Completed);
+    // AND — the finally step log entry is present (with exit_code 1)
+    let logs = storage.logs();
+    let finally_log = logs.iter().find(|l| l.step_type == "finally:shell").expect("finally:shell log not found");
+    assert_eq!(finally_log.exit_code, Some(1));
+}
+
+#[tokio::test]
+async fn finally_steps_continue_after_one_fails() {
+    // GIVEN two finally steps where the first fails and the second succeeds
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-continue-after-fail",
+        WorkflowType::Triggered,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.finally = vec![
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["false".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: None,
+        },
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "second-cleanup".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: None,
+        },
+    ];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    engine.run_once(&wf, None, shutdown, None).await.unwrap();
+
+    // THEN — both finally step log entries are present
+    let logs = storage.logs();
+    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
+    assert_eq!(finally_logs.len(), 2, "both finally steps should have logged");
+    assert!(finally_logs.iter().any(|l| l.stdout.contains("second-cleanup")));
+}
+
+#[tokio::test]
+async fn finally_steps_run_in_order() {
+    // GIVEN two finally steps that write to files in order
+    let dir = tempfile::tempdir().unwrap();
+    let marker1 = dir.path().join("marker1.txt");
+    let marker2 = dir.path().join("marker2.txt");
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-finally-order",
+        WorkflowType::Triggered,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.workspace = Some(WorkspaceConfig::Fixed {
+        path: dir.path().to_string_lossy().into_owned(),
+    });
+    wf.finally = vec![
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["touch".to_string(), "marker1.txt".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: None,
+        },
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["touch".to_string(), "marker2.txt".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: None,
+        },
+    ];
+
+    // WHEN
+    let shutdown = Arc::new(AtomicBool::new(false));
+    engine.run_once(&wf, None, shutdown, None).await.unwrap();
+
+    // THEN — both markers exist, and finally log step_indices are main_steps.len() and main_steps.len()+1
+    assert!(marker1.exists(), "marker1.txt should exist");
+    assert!(marker2.exists(), "marker2.txt should exist");
+    let logs = storage.logs();
+    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
+    assert_eq!(finally_logs.len(), 2);
+    assert_eq!(finally_logs[0].step_index, 1); // 1 main step + 0
+    assert_eq!(finally_logs[1].step_index, 2); // 1 main step + 1
 }

@@ -155,6 +155,7 @@ async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
                     orchestr8r_core::types::RunStatus::WaitingCheckpoint => "waiting",
                     orchestr8r_core::types::RunStatus::Completed => "completed",
                     orchestr8r_core::types::RunStatus::Failed => "failed",
+                    orchestr8r_core::types::RunStatus::Stopped => "stopped",
                 };
                 let wf_name = if run.orphaned {
                     format!("{} [orphaned]", run.workflow_name)
