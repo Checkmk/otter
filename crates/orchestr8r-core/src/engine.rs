@@ -11,7 +11,7 @@ use crate::triggers::build_trigger;
 use crate::types::StepError;
 use crate::types::{
     EngineEvent, LogEntry, RunStatus, StepContext, StepType, StorageBackend, TriggerEvent,
-    WorkflowDef, WorkflowType, WorkflowRun,
+    WorkflowDef, WorkflowType, WorkflowRun, WorkspaceConfig,
 };
 use crate::resource_limiter::build_limiter;
 use crate::workspace::resolve_workspace;
@@ -122,14 +122,31 @@ impl Engine {
                 &workflow.name,
                 run.id,
             )?;
-            match &workspace_dir {
-                Some(ws) => info!(run_id = %run.id, workspace = %ws.display(), "workspace ready"),
-                None => info!(run_id = %run.id, workspace = %scratch_dir.display(), "using scratch directory as workspace"),
-            }
+            let workspace_type = match &workflow.workspace {
+                None | Some(WorkspaceConfig::Scratch) => "scratch",
+                Some(WorkspaceConfig::Fixed { .. }) => "fixed",
+                Some(WorkspaceConfig::Script { .. }) => "script",
+            };
+            let effective_dir = workspace_dir.as_deref().unwrap_or(&scratch_dir);
+            info!(run_id = %run.id, workflow = %workflow.name, workspace_type, workspace = %effective_dir.display(), "Starting looping workflow iteration");
 
             self.storage.save_workflow_run(&run)?;
             Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-            info!(run_id = %run.id, workflow = %workflow.name, "Starting looping workflow iteration");
+
+            let run_start_entry = LogEntry {
+                run_id: run.id,
+                iteration: run.iteration,
+                step_index: usize::MAX,
+                step_type: "run_start".to_string(),
+                stdout: format!("\nRun ID: {}\nWorkspace ({}): {}", run.id, workspace_type, effective_dir.display()),
+                stderr: String::new(),
+                exit_code: None,
+                accepted: None,
+                feedback: None,
+                timestamp: Utc::now(),
+            };
+            self.storage.append_log(run_start_entry.clone())?;
+            Self::emit(&ui_tx, EngineEvent::LogAppended(run_start_entry));
 
             let session_manager = Arc::new(AgentSessionManager::new());
 
@@ -292,15 +309,32 @@ impl Engine {
 
         self.storage.save_workflow_run(&run)?;
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-        info!(run_id = %run.id, workflow = %workflow.name, "Starting triggered workflow run");
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
         let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?;
-        match &workspace_dir {
-            Some(ws) => info!(run_id = %run.id, workspace = %ws.display(), "workspace ready"),
-            None => info!(run_id = %run.id, workspace = %scratch_dir.display(), "using scratch directory as workspace"),
-        }
+        let workspace_type = match &workflow.workspace {
+            None | Some(WorkspaceConfig::Scratch) => "scratch",
+            Some(WorkspaceConfig::Fixed { .. }) => "fixed",
+            Some(WorkspaceConfig::Script { .. }) => "script",
+        };
+        let effective_dir = workspace_dir.as_deref().unwrap_or(&scratch_dir);
+        info!(run_id = %run.id, workflow = %workflow.name, workspace_type, workspace = %effective_dir.display(), "Starting triggered workflow run");
+
+        let run_start_entry = LogEntry {
+            run_id: run.id,
+            iteration: run.iteration,
+            step_index: usize::MAX,
+            step_type: "run_start".to_string(),
+            stdout: format!("\nRun ID: {}\nWorkspace ({}): {}", run.id, workspace_type, effective_dir.display()),
+            stderr: String::new(),
+            exit_code: None,
+            accepted: None,
+            feedback: None,
+            timestamp: Utc::now(),
+        };
+        self.storage.append_log(run_start_entry.clone())?;
+        Self::emit(&ui_tx, EngineEvent::LogAppended(run_start_entry));
 
         // Run the pending context command (from a polling trigger) now that the workspace is ready.
         if let Some(ctx) = event.and_then(|e| e.pending_context.as_ref()) {
