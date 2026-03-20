@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::InMemoryStorage;
 use crate::test_helpers::write_executable_script;
-use crate::types::{FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowType, WorkspaceConfig};
+use crate::types::{FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -809,4 +809,167 @@ async fn finally_steps_run_in_order() {
     assert_eq!(finally_logs.len(), 2);
     assert_eq!(finally_logs[0].step_index, 1); // 1 main step + 0
     assert_eq!(finally_logs[1].step_index, 2); // 1 main step + 1
+}
+
+#[tokio::test]
+async fn shutdown_between_steps_sets_stopped_status_and_runs_finally() {
+    // GIVEN a workflow with two shell steps and a finally step with on=[stopped]
+    // Shutdown fires before the second step — run should be Stopped and finally should run.
+    let dir = tempfile::tempdir().unwrap();
+    let finally_marker = dir.path().join("finally.txt");
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-shutdown-between-steps",
+        WorkflowType::Triggered,
+        vec![
+            StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "step0".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "step1".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+        ],
+    );
+    wf.workspace = Some(WorkspaceConfig::Fixed {
+        path: dir.path().to_string_lossy().into_owned(),
+    });
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["touch".to_string(), "finally.txt".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: Some(vec![RunOutcome::Stopped]),
+    }];
+
+    // WHEN — shutdown already set, so it fires at the start of step 0 (before any step runs)
+    let shutdown = Arc::new(AtomicBool::new(true));
+    engine.run_once(&wf, None, shutdown, None).await.unwrap();
+
+    // THEN — run status is Stopped and the on=[stopped] finally step ran
+    assert_eq!(storage.runs().last().unwrap().status, RunStatus::Stopped);
+    assert!(finally_marker.exists(), "on=[stopped] finally step should have run");
+}
+
+#[tokio::test]
+async fn run_finally_executes_stopped_finally_steps() {
+    // GIVEN a workflow def with on=[stopped] finally step and a run in Stopped status
+    let dir = tempfile::tempdir().unwrap();
+    let finally_marker = dir.path().join("finally.txt");
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-run-finally",
+        WorkflowType::Triggered,
+        vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["echo".to_string(), "main".to_string()]),
+            ..step_def(StepType::Shell)
+        }],
+    );
+    wf.workspace = Some(WorkspaceConfig::Fixed {
+        path: dir.path().to_string_lossy().into_owned(),
+    });
+    wf.finally = vec![
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["touch".to_string(), "finally.txt".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: Some(vec![RunOutcome::Stopped]),
+        },
+        FinallyStepDef {
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: Some(vec!["echo".to_string(), "success-only".to_string()]),
+                ..step_def(StepType::Shell)
+            },
+            on: Some(vec![RunOutcome::Success]),
+        },
+    ];
+
+    // Build a run as if it was killed (status Stopped, already saved)
+    let mut run = WorkflowRun::new(wf.name.clone());
+    run.status = RunStatus::Stopped;
+    run.workspace_dir = Some(dir.path().canonicalize().unwrap());
+    storage.save_workflow_run(&run).unwrap();
+
+    // WHEN — engine.run_finally called directly (simulates run_finally_after_kill)
+    engine.run_finally(&wf, &run, RunOutcome::Stopped, None).await;
+
+    // THEN — only the on=[stopped] step ran
+    let logs = storage.logs();
+    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
+    assert_eq!(finally_logs.len(), 1, "only one finally step should run");
+    assert!(finally_marker.exists(), "on=[stopped] finally step should have created the marker");
+    assert!(
+        !logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("success-only")),
+        "on=[success] step should NOT have run"
+    );
+}
+
+#[tokio::test]
+async fn run_finally_uses_stored_workspace_not_script() {
+    // GIVEN a workflow with a script workspace that returns a DIFFERENT path each call,
+    // and a run whose workspace_dir was already resolved to a specific path.
+    // run_finally must use the stored path, not re-run the script.
+    let dir = tempfile::tempdir().unwrap();
+    let original_ws = dir.path().join("original-slot");
+    let wrong_ws = dir.path().join("wrong-slot");
+    std::fs::create_dir_all(&original_ws).unwrap();
+    std::fs::create_dir_all(&wrong_ws).unwrap();
+
+    // Workspace script always returns wrong-slot (simulates pool allocating a new slot)
+    let ws_script = write_executable_script(
+        dir.path(),
+        "workspace.sh",
+        &format!("#!/bin/bash\necho '{}'", wrong_ws.display()),
+    )
+    .unwrap();
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-run-finally-stored-ws",
+        WorkflowType::Triggered,
+        vec![step_def(StepType::Shell)],
+    );
+    wf.workspace = Some(WorkspaceConfig::Script {
+        command: vec![ws_script.to_string_lossy().into_owned()],
+    });
+    wf.finally = vec![FinallyStepDef {
+        step: StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["touch".to_string(), "finally-ran.txt".to_string()]),
+            ..step_def(StepType::Shell)
+        },
+        on: None,
+    }];
+
+    // Build a run as if it was killed — workspace_dir points to original-slot
+    let mut run = WorkflowRun::new(wf.name.clone());
+    run.status = RunStatus::Stopped;
+    run.workspace_dir = Some(original_ws.clone());
+    storage.save_workflow_run(&run).unwrap();
+
+    // WHEN
+    engine.run_finally(&wf, &run, RunOutcome::Stopped, None).await;
+
+    // THEN — finally step ran in original-slot, NOT in wrong-slot
+    assert!(
+        original_ws.join("finally-ran.txt").exists(),
+        "finally step should have run in the original workspace (original-slot)"
+    );
+    assert!(
+        !wrong_ws.join("finally-ran.txt").exists(),
+        "finally step must NOT run in the re-resolved workspace (wrong-slot)"
+    );
 }

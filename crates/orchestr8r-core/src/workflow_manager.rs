@@ -236,6 +236,14 @@ impl WorkflowManager {
         });
     }
 
+    pub fn get_def(&self, name: &str) -> Option<WorkflowDef> {
+        self.handles.get(name).map(|h| h.def.clone())
+    }
+
+    pub fn get_scripts_dir(&self, name: &str) -> Option<PathBuf> {
+        self.handles.get(name).and_then(|h| h.scripts_dir.clone())
+    }
+
     /// Return the current status of all registered workflows, sorted by name.
     pub fn status(&self) -> Vec<WorkflowStatus> {
         let mut statuses: Vec<WorkflowStatus> = self

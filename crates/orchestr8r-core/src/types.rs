@@ -164,6 +164,8 @@ pub struct WorkflowRun {
     pub trigger_payload: Option<String>,
     #[serde(default)]
     pub orphaned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<std::path::PathBuf>,
 }
 
 impl WorkflowRun {
@@ -177,6 +179,7 @@ impl WorkflowRun {
             started_at: Utc::now(),
             trigger_payload: None,
             orphaned: false,
+            workspace_dir: None,
         }
     }
 }

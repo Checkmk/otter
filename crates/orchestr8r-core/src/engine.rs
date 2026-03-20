@@ -122,6 +122,7 @@ impl Engine {
                 &workflow.name,
                 run.id,
             )?;
+            run.workspace_dir = workspace_dir.clone();
             let workspace_type = match &workflow.workspace {
                 None | Some(WorkspaceConfig::Scratch) => "scratch",
                 Some(WorkspaceConfig::Fixed { .. }) => "fixed",
@@ -323,6 +324,9 @@ impl Engine {
         let session_manager = Arc::new(AgentSessionManager::new());
 
         let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?;
+        run.workspace_dir = workspace_dir.clone();
+        self.storage.update_workflow_run(&run)?;
+        Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
         let workspace_type = match &workflow.workspace {
             None | Some(WorkspaceConfig::Scratch) => "scratch",
             Some(WorkspaceConfig::Fixed { .. }) => "fixed",
@@ -414,6 +418,9 @@ impl Engine {
         for (i, step_def) in workflow.steps.iter().enumerate() {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current step");
+                run.status = RunStatus::Stopped;
+                self.storage.update_workflow_run(run)?;
+                Self::emit(ui_tx, EngineEvent::RunUpdated(run.clone()));
                 return Ok(true);
             }
 
@@ -536,6 +543,21 @@ impl Engine {
         }
 
         Ok(false)
+    }
+
+    pub async fn run_finally(
+        &self,
+        workflow: &WorkflowDef,
+        run: &WorkflowRun,
+        outcome: RunOutcome,
+        ui_tx: Option<mpsc::Sender<EngineEvent>>,
+    ) {
+        if workflow.finally.is_empty() {
+            return;
+        }
+        let scratch_dir = self.scratch_base.join(run.id.to_string());
+        let _ = std::fs::create_dir_all(&scratch_dir);
+        self.execute_finally_steps(workflow, run, &outcome, &scratch_dir, run.workspace_dir.as_deref(), &ui_tx).await;
     }
 
     /// Runs `[[finally]]` steps that match the given run outcome.

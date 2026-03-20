@@ -8,7 +8,7 @@ use orchestr8r_core::types::{LogEntry, RunStatus, StorageBackend, WorkflowRun};
 
 /// Current schema version. Increment this and add a corresponding entry to `MIGRATIONS` when
 /// making schema changes.
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     // v0 -> v1: initial schema
@@ -52,6 +52,14 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
             "CREATE TABLE IF NOT EXISTS workflows (
                 name TEXT PRIMARY KEY
             );",
+        )?;
+        Ok(())
+    },
+    // v3 -> v4: add workspace_dir column to workflow_runs so run_finally can reuse
+    // the originally resolved workspace instead of re-running a workspace script.
+    |conn| {
+        conn.execute_batch(
+            "ALTER TABLE workflow_runs ADD COLUMN workspace_dir TEXT;",
         )?;
         Ok(())
     },
@@ -102,7 +110,8 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> anyhow::Result<WorkflowRun> {
     let id_str: String = row.get(0)?;
     let status_str: String = row.get(2)?;
     let started_at_str: String = row.get(5)?;
-    let orphaned_i: i64 = row.get::<_, Option<i64>>(7)?.unwrap_or(0);
+    let workspace_dir_str: Option<String> = row.get(7)?;
+    let orphaned_i: i64 = row.get::<_, Option<i64>>(8)?.unwrap_or(0);
     Ok(WorkflowRun {
         id: id_str.parse().context("invalid UUID in DB")?,
         workflow_name: row.get(1)?,
@@ -118,6 +127,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> anyhow::Result<WorkflowRun> {
         started_at: started_at_str.parse().context("invalid datetime in DB")?,
         trigger_payload: row.get(6)?,
         orphaned: orphaned_i != 0,
+        workspace_dir: workspace_dir_str.map(std::path::PathBuf::from),
     })
 }
 
@@ -125,8 +135,8 @@ impl StorageBackend for SqliteStorage {
     fn save_workflow_run(&self, run: &WorkflowRun) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO workflow_runs (id, workflow_name, status, current_step, iteration, started_at, trigger_payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO workflow_runs (id, workflow_name, status, current_step, iteration, started_at, trigger_payload, workspace_dir)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 run.id.to_string(),
                 run.workflow_name,
@@ -135,6 +145,7 @@ impl StorageBackend for SqliteStorage {
                 run.iteration as i64,
                 run.started_at.to_rfc3339(),
                 &run.trigger_payload,
+                run.workspace_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
             ],
         )?;
         Ok(())
@@ -143,12 +154,13 @@ impl StorageBackend for SqliteStorage {
     fn update_workflow_run(&self, run: &WorkflowRun) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE workflow_runs SET status=?2, current_step=?3, iteration=?4 WHERE id=?1",
+            "UPDATE workflow_runs SET status=?2, current_step=?3, iteration=?4, workspace_dir=?5 WHERE id=?1",
             params![
                 run.id.to_string(),
                 run.status.to_string(),
                 run.current_step as i64,
                 run.iteration as i64,
+                run.workspace_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
             ],
         )?;
         Ok(())
@@ -179,7 +191,7 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
-                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+                    wr.started_at, wr.trigger_payload, wr.workspace_dir, (w.name IS NULL) AS orphaned
              FROM workflow_runs wr
              LEFT JOIN workflows w ON wr.workflow_name = w.name
              WHERE wr.workflow_name=?1
@@ -198,7 +210,7 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
-                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+                    wr.started_at, wr.trigger_payload, wr.workspace_dir, (w.name IS NULL) AS orphaned
              FROM workflow_runs wr
              LEFT JOIN workflows w ON wr.workflow_name = w.name
              WHERE wr.workflow_name=?1
@@ -217,7 +229,7 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT wr.id, wr.workflow_name, wr.status, wr.current_step, wr.iteration,
-                    wr.started_at, wr.trigger_payload, (w.name IS NULL) AS orphaned
+                    wr.started_at, wr.trigger_payload, wr.workspace_dir, (w.name IS NULL) AS orphaned
              FROM workflow_runs wr
              LEFT JOIN workflows w ON wr.workflow_name = w.name
              ORDER BY wr.started_at DESC",

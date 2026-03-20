@@ -15,9 +15,10 @@ use tracing::info;
 use uuid::Uuid;
 
 use orchestr8r_core::triggers::polling::{consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers};
+use orchestr8r_core::engine::Engine;
 use orchestr8r_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
+    RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
 };
 use orchestr8r_core::WorkflowManager;
 use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
@@ -336,11 +337,21 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::StopRun { run_id } => {
-            kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            let killed = kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            if let Some((run, def, scripts_dir)) = killed {
+                // Run finally steps in the background — don't block the response.
+                let st = storage.clone();
+                let subs = subscribers.clone();
+                tokio::spawn(run_finally_after_kill(run, def, scripts_dir, st, subs));
+            }
             let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
         }
         DaemonCommand::DeleteRun { run_id } => {
-            kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            let killed = kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            if let Some((run, def, scripts_dir)) = killed {
+                // Run finally steps before erasing the run record.
+                run_finally_after_kill(run, def, scripts_dir, storage.clone(), subscribers.clone()).await;
+            }
             // Delete from storage and scratch directory
             let storage_result = storage.delete_run(run_id);
             let scratch_dir = std::path::PathBuf::from(dirs_data_dir()).join("runs").join(run_id.to_string());
@@ -400,6 +411,39 @@ async fn handle_connection<S>(
     }
 }
 
+/// Build a temporary engine and run the `[[finally]]` steps for a run that was just killed.
+/// Events are forwarded to all current subscribers so the TUI sees the log entries.
+async fn run_finally_after_kill(
+    run: WorkflowRun,
+    def: WorkflowDef,
+    scripts_dir: Option<PathBuf>,
+    storage: Arc<dyn StorageBackend>,
+    subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
+) {
+    let (ev_tx, mut ev_rx) = mpsc::channel::<EngineEvent>(64);
+
+    // Forward engine events to daemon subscribers while finally steps run.
+    let subs = subscribers.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = ev_rx.recv().await {
+            let daemon_ev = match ev {
+                EngineEvent::LogAppended(e) => DaemonEvent::LogAppended(e),
+                EngineEvent::RunUpdated(r) => DaemonEvent::RunUpdated(r),
+                _ => continue,
+            };
+            let mut s = subs.lock().unwrap();
+            s.retain(|tx| tx.try_send(daemon_ev.clone()).is_ok());
+        }
+    });
+
+    let scratch_base = PathBuf::from(dirs_data_dir()).join("runs");
+    let notifier = Arc::new(DesktopNotifier);
+    let engine = Engine::new_with_scripts_dir(storage, scratch_base, notifier, scripts_dir);
+    engine.run_finally(&def, &run, RunOutcome::Stopped, Some(ev_tx)).await;
+}
+
+/// Kill an active run immediately. Returns the stopped run snapshot and its workflow def+scripts_dir
+/// if the run was active, so the caller can run finally steps afterwards.
 async fn kill_active_run(
     run_id: Uuid,
     recent_runs: &Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
@@ -407,7 +451,7 @@ async fn kill_active_run(
     manager: &Arc<Mutex<WorkflowManager>>,
     storage: &Arc<dyn StorageBackend>,
     subscribers: &Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
-) {
+) -> Option<(WorkflowRun, WorkflowDef, Option<PathBuf>)> {
     let workflow_name = recent_runs
         .lock()
         .unwrap()
@@ -415,25 +459,35 @@ async fn kill_active_run(
         .filter(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
         .map(|r| r.workflow_name.clone());
 
-    if let Some(ref wf_name) = workflow_name {
+    let (def, scripts_dir) = if let Some(ref wf_name) = workflow_name {
         // Drop the pending checkpoint response so the executor unblocks immediately.
         pending_checkpoints.lock().unwrap().remove(&run_id);
         // Abort the engine task; kill_on_drop ensures the subprocess is killed.
-        manager.lock().await.abort_and_stop(wf_name);
-    }
+        let mut mgr = manager.lock().await;
+        mgr.abort_and_stop(wf_name);
+        let def = mgr.get_def(wf_name);
+        let scripts_dir = mgr.get_scripts_dir(wf_name);
+        (def, scripts_dir)
+    } else {
+        (None, None)
+    };
 
-    // Mark run as Failed in storage and broadcast RunUpdated.
+    // Mark run as Stopped in storage and broadcast RunUpdated.
     let updated_run = recent_runs.lock().unwrap().get(&run_id).cloned();
     if let Some(mut run) = updated_run {
         if matches!(run.status, RunStatus::Running | RunStatus::WaitingCheckpoint) {
-            run.status = RunStatus::Failed;
+            run.status = RunStatus::Stopped;
             let _ = storage.update_workflow_run(&run);
             recent_runs.lock().unwrap().insert(run_id, run.clone());
-            let event = DaemonEvent::RunUpdated(run);
+            let event = DaemonEvent::RunUpdated(run.clone());
             let mut subs = subscribers.lock().unwrap();
             subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+            if let Some(def) = def {
+                return Some((run, def, scripts_dir));
+            }
         }
     }
+    None
 }
 
 async fn reload_workflows(
