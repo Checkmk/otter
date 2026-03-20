@@ -23,7 +23,6 @@ pub struct Engine {
     storage: Arc<dyn StorageBackend>,
     scratch_base: std::path::PathBuf,
     notifier: Arc<dyn Notifier>,
-    paused: Arc<AtomicBool>,
     scripts_dir: Option<std::path::PathBuf>,
 }
 
@@ -38,7 +37,6 @@ impl Engine {
             storage,
             scratch_base,
             notifier,
-            paused: Arc::new(AtomicBool::new(false)),
             scripts_dir: None,
         }
     }
@@ -54,7 +52,6 @@ impl Engine {
             storage,
             scratch_base,
             notifier,
-            paused: Arc::new(AtomicBool::new(false)),
             scripts_dir,
         }
     }
@@ -69,15 +66,8 @@ impl Engine {
             storage,
             scratch_base,
             notifier: Arc::new(NoOpNotifier),
-            paused: Arc::new(AtomicBool::new(false)),
             scripts_dir: None,
         }
-    }
-
-    /// Returns a clone of the pause flag. Set to `true` to pause a looping workflow
-    /// between iterations; clear to resume.
-    pub fn paused_flag(&self) -> Arc<AtomicBool> {
-        self.paused.clone()
     }
 
     fn find_executor(&self, step_type: StepType) -> Option<&dyn StepExecutor> {
@@ -120,16 +110,6 @@ impl Engine {
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current iteration");
-                break;
-            }
-
-            while self.paused.load(Ordering::Relaxed) {
-                if shutdown.load(Ordering::Relaxed) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            if shutdown.load(Ordering::Relaxed) {
                 break;
             }
 

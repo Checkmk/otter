@@ -315,10 +315,6 @@ async fn handle_connection<S>(
             let result = manager.lock().await.start(&name).await;
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
-        DaemonCommand::Pause { name } => {
-            let result = manager.lock().await.pause(&name);
-            let _ = write_json(&mut writer, &result_to_response(result)).await;
-        }
         DaemonCommand::Stop { name } => {
             let result = manager.lock().await.stop(&name).await;
             let _ = write_json(&mut writer, &result_to_response(result)).await;
@@ -339,23 +335,14 @@ async fn handle_connection<S>(
             };
             let _ = write_json(&mut writer, &resp).await;
         }
+        DaemonCommand::StopRun { run_id } => {
+            kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
+        }
         DaemonCommand::DeleteRun { run_id } => {
-            // If the run is currently active, kill its engine and unblock any pending checkpoint.
-            let workflow_name = recent_runs
-                .lock()
-                .unwrap()
-                .get(&run_id)
-                .filter(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
-                .map(|r| r.workflow_name.clone());
-            if let Some(ref wf_name) = workflow_name {
-                // Drop the pending checkpoint response so the executor unblocks immediately.
-                pending_checkpoints.lock().unwrap().remove(&run_id);
-                // Abort the engine task; kill_on_drop ensures the subprocess is killed.
-                manager.lock().await.abort_and_stop(wf_name);
-            }
-            // Delete from storage
+            kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            // Delete from storage and scratch directory
             let storage_result = storage.delete_run(run_id);
-            // Delete scratch directory
             let scratch_dir = std::path::PathBuf::from(dirs_data_dir()).join("runs").join(run_id.to_string());
             let dir_result = if scratch_dir.exists() {
                 std::fs::remove_dir_all(&scratch_dir)
@@ -365,7 +352,6 @@ async fn handle_connection<S>(
             let resp = match (storage_result, dir_result) {
                 (Ok(()), Ok(())) => {
                     recent_runs.lock().unwrap().remove(&run_id);
-                    // Broadcast the RunDeleted event to all subscribers
                     let event = DaemonEvent::RunDeleted { run_id };
                     let mut subs = subscribers.lock().unwrap();
                     subs.retain(|tx| tx.try_send(event.clone()).is_ok());
@@ -410,6 +396,42 @@ async fn handle_connection<S>(
                 Err(e) => DaemonResponse::Error { message: e.to_string() },
             };
             let _ = write_json(&mut writer, &resp).await;
+        }
+    }
+}
+
+async fn kill_active_run(
+    run_id: Uuid,
+    recent_runs: &Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
+    pending_checkpoints: &Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>>,
+    manager: &Arc<Mutex<WorkflowManager>>,
+    storage: &Arc<dyn StorageBackend>,
+    subscribers: &Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
+) {
+    let workflow_name = recent_runs
+        .lock()
+        .unwrap()
+        .get(&run_id)
+        .filter(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
+        .map(|r| r.workflow_name.clone());
+
+    if let Some(ref wf_name) = workflow_name {
+        // Drop the pending checkpoint response so the executor unblocks immediately.
+        pending_checkpoints.lock().unwrap().remove(&run_id);
+        // Abort the engine task; kill_on_drop ensures the subprocess is killed.
+        manager.lock().await.abort_and_stop(wf_name);
+    }
+
+    // Mark run as Failed in storage and broadcast RunUpdated.
+    let updated_run = recent_runs.lock().unwrap().get(&run_id).cloned();
+    if let Some(mut run) = updated_run {
+        if matches!(run.status, RunStatus::Running | RunStatus::WaitingCheckpoint) {
+            run.status = RunStatus::Failed;
+            let _ = storage.update_workflow_run(&run);
+            recent_runs.lock().unwrap().insert(run_id, run.clone());
+            let event = DaemonEvent::RunUpdated(run);
+            let mut subs = subscribers.lock().unwrap();
+            subs.retain(|tx| tx.try_send(event.clone()).is_ok());
         }
     }
 }

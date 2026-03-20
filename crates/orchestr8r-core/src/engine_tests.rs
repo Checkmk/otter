@@ -215,17 +215,12 @@ async fn triggered_workflow_runs_once_per_event() {
 }
 
 #[tokio::test]
-async fn pause_halts_iterations_and_resume_continues() {
-    // GIVEN an looping workflow with a fast shell step
+async fn stop_prevents_next_iteration() {
+    // GIVEN a looping workflow with a fast shell step
     let storage = Arc::new(InMemoryStorage::new());
-    let engine = Engine::new(
-        storage.clone(),
-        std::env::temp_dir().join("orchestr8r-tests-pause"),
-        Arc::new(orchestr8r_notify::NoOpNotifier),
-    );
-    let paused_flag = engine.paused_flag();
+    let engine = make_engine(storage.clone());
     let wf = workflow(
-        "test-pause",
+        "test-stop",
         WorkflowType::Looping,
         vec![StepDef {
             step_type: StepType::Shell,
@@ -242,66 +237,16 @@ async fn pause_halts_iterations_and_resume_continues() {
         storage_clone
     });
 
-    // Wait for at least one iteration to complete before pausing
+    // Wait for at least one iteration to complete, then stop
     wait_for_logs(&storage, 5).await;
-
-    paused_flag.store(true, Ordering::Relaxed);
-
-    // Wait for log count to stabilize while paused
-    // Poll until log count stabilizes (same count for 3 consecutive checks ~75ms)
-    let settle_start = tokio::time::Instant::now();
-    let mut prev_count = storage.logs().len();
-    let mut stable_checks = 0;
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        let current_count = storage.logs().len();
-        if current_count == prev_count {
-            stable_checks += 1;
-            if stable_checks >= 3 {
-                break;
-            }
-        } else {
-            stable_checks = 0;
-        }
-        prev_count = current_count;
-        assert!(
-            settle_start.elapsed() < std::time::Duration::from_secs(2),
-            "log count did not stabilize within timeout"
-        );
-    }
-    let count_while_paused = storage.logs().len();
-
-    // Verify no new logs appear while paused (poll for 500ms to be sure)
-    let check_start = tokio::time::Instant::now();
-    loop {
-        let current = storage.logs().len();
-        assert_eq!(
-            current, count_while_paused,
-            "no new logs should be produced while paused"
-        );
-        if check_start.elapsed() > std::time::Duration::from_millis(500) {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-
-    // Resume and confirm iterations restart
-    paused_flag.store(false, Ordering::Relaxed);
-    let resume_start = tokio::time::Instant::now();
-    let resume_timeout = std::time::Duration::from_secs(5);
-    loop {
-        if storage.logs().len() > count_while_paused {
-            break;
-        }
-        assert!(
-            resume_start.elapsed() < resume_timeout,
-            "log count did not increase within timeout"
-        );
-        tokio::task::yield_now().await;
-    }
-
     shutdown.store(true, Ordering::Relaxed);
-    handle.await.unwrap();
+
+    let storage = handle.await.unwrap();
+
+    // THEN the engine exits cleanly; a completed run exists
+    let runs = storage.runs();
+    assert!(!runs.is_empty());
+    assert!(runs.iter().any(|r| r.status == RunStatus::Completed));
 }
 
 #[tokio::test]
@@ -350,44 +295,6 @@ async fn looping_workflow_creates_new_run_per_iteration() {
     assert_eq!(ids.len(), runs.len(), "all run IDs should be distinct");
 }
 
-#[tokio::test]
-async fn shutdown_while_paused_exits_cleanly() {
-    // GIVEN a paused engine
-    let storage = Arc::new(InMemoryStorage::new());
-    let engine = Engine::new(
-        storage.clone(),
-        std::env::temp_dir().join("orchestr8r-tests-pause-shutdown"),
-        Arc::new(orchestr8r_notify::NoOpNotifier),
-    );
-    let paused_flag = engine.paused_flag();
-    let wf = workflow(
-        "test-pause-shutdown",
-        WorkflowType::Looping,
-        vec![StepDef {
-            step_type: StepType::Shell,
-            command: Some(vec!["echo".to_string(), "x".to_string()]),
-            ..step_def(StepType::Shell)
-        }],
-    );
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_clone = shutdown.clone();
-    let handle = tokio::spawn(async move { engine.run(&wf, shutdown_clone, None).await });
-
-    // Wait for at least one iteration to start
-    wait_for_logs(&storage, 5).await;
-    paused_flag.store(true, Ordering::Relaxed);
-
-    // WHEN shutdown while paused
-    shutdown.store(true, Ordering::Relaxed);
-
-    // THEN engine exits without hanging
-    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
-        .await
-        .expect("engine should exit within timeout")
-        .unwrap()
-        .unwrap();
-}
 
 #[tokio::test]
 async fn script_workspace_polling_trigger_context_written_to_workspace() {

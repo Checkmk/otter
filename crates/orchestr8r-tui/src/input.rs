@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use orchestr8r_core::types::{CheckpointAction, WorkflowType, WorkflowState};
+use orchestr8r_core::types::{CheckpointAction, RunStatus, WorkflowState};
 
-use crate::app::{App, Focus, Mode};
+use crate::app::{App, CursorTarget, Focus, Mode};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {
@@ -58,32 +58,25 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.feedback_input.clear();
             }
         }
-        // Workflow management keybindings (only when no checkpoint is pending)
+        // Enter: context-sensitive — run row stops active run, workflow row starts/stops workflow
         KeyCode::Enter if !has_checkpoint => {
-            let state = app.selected_workflow_state();
-            match state {
-                Some(WorkflowState::Dormant) | Some(WorkflowState::Paused) => app.start_selected(),
-                Some(WorkflowState::Running) => app.stop_selected(),
-                _ => {}
-            }
-        }
-        KeyCode::Char('p') if !has_checkpoint => {
-            if matches!(
-                app.selected_workflow_state(),
-                Some(WorkflowState::Running)
-            ) && matches!(
-                app.selected_workflow_kind(),
-                Some(WorkflowType::Looping)
-            ) {
-                app.pause_selected();
-            }
-        }
-        KeyCode::Char('x') if !has_checkpoint => {
-            if matches!(
-                app.selected_workflow_state(),
-                Some(WorkflowState::Running) | Some(WorkflowState::Paused)
-            ) {
-                app.stop_selected();
+            match app.cursor {
+                CursorTarget::Run(wi, ri) => {
+                    let is_active = app.workflows.get(wi)
+                        .and_then(|e| e.runs.get(ri))
+                        .map(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
+                        .unwrap_or(false);
+                    if is_active {
+                        app.stop_selected_run();
+                    }
+                }
+                CursorTarget::Workflow(_) => {
+                    match app.selected_workflow_state() {
+                        Some(WorkflowState::Dormant) => app.start_selected(),
+                        Some(WorkflowState::Running) => app.stop_selected(),
+                        _ => {}
+                    }
+                }
             }
         }
         // When checkpoint is active, 's' stops the checkpoint

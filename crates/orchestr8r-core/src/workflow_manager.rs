@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
 use crate::types::{
-    EngineEvent, StorageBackend, WorkflowDef, WorkflowType,
+    EngineEvent, StorageBackend, WorkflowDef,
     WorkflowState, WorkflowStatus,
 };
 use orchestr8r_notify::Notifier;
@@ -17,8 +17,6 @@ use orchestr8r_notify::Notifier;
 struct WorkflowHandle {
     def: WorkflowDef,
     state: Arc<Mutex<WorkflowState>>,
-    /// Shared with the spawned engine so pause/resume can be signalled externally.
-    paused: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     task: Option<JoinHandle<()>>,
     scripts_dir: Option<PathBuf>,
@@ -61,7 +59,6 @@ impl WorkflowManager {
         let handle = WorkflowHandle {
             def,
             state: Arc::new(Mutex::new(WorkflowState::Dormant)),
-            paused: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             task: None,
             scripts_dir,
@@ -116,7 +113,7 @@ impl WorkflowManager {
                 let _ = self.unregister(&name);
                 self.register_with_scripts_dir(def, scripts_dir);
             }
-            // else: Running/Paused — leave as-is
+            // else: Running — leave as-is
         }
 
         // Remove dormant workflows no longer in the config dir
@@ -135,51 +132,30 @@ impl WorkflowManager {
             if is_dormant {
                 let _ = self.unregister(&name);
             }
-            // else: Running/Paused — leave; it will disappear after finishing
+            // else: Running — leave; it will disappear after finishing
         }
     }
 
-    /// Start a dormant workflow, or resume a paused one.
+    /// Start a dormant workflow.
     /// For looping workflows this begins the continuous loop; for triggered workflows this fires one immediate run.
     pub async fn start(&mut self, name: &str) -> anyhow::Result<()> {
-        // Check state first with a shared borrow
-        let current_state = {
+        let (def, scripts_dir) = {
             let handle = self
                 .handles
-                .get(name)
+                .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
-            handle.state.lock().unwrap().clone()
-        };
-
-        // If paused, just clear the flag — the existing engine task is still running
-        if current_state == WorkflowState::Paused {
-            let handle = self.handles.get_mut(name).unwrap();
-            handle.paused.store(false, Ordering::Relaxed);
-            *handle.state.lock().unwrap() = WorkflowState::Running;
-            let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
-                name: name.to_string(),
-                state: WorkflowState::Running,
-            });
-            return Ok(());
-        }
-
-        // Check workflow exists and is dormant, extract def early
-        let (def, scripts_dir) = {
-            let handle = self.handles.get_mut(name).unwrap();
 
             {
                 let state = handle.state.lock().unwrap();
                 if *state != WorkflowState::Dormant {
                     bail!(
-                        "workflow '{}' is not dormant or paused (current state: {:?})",
+                        "workflow '{}' is not dormant (current state: {:?})",
                         name,
                         *state
                     );
                 }
             }
 
-            // Reset per-run flags.
-            handle.paused.store(false, Ordering::Relaxed);
             handle.shutdown.store(false, Ordering::Relaxed);
 
             let def = handle.def.clone();
@@ -187,7 +163,6 @@ impl WorkflowManager {
             (def, scripts_dir)
         };
 
-        // Now that we've released the mutable borrow, we can call methods on self
         let engine = Engine::new_with_scripts_dir(
             self.storage.clone(),
             self.data_dir.join("runs"),
@@ -195,13 +170,7 @@ impl WorkflowManager {
             scripts_dir,
         );
 
-        // Re-acquire mutable borrow to update handle
         let handle = self.handles.get_mut(name).unwrap();
-
-        // Share the engine's paused flag so pause()/resume() can control it.
-        let paused_flag = engine.paused_flag();
-        handle.paused = paused_flag;
-
         let shutdown = handle.shutdown.clone();
         let event_tx = self.event_tx.clone();
         let state = handle.state.clone();
@@ -228,44 +197,13 @@ impl WorkflowManager {
         Ok(())
     }
 
-    /// Pause a running looping workflow between iterations.
-    /// Returns an error for triggered workflows (pause has no defined meaning there).
-    pub fn pause(&mut self, name: &str) -> anyhow::Result<()> {
-        let handle = self
-            .handles
-            .get_mut(name)
-            .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
-
-        if matches!(handle.def.workflow_type, WorkflowType::Triggered) {
-            bail!("cannot pause triggered workflow '{}'", name);
-        }
-
-        {
-            let state = handle.state.lock().unwrap();
-            if *state != WorkflowState::Running {
-                bail!("workflow '{}' is not running", name);
-            }
-        }
-
-        handle.paused.store(true, Ordering::Relaxed);
-        *handle.state.lock().unwrap() = WorkflowState::Paused;
-        let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
-            name: name.to_string(),
-            state: WorkflowState::Paused,
-        });
-
-        Ok(())
-    }
-
-    /// Stop a running or paused workflow. Awaits the engine task before returning.
+    /// Stop a running workflow gracefully. Awaits the engine task before returning.
     pub async fn stop(&mut self, name: &str) -> anyhow::Result<()> {
         let handle = self
             .handles
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("workflow '{}' not found", name))?;
 
-        // Unpause first so the engine loop can observe the shutdown flag.
-        handle.paused.store(false, Ordering::Relaxed);
         handle.shutdown.store(true, Ordering::Relaxed);
 
         if let Some(task) = handle.task.take() {
@@ -287,7 +225,6 @@ impl WorkflowManager {
     /// No-op if the workflow is not found or has no running task.
     pub fn abort_and_stop(&mut self, name: &str) {
         let Some(handle) = self.handles.get_mut(name) else { return };
-        handle.paused.store(false, Ordering::Relaxed);
         handle.shutdown.store(true, Ordering::Relaxed);
         if let Some(task) = handle.task.take() {
             task.abort();

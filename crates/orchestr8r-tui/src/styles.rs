@@ -41,10 +41,6 @@ pub fn c_failed() -> Color {
     RED
 }
 
-pub fn c_paused() -> Color {
-    GOLD
-}
-
 pub fn c_dormant() -> Color {
     TAN
 }

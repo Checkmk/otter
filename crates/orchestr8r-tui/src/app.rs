@@ -248,10 +248,11 @@ impl App {
         }
     }
 
-    pub fn pause_selected(&mut self) {
-        if let Some(entry) = self.selected_workflow() {
-            let name = entry.name.clone();
-            let _ = self.cmd_tx.try_send(DaemonCommand::Pause { name });
+    pub fn stop_selected_run(&mut self) {
+        if let CursorTarget::Run(_, _) = self.cursor {
+            if let Some(run_id) = self.selected_run_id() {
+                let _ = self.cmd_tx.try_send(DaemonCommand::StopRun { run_id });
+            }
         }
     }
 
@@ -293,10 +294,6 @@ impl App {
 
     pub fn selected_workflow_state(&self) -> Option<WorkflowState> {
         self.selected_workflow().map(|e| e.state.clone())
-    }
-
-    pub fn selected_workflow_kind(&self) -> Option<&WorkflowType> {
-        self.selected_workflow().map(|e| &e.kind)
     }
 
     pub fn selected_logs(&self) -> &[LogEntry] {

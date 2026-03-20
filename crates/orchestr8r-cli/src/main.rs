@@ -34,8 +34,6 @@ enum Commands {
     Daemon,
     /// Start a dormant workflow
     Start { name: String },
-    /// Pause a running looping workflow between iterations
-    Pause { name: String },
     /// Stop a running workflow
     Stop { name: String },
     /// Print the status of all registered workflows
@@ -79,6 +77,8 @@ enum RunCommands {
         #[arg(long, short)]
         workflow: Option<String>,
     },
+    /// Stop a run's active processes (keeps run history)
+    Stop { run_id: String },
     /// Delete a run by ID
     Delete { run_id: String },
 }
@@ -115,9 +115,6 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Daemon) => daemon::run_daemon().await,
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
-        }
-        Some(Commands::Pause { name }) => {
-            client::send_command_print(DaemonCommand::Pause { name }).await
         }
         Some(Commands::Stop { name }) => {
             client::send_command_print(DaemonCommand::Stop { name }).await
@@ -168,11 +165,13 @@ async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
                 println!("{:<37} {:<19} {:<12} {:<20} {}", run_id, started, status, wf_name, trigger);
             }
         }
-        RunCommands::Delete { run_id } => {
-            // Parse the run ID
+        RunCommands::Stop { run_id } => {
             let run_uuid = Uuid::parse_str(&run_id)?;
-
-            // Send the DeleteRun command through the daemon socket
+            client::send_command_print(DaemonCommand::StopRun { run_id: run_uuid }).await?;
+            println!("Run {} stopped.", run_id);
+        }
+        RunCommands::Delete { run_id } => {
+            let run_uuid = Uuid::parse_str(&run_id)?;
             client::send_command_print(DaemonCommand::DeleteRun { run_id: run_uuid }).await?;
             println!("Run {} deleted.", run_id);
         }

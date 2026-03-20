@@ -137,45 +137,6 @@ async fn start_transitions_to_running_and_stop_returns_to_dormant() {
 }
 
 #[tokio::test]
-async fn pause_and_resume_lifecycle() {
-    // GIVEN
-    let (tx, _rx) = mpsc::channel(64);
-    let mut manager = make_manager(tx);
-    manager.register(looping_workflow("hello"));
-    manager.start("hello").await.unwrap();
-
-    // WHEN
-    manager.pause("hello").unwrap();
-
-    // THEN
-    assert_eq!(manager.status()[0].state, WorkflowState::Paused);
-
-    // WHEN
-    manager.start("hello").await.unwrap();
-
-    // THEN
-    assert_eq!(manager.status()[0].state, WorkflowState::Running);
-
-    // cleanup
-    manager.stop("hello").await.unwrap();
-}
-
-#[tokio::test]
-async fn pause_rejected_for_triggered_workflow() {
-    // GIVEN
-    let (tx, _rx) = mpsc::channel(64);
-    let mut manager = make_manager(tx);
-    manager.register(triggered_workflow("on-demand"));
-    manager.start("on-demand").await.unwrap();
-
-    // WHEN / THEN
-    assert!(manager.pause("on-demand").is_err());
-
-    // cleanup — wait for one-shot run to finish
-    manager.stop("on-demand").await.unwrap();
-}
-
-#[tokio::test]
 async fn start_fails_if_already_running() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
@@ -232,40 +193,6 @@ async fn status_reports_all_workflows_sorted() {
 
     manager.stop("alpha").await.unwrap();
     manager.stop("beta").await.unwrap();
-}
-
-#[tokio::test]
-async fn paused_engine_loop_actually_pauses() {
-    // GIVEN — workflow with a shell step that increments a counter
-    let (tx, _rx) = mpsc::channel(64);
-    let storage = Arc::new(InMemoryStorage::new());
-    let data_dir = std::env::temp_dir().join("orchestr8r-pause-test");
-    let mut manager = WorkflowManager::new(
-        storage.clone(),
-        data_dir,
-        tx,
-        Arc::new(NoOpNotifier),
-    );
-    manager.register(looping_workflow("counter"));
-    manager.start("counter").await.unwrap();
-
-    // Let it run for at least one iteration.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let runs_before_pause = storage.runs().len();
-
-    // WHEN — pause
-    manager.pause("counter").unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let runs_after_pause = storage.runs().len();
-
-    // THEN — no additional runs created while paused (at most 1 in-flight completes)
-    assert!(
-        runs_after_pause <= runs_before_pause + 1,
-        "engine should not advance while paused"
-    );
-
-    // cleanup
-    manager.stop("counter").await.unwrap();
 }
 
 #[tokio::test]

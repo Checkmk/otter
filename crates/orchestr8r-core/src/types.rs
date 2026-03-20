@@ -276,7 +276,6 @@ pub struct LogEntry {
 pub enum WorkflowState {
     Dormant,
     Running,
-    Paused,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,12 +320,12 @@ pub enum DaemonEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonCommand {
     Start { name: String },
-    Pause { name: String },
     Stop { name: String },
     Status,
     /// Persistent subscription: server streams DaemonEvent JSON lines until disconnect.
     Subscribe,
     CheckpointRespond { run_id: Uuid, action: CheckpointAction },
+    StopRun { run_id: Uuid },
     DeleteRun { run_id: Uuid },
     ListConsumedTriggers { workflow: String },
     DeleteConsumedTrigger { workflow: String, trigger: String },
