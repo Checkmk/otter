@@ -185,7 +185,7 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
         let mut lines: Vec<Line> = Vec::new();
         let mut progress_cursor = 0;
 
-        for entry in logs {
+        for (i, entry) in logs.iter().enumerate() {
             let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
             let text = if !entry.stdout.is_empty() {
                 &entry.stdout
@@ -211,7 +211,12 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
                 }
             }
 
-            while progress_cursor < progress.len() && progress[progress_cursor].0 <= entry.step_index {
+            // Emit progress between step groups: when the next log has a higher
+            // step_index, drain progress chunks that belong before it.
+            // This prevents run_start (step_index usize::MAX) from absorbing all progress.
+            let next_step = logs.get(i + 1).map(|e| e.step_index);
+            let boundary = next_step.unwrap_or(usize::MAX);
+            while progress_cursor < progress.len() && progress[progress_cursor].0 < boundary {
                 lines.push(render_progress_line(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
                 progress_cursor += 1;
             }
