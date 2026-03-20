@@ -165,37 +165,37 @@ impl PollingTrigger {
             anyhow::anyhow!("failed to parse poll output as JSON: {} (output was: {})", e, stdout)
         })?;
 
-        info!("polling found {} hash(es)", hashes.len());
         let seen = self.load_seen()?;
+        let total = hashes.len();
+        let unseen: Vec<String> = {
+            let in_flight = self.in_flight.lock().unwrap();
+            hashes.into_iter()
+                .filter(|h| !seen.contains(h) && !in_flight.contains(h))
+                .collect()
+        };
 
-        for hash in hashes {
-            let already_processed = seen.contains(&hash) || {
-                let in_flight = self.in_flight.lock().unwrap();
-                in_flight.contains(&hash)
+        info!("polling found {} hash(es), {} unseen", total, unseen.len());
+
+        for hash in unseen {
+            info!("new hash from polling: {}", hash);
+            self.in_flight.lock().unwrap().insert(hash.clone());
+
+            let run_id = Uuid::new_v4();
+
+            let event = TriggerEvent {
+                source: self.name.clone(),
+                payload: hash.clone(),
+                preallocated_run_id: Some(run_id),
+                pending_context: self.context_command.as_ref().map(|cmd| PendingContext {
+                    command: cmd.clone(),
+                    hash: hash.clone(),
+                }),
             };
-            if !already_processed {
-                info!("new hash from polling: {}", hash);
-                self.in_flight.lock().unwrap().insert(hash.clone());
 
-                let run_id = Uuid::new_v4();
-
-                let event = TriggerEvent {
-                    source: self.name.clone(),
-                    payload: hash.clone(),
-                    preallocated_run_id: Some(run_id),
-                    pending_context: self.context_command.as_ref().map(|cmd| PendingContext {
-                        command: cmd.clone(),
-                        hash: hash.clone(),
-                    }),
-                };
-
-                info!("sending trigger event for hash {}", hash);
-                tx.send(event)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to send trigger event: {}", e))?;
-            } else {
-                debug!("hash {} already seen, skipping", hash);
-            }
+            info!("sending trigger event for hash {}", hash);
+            tx.send(event)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to send trigger event: {}", e))?;
         }
 
         Ok(())
