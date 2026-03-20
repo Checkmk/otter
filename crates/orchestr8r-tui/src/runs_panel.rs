@@ -138,7 +138,7 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
 
     if let CursorTarget::Workflow(wi) = app.cursor {
         if let Some(entry) = app.workflows.get(wi) {
-            if entry.expanded {
+            if entry.expanded && !entry.runs.is_empty() {
                 hints.push(PanelHint::new("[Space]", "Hide runs"));
             } else if !entry.runs.is_empty() {
                 hints.push(PanelHint::new("[Space]", "Show runs"));
@@ -238,6 +238,20 @@ mod tests {
         let space = hints.iter().find(|h| h.key == "[Space]");
         assert!(space.is_some());
         assert_eq!(space.unwrap().label, "Hide runs");
+    }
+
+    #[test]
+    fn left_panel_hints_expanded_workflow_no_runs_shows_no_space_hint() {
+        // GIVEN an expanded workflow with no runs
+        let mut app = make_app();
+        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], true));
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN no [Space] hint
+        assert!(!hint_keys(&hints).contains(&"[Space]"));
     }
 
     #[test]
