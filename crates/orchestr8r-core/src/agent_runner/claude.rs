@@ -299,15 +299,12 @@ mod tests {
     async fn streaming_subprocess_emits_chunks() {
         // GIVEN a script that prints stream-json events
         let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("mock-claude.sh");
-        std::fs::write(&script, r#"#!/bin/bash
+        let script = crate::test_helpers::write_executable_script(dir.path(), "mock-claude.sh", r#"#!/bin/bash
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm","signature":"x"}]}}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"foo.rs"}}]}}'
 echo '{"type":"result","subtype":"success","result":"done"}'
 "#).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let (tx, mut rx) = mpsc::channel(32);
         let cmd = vec![script.to_string_lossy().to_string()];
