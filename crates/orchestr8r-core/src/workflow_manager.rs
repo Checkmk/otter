@@ -282,6 +282,23 @@ impl WorkflowManager {
         Ok(())
     }
 
+    /// Abort the engine task for a workflow, killing any in-progress subprocess.
+    /// Sets the workflow to Dormant immediately without waiting for the task to finish.
+    /// No-op if the workflow is not found or has no running task.
+    pub fn abort_and_stop(&mut self, name: &str) {
+        let Some(handle) = self.handles.get_mut(name) else { return };
+        handle.paused.store(false, Ordering::Relaxed);
+        handle.shutdown.store(true, Ordering::Relaxed);
+        if let Some(task) = handle.task.take() {
+            task.abort();
+        }
+        *handle.state.lock().unwrap() = WorkflowState::Dormant;
+        let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
+            name: name.to_string(),
+            state: WorkflowState::Dormant,
+        });
+    }
+
     /// Return the current status of all registered workflows, sorted by name.
     pub fn status(&self) -> Vec<WorkflowStatus> {
         let mut statuses: Vec<WorkflowStatus> = self

@@ -175,6 +175,7 @@ pub(super) async fn run_subprocess(
     let mut cmd = tokio::process::Command::new(&cmd_args[0]);
     cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -211,6 +212,7 @@ pub(super) async fn run_subprocess_streaming(
     let mut cmd = tokio::process::Command::new(&cmd_args[0]);
     cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -294,6 +296,7 @@ pub(super) async fn run_subprocess_no_stdin(
     let mut cmd = tokio::process::Command::new(&cmd_args[0]);
     cmd.args(&cmd_args[1..])
         .current_dir(working_dir)
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     cmd.prepend_scripts_dir(scripts_dir);

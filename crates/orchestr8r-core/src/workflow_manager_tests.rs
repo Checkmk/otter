@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::InMemoryStorage;
 use crate::test_helpers::write_executable_script;
-use crate::types::{StepDef, StepType, TriggerDef, WorkflowType};
+use crate::types::{StepDef, StepType, TriggerDef, WorkflowDef, WorkflowType};
 use orchestr8r_notify::NoOpNotifier;
 
 fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
@@ -561,4 +561,55 @@ fn register_with_scripts_dir_stores_scripts_dir() {
     let status = manager.status();
     assert_eq!(status.len(), 1);
     assert_eq!(status[0].name, "wf");
+}
+
+#[tokio::test]
+async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
+    // GIVEN — a looping workflow whose step runs for 60 seconds
+    let (tx, _rx) = mpsc::channel(64);
+    let storage = Arc::new(InMemoryStorage::new());
+    let data_dir = std::env::temp_dir().join("orchestr8r-abort-test");
+    let mut manager = WorkflowManager::new(
+        storage,
+        data_dir,
+        tx,
+        Arc::new(NoOpNotifier),
+    );
+    let wf = WorkflowDef {
+        name: "long-job".to_string(),
+        workflow_type: WorkflowType::Looping,
+        schema: None,
+        version: None,
+        trigger: None,
+        workspace: None,
+        resources: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec!["sleep".to_string(), "60".to_string()]),
+            message: None,
+            session: None,
+            notify: None,
+            agent: Default::default(),
+        }],
+    };
+    manager.register(wf);
+    manager.start("long-job").await.unwrap();
+
+    // Wait for the engine to reach Running state
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if manager.status()[0].state == WorkflowState::Running { break; }
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for Running");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // WHEN — abort_and_stop is called while the 60-second step is in progress
+    manager.abort_and_stop("long-job");
+
+    // THEN — immediately Dormant, did not wait 60 seconds for the step to complete
+    assert_eq!(manager.status()[0].state, WorkflowState::Dormant);
+
+    // AND — the workflow can be started again (task handle was cleared)
+    manager.start("long-job").await.unwrap();
+    manager.stop("long-job").await.unwrap();
 }

@@ -340,6 +340,19 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::DeleteRun { run_id } => {
+            // If the run is currently active, kill its engine and unblock any pending checkpoint.
+            let workflow_name = recent_runs
+                .lock()
+                .unwrap()
+                .get(&run_id)
+                .filter(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
+                .map(|r| r.workflow_name.clone());
+            if let Some(ref wf_name) = workflow_name {
+                // Drop the pending checkpoint response so the executor unblocks immediately.
+                pending_checkpoints.lock().unwrap().remove(&run_id);
+                // Abort the engine task; kill_on_drop ensures the subprocess is killed.
+                manager.lock().await.abort_and_stop(wf_name);
+            }
             // Delete from storage
             let storage_result = storage.delete_run(run_id);
             // Delete scratch directory

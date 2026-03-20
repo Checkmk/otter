@@ -30,7 +30,7 @@ impl StepExecutor for ShellExecutor {
         let display_cmd = command.join(" ");
         let command = ctx.resource_limiter.apply(command);
         let mut cmd = tokio::process::Command::new(&command[0]);
-        cmd.args(&command[1..]).current_dir(working_dir);
+        cmd.args(&command[1..]).current_dir(working_dir).kill_on_drop(true);
         cmd.prepend_scripts_dir(ctx.scripts_dir.as_deref());
         let output = cmd.output().await?;
 
