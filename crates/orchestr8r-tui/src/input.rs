@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use orchestr8r_core::types::{CheckpointAction, RunStatus, WorkflowState};
 
-use crate::app::{App, CursorTarget, Focus, Mode};
+use crate::app::{App, CursorTarget, Focus, Modal, Mode};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {
@@ -12,6 +12,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Modals capture all input while open
+    if app.modal.is_some() {
+        handle_modal(app, key);
+        return;
+    }
+
     match app.mode {
         Mode::Normal => handle_normal(app, key),
         Mode::FeedbackInput => handle_feedback(app, key),
@@ -19,9 +25,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_normal(app: &mut App, key: KeyEvent) {
-    // Quit is always available regardless of focus
+    // These are always available regardless of focus
     if key.code == KeyCode::Char('q') {
         app.should_quit = true;
+        return;
+    }
+    if key.code == KeyCode::Char('?') {
+        app.modal = Some(Modal::Help { scroll: 0 });
         return;
     }
 
@@ -90,6 +100,21 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             app.enter_right_panel();
         }
         _ => {}
+    }
+}
+
+fn handle_modal(app: &mut App, key: KeyEvent) {
+    let handled = if let Some(Modal::Help { scroll }) = &mut app.modal {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => { *scroll = scroll.saturating_sub(1); true }
+            KeyCode::Down | KeyCode::Char('j') => { *scroll += 1; true }
+            _ => false,
+        }
+    } else {
+        false
+    };
+    if !handled {
+        app.modal = None;
     }
 }
 

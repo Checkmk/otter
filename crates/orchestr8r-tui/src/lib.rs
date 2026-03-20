@@ -1,4 +1,5 @@
 mod app;
+mod help_modal;
 mod input;
 mod input_field;
 mod right_panel;

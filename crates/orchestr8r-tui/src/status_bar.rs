@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -27,39 +27,40 @@ impl PanelHint {
 pub enum StatusBarMode<'a> {
     /// Feedback text input active.
     Prompt { input: &'a str, available_width: usize, tick: u64 },
-    /// Normal navigation: global hints + panel-provided hints.
+    /// Normal navigation: [?] Help hint + panel-provided hints.
     Normal { panel_hints: Vec<PanelHint>, other_checkpoints: usize },
     /// Checkpoint active: show only checkpoint actions (continue/stop/feedback).
     Action { feedback_available: bool },
+    /// A modal overlay is open.
+    Modal { hints: Vec<PanelHint>, close: PanelHint },
 }
 
 pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
     let dim = Style::default().fg(c_dim()).bg(c_background());
     let key = Style::default().fg(c_foreground()).bg(c_background()).add_modifier(Modifier::BOLD);
 
-    let global_hints = || -> Vec<Span<'static>> {
-        vec![
-            Span::styled("[q]", key),
-            Span::styled(" Quit", dim),
-            Span::styled("  ", base_style()),
-            Span::styled("[Tab]", key),
-            Span::styled(" Switch panel", dim),
-            Span::styled("  ", base_style()),
-            Span::styled("[↑↓]", key),
-            Span::styled(" Navigate", dim),
-        ]
-    };
+    let block = panel("");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let content = match mode {
+    match mode {
         StatusBarMode::Prompt { input, available_width, tick } => {
-            InputField::render(" Feedback ", input, available_width, tick)
+            let lines = InputField::render(" Feedback ", input, available_width, tick);
+            f.render_widget(Paragraph::new(lines).style(base_style()), inner);
         }
         StatusBarMode::Normal { panel_hints, other_checkpoints } => {
-            let mut spans = global_hints();
-            for hint in panel_hints {
-                spans.push(Span::styled("  ", base_style()));
-                spans.push(Span::styled(hint.key, key));
-                spans.push(Span::styled(format!(" {}", hint.label), dim));
+            let [left_area, right_area] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(9), // "[?] Help "  (trailing space as right margin)
+            ]).areas(inner);
+
+            let mut left_spans: Vec<Span> = vec![];
+            for (i, hint) in panel_hints.iter().enumerate() {
+                if i > 0 {
+                    left_spans.push(Span::styled("  ", base_style()));
+                }
+                left_spans.push(Span::styled(hint.key, key));
+                left_spans.push(Span::styled(format!(" {}", hint.label), dim));
             }
             if other_checkpoints > 0 {
                 let msg = if other_checkpoints == 1 {
@@ -67,9 +68,41 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 } else {
                     format!("  · {} other workflows waiting", other_checkpoints)
                 };
-                spans.push(Span::styled(msg, Style::default().fg(c_notice_waiting()).bg(c_background())));
+                left_spans.push(Span::styled(msg, Style::default().fg(c_notice_waiting()).bg(c_background())));
             }
-            vec![Line::from(spans)]
+            f.render_widget(Paragraph::new(vec![Line::from(left_spans)]).style(base_style()), left_area);
+            f.render_widget(
+                Paragraph::new(vec![Line::from(vec![
+                    Span::styled("[?]", key),
+                    Span::styled(" Help", dim),
+                    Span::styled(" ", base_style()),
+                ])]).style(base_style()),
+                right_area,
+            );
+        }
+        StatusBarMode::Modal { hints, close } => {
+            let close_width = (close.key.len() + 1 + close.label.len() + 1) as u16;
+            let [left_area, right_area] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(close_width),
+            ]).areas(inner);
+
+            let mut left_spans: Vec<Span> = vec![];
+            for (i, hint) in hints.iter().enumerate() {
+                if i > 0 {
+                    left_spans.push(Span::styled("  ", base_style()));
+                }
+                left_spans.push(Span::styled(hint.key, key));
+                left_spans.push(Span::styled(format!(" {}", hint.label), dim));
+            }
+            f.render_widget(Paragraph::new(vec![Line::from(left_spans)]).style(base_style()), left_area);
+            f.render_widget(
+                Paragraph::new(vec![Line::from(vec![
+                    Span::styled(close.key, key),
+                    Span::styled(format!(" {}", close.label), dim),
+                ])]).style(base_style()),
+                right_area,
+            );
         }
         StatusBarMode::Action { feedback_available } => {
             let mut spans = vec![
@@ -88,10 +121,7 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                     Span::styled(" Feedback", Style::default().fg(c_action_feedback()).bg(c_background())),
                 ]);
             }
-            vec![Line::from(spans)]
+            f.render_widget(Paragraph::new(vec![Line::from(spans)]).style(base_style()), inner);
         }
-    };
-
-    let para = Paragraph::new(content).block(panel(""));
-    f.render_widget(para, area);
+    }
 }

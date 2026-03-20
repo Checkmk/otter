@@ -122,7 +122,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(idx));
     }
 
-    let block = if app.focus == Focus::Left {
+    let block = if app.modal.is_none() && app.focus == Focus::Left {
         panel_focused("Workflows")
     } else {
         panel("Workflows")

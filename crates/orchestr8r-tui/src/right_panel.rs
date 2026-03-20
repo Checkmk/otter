@@ -71,7 +71,7 @@ fn format_log_entry(
     result
 }
 
-fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_height: usize) -> Vec<Line> {
+pub fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_height: usize) -> Vec<Line> {
     let total = lines.len();
     if total == 0 {
         return lines;
@@ -97,11 +97,11 @@ fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_height: 
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
     match &app.right_panel_content {
         RightPanelContent::ConsumedTriggers => {
-            let is_focused = app.focus == Focus::Right;
+            let is_focused = app.modal.is_none() && app.focus == Focus::Right;
             render_consumed_triggers(f, app, area, is_focused);
         }
         RightPanelContent::Contextual => {
-            let is_focused = app.focus == Focus::Right;
+            let is_focused = app.modal.is_none() && app.focus == Focus::Right;
             match app.cursor {
                 CursorTarget::Workflow(_) => render_workflow_toml(f, app, area, is_focused),
                 CursorTarget::Run(_, _) => render_logs(f, app, area, is_focused),
@@ -286,7 +286,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
     match app.right_panel_content {
-        RightPanelContent::Contextual => vec![],
+        RightPanelContent::Contextual => vec![PanelHint::new("[↑↓]", "Scroll")],
         RightPanelContent::ConsumedTriggers => vec![
             PanelHint::new("[Del]", "Delete trigger"),
         ],

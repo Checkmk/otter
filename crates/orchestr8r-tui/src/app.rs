@@ -11,6 +11,11 @@ pub enum Mode {
     FeedbackInput,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Modal {
+    Help { scroll: usize },
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Focus {
     Left,
@@ -52,6 +57,7 @@ pub struct App {
     pub pending_checkpoints: HashMap<Uuid, PendingCheckpoint>,
     pub feedback_input: String,
     pub mode: Mode,
+    pub modal: Option<Modal>,
     pub should_quit: bool,
     pub tick: u64,
     pub cmd_tx: mpsc::Sender<DaemonCommand>,
@@ -76,6 +82,7 @@ impl App {
             pending_checkpoints: HashMap::new(),
             feedback_input: String::new(),
             mode: Mode::Normal,
+            modal: None,
             should_quit: false,
             tick: 0,
             cmd_tx,
