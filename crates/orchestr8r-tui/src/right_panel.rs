@@ -71,6 +71,29 @@ fn format_log_entry(
     result
 }
 
+fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_height: usize) -> Vec<Line> {
+    let total = lines.len();
+    if total == 0 {
+        return lines;
+    }
+
+    let above = scroll_offset;
+    let below = total.saturating_sub(scroll_offset + inner_height);
+    let dim = Style::default().fg(c_dim()).bg(c_background());
+
+    let mut visible: Vec<Line> = lines.into_iter().skip(scroll_offset).take(inner_height).collect();
+
+    if above > 0 && !visible.is_empty() {
+        visible[0] = Line::from(Span::styled(format!("  … {above} more ↑"), dim));
+    }
+    if below > 0 && !visible.is_empty() {
+        let last = visible.len() - 1;
+        visible[last] = Line::from(Span::styled(format!("  … {below} more ↓"), dim));
+    }
+
+    visible
+}
+
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
     match &app.right_panel_content {
         RightPanelContent::ConsumedTriggers => {
@@ -117,8 +140,9 @@ fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bo
     app.right_scroll = app.right_scroll.min(auto_bottom);
     let scroll_offset = if is_focused { app.right_scroll } else { 0 } as u16;
 
+    let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
     let block = if is_focused { panel_focused("Definition") } else { panel("Definition") };
-    let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
+    let para = Paragraph::new(visible).block(block);
 
     f.render_widget(para, area);
 }
@@ -211,8 +235,9 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
         auto_bottom
     } as u16;
 
+    let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
     let block = if is_focused { panel_focused("Run log") } else { panel("Run log") };
-    let para = Paragraph::new(lines).block(block).scroll((scroll_offset, 0));
+    let para = Paragraph::new(visible).block(block);
 
     f.render_widget(para, area);
 }
@@ -276,6 +301,52 @@ mod tests {
     fn make_app() -> App {
         let (tx, _rx) = mpsc::channel(32);
         App::new(tx)
+    }
+
+    #[test]
+    fn scroll_indicators_no_truncation() {
+        // GIVEN lines that fit exactly in the viewport
+        let lines: Vec<Line> = (0..3).map(|i| Line::from(format!("line {i}"))).collect();
+        // WHEN no overflow
+        let visible = with_scroll_indicators(lines, 0, 3);
+        // THEN all lines returned unmodified
+        assert_eq!(visible.len(), 3);
+        assert_eq!(visible[0].spans[0].content, "line 0");
+    }
+
+    #[test]
+    fn scroll_indicators_above_only() {
+        // GIVEN 5 lines, scrolled to show lines 2-4 (2 above)
+        let lines: Vec<Line> = (0..5).map(|i| Line::from(format!("line {i}"))).collect();
+        // WHEN 2 above, 0 below
+        let visible = with_scroll_indicators(lines, 2, 3);
+        // THEN first line replaced with "above" indicator
+        assert_eq!(visible.len(), 3);
+        assert!(visible[0].spans[0].content.contains("2 more ↑"));
+        assert_eq!(visible[2].spans[0].content, "line 4");
+    }
+
+    #[test]
+    fn scroll_indicators_below_only() {
+        // GIVEN 5 lines, showing first 3 (2 below)
+        let lines: Vec<Line> = (0..5).map(|i| Line::from(format!("line {i}"))).collect();
+        // WHEN 0 above, 2 below
+        let visible = with_scroll_indicators(lines, 0, 3);
+        // THEN last line replaced with "below" indicator
+        assert_eq!(visible.len(), 3);
+        assert_eq!(visible[0].spans[0].content, "line 0");
+        assert!(visible[2].spans[0].content.contains("2 more ↓"));
+    }
+
+    #[test]
+    fn scroll_indicators_both_sides() {
+        // GIVEN 7 lines, showing middle 3 (2 above, 2 below)
+        let lines: Vec<Line> = (0..7).map(|i| Line::from(format!("line {i}"))).collect();
+        // WHEN 2 above, 2 below
+        let visible = with_scroll_indicators(lines, 2, 3);
+        // THEN both first and last lines are indicators
+        assert!(visible[0].spans[0].content.contains("2 more ↑"));
+        assert!(visible[2].spans[0].content.contains("2 more ↓"));
     }
 
     #[test]
