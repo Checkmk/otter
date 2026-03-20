@@ -29,7 +29,7 @@ pub enum StatusBarMode<'a> {
     Prompt { input: &'a str, available_width: usize, tick: u64 },
     /// Normal navigation: global hints + panel-provided hints.
     Normal { panel_hints: Vec<PanelHint>, other_checkpoints: usize },
-    /// Checkpoint active: always show [q]/[Tab] + checkpoint actions.
+    /// Checkpoint active: show only checkpoint actions (continue/stop/feedback).
     Action { feedback_available: bool },
 }
 
@@ -72,17 +72,15 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
             vec![Line::from(spans)]
         }
         StatusBarMode::Action { feedback_available } => {
-            let mut spans = global_hints();
-            spans.extend([
-                Span::styled("  ", base_style()),
+            let mut spans = vec![
                 Span::styled(" CHECKPOINT ", Style::default().fg(c_background()).bg(c_waiting_cp()).add_modifier(Modifier::BOLD)),
-                Span::styled("  ", base_style()),
+                Span::styled(" ", base_style()),
                 Span::styled("[c]", Style::default().fg(c_action_continue()).bg(c_background()).add_modifier(Modifier::BOLD)),
                 Span::styled(" Continue", Style::default().fg(c_action_continue()).bg(c_background())),
                 Span::styled("  ", base_style()),
                 Span::styled("[s]", Style::default().fg(c_action_stop()).bg(c_background()).add_modifier(Modifier::BOLD)),
                 Span::styled(" Stop", Style::default().fg(c_action_stop()).bg(c_background())),
-            ]);
+            ];
             if feedback_available {
                 spans.extend([
                     Span::styled("  ", base_style()),
