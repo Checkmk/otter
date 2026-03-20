@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::input_field::InputField;
+use crate::scroll::scroll_spans;
 use crate::styles::{
     base_style, c_action_continue, c_action_feedback, c_action_stop, c_background, c_dim,
     c_foreground, c_notice_waiting, c_waiting_cp, panel,
@@ -28,12 +29,13 @@ pub enum StatusBarMode<'a> {
     /// Feedback text input active.
     Prompt { input: &'a str, available_width: usize, tick: u64 },
     /// Normal navigation: [?] Help hint + panel-provided hints.
-    Normal { panel_hints: Vec<PanelHint>, other_checkpoints: usize },
+    Normal { panel_hints: Vec<PanelHint>, other_checkpoints: usize, tick: u64 },
     /// Checkpoint active: show only checkpoint actions (continue/stop/feedback).
     Action { feedback_available: bool },
     /// A modal overlay is open.
-    Modal { hints: Vec<PanelHint>, close: PanelHint },
+    Modal { hints: Vec<PanelHint>, close: PanelHint, tick: u64 },
 }
+
 
 pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
     let dim = Style::default().fg(c_dim()).bg(c_background());
@@ -48,13 +50,13 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
             let lines = InputField::render(" Feedback ", input, available_width, tick);
             f.render_widget(Paragraph::new(lines).style(base_style()), inner);
         }
-        StatusBarMode::Normal { panel_hints, other_checkpoints } => {
+        StatusBarMode::Normal { panel_hints, other_checkpoints, tick } => {
             let [left_area, right_area] = Layout::horizontal([
                 Constraint::Min(0),
-                Constraint::Length(9), // "[?] Help "  (trailing space as right margin)
+                Constraint::Length(10), // " [?] Help "
             ]).areas(inner);
 
-            let mut left_spans: Vec<Span> = vec![];
+            let mut left_spans: Vec<Span<'static>> = vec![];
             for (i, hint) in panel_hints.iter().enumerate() {
                 if i > 0 {
                     left_spans.push(Span::styled("  ", base_style()));
@@ -70,9 +72,11 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 };
                 left_spans.push(Span::styled(msg, Style::default().fg(c_notice_waiting()).bg(c_background())));
             }
+            let left_spans = scroll_spans(left_spans, left_area.width as usize, tick);
             f.render_widget(Paragraph::new(vec![Line::from(left_spans)]).style(base_style()), left_area);
             f.render_widget(
                 Paragraph::new(vec![Line::from(vec![
+                    Span::styled(" ", base_style()),
                     Span::styled("[?]", key),
                     Span::styled(" Help", dim),
                     Span::styled(" ", base_style()),
@@ -80,14 +84,14 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 right_area,
             );
         }
-        StatusBarMode::Modal { hints, close } => {
+        StatusBarMode::Modal { hints, close, tick } => {
             let close_width = (close.key.len() + 1 + close.label.len() + 1) as u16;
             let [left_area, right_area] = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(close_width),
             ]).areas(inner);
 
-            let mut left_spans: Vec<Span> = vec![];
+            let mut left_spans: Vec<Span<'static>> = vec![];
             for (i, hint) in hints.iter().enumerate() {
                 if i > 0 {
                     left_spans.push(Span::styled("  ", base_style()));
@@ -95,6 +99,7 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 left_spans.push(Span::styled(hint.key, key));
                 left_spans.push(Span::styled(format!(" {}", hint.label), dim));
             }
+            let left_spans = scroll_spans(left_spans, left_area.width as usize, tick);
             f.render_widget(Paragraph::new(vec![Line::from(left_spans)]).style(base_style()), left_area);
             f.render_widget(
                 Paragraph::new(vec![Line::from(vec![

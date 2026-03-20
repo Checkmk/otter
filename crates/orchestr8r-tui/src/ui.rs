@@ -92,6 +92,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 StatusBarMode::Modal {
                     hints: vec![PanelHint::new("[↑↓]", "Scroll")],
                     close: PanelHint::new("[Any]", "Close help"),
+                    tick: app.tick,
                 }
             }
         }
@@ -109,12 +110,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Mode::Normal if app.focus == Focus::Right => StatusBarMode::Normal {
                 panel_hints: right_panel_hints(app),
                 other_checkpoints: 0,
+                tick: app.tick,
             },
             Mode::Normal => match app.active_checkpoint() {
                 Some(cp) => StatusBarMode::Action { feedback_available: cp.feedback_available },
                 None => StatusBarMode::Normal {
                     panel_hints: left_panel_hints(app),
                     other_checkpoints: app.other_checkpoint_count(),
+                    tick: app.tick,
                 },
             },
         }
