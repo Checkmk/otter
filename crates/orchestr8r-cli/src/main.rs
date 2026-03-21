@@ -7,6 +7,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use uuid::Uuid;
 
 use orchestr8r_core::types::{DaemonCommand, StorageBackend, WORKFLOW_SCHEMA_VERSION};
+use orchestr8r_secrets::{FileSecretStore, SecretStore};
 use orchestr8r_storage::SqliteStorage;
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
@@ -53,6 +54,11 @@ enum Commands {
         #[command(subcommand)]
         command: RunCommands,
     },
+    /// Manage secrets available to workflow steps
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -81,6 +87,18 @@ enum RunCommands {
     Stop { run_id: String },
     /// Delete a run by ID
     Delete { run_id: String },
+}
+
+#[derive(Subcommand)]
+enum SecretCommands {
+    /// Store a secret value (creates or overwrites)
+    Set { name: String, value: String },
+    /// Print the value of a secret
+    Get { name: String },
+    /// List all secret names
+    List,
+    /// Delete a secret
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -123,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Run { command }) => handle_runs_command(command).await,
         Some(Commands::Trigger { command }) => handle_triggers_command(command).await,
         Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
+        Some(Commands::Secret { command }) => handle_secret_command(command),
     }
 }
 
@@ -333,6 +352,40 @@ async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
         println!("Daemon reloaded.");
     }
 
+    Ok(())
+}
+
+fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
+    let store = FileSecretStore::new(dirs_config_dir().join("secrets.toml"));
+    match command {
+        SecretCommands::Set { name, value } => {
+            store.set(&name, &value)?;
+            println!("Secret '{}' saved.", name);
+        }
+        SecretCommands::Get { name } => {
+            match store.get(&name) {
+                Some(val) => println!("{}", val),
+                None => {
+                    eprintln!("Secret '{}' not found.", name);
+                    std::process::exit(1);
+                }
+            }
+        }
+        SecretCommands::List => {
+            let keys = store.list();
+            if keys.is_empty() {
+                println!("No secrets stored.");
+            } else {
+                for key in keys {
+                    println!("{}", key);
+                }
+            }
+        }
+        SecretCommands::Delete { name } => {
+            store.delete(&name)?;
+            println!("Secret '{}' deleted.", name);
+        }
+    }
     Ok(())
 }
 

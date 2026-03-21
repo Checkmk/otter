@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::resource_limiter::ResourceLimiter;
 use crate::session::AgentSessionManager;
+use orchestr8r_secrets::SecretStore;
 
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
 
@@ -130,6 +131,8 @@ pub struct StepDef {
     pub message: Option<String>,
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
+    #[serde(default)]
+    pub secrets: Option<Vec<String>>,
     #[serde(flatten)]
     pub agent: AgentConfig,
 }
@@ -247,6 +250,7 @@ pub struct StepContext {
     /// Called by step executors to emit ephemeral progress chunks for live TUI display.
     pub progress_fn: Option<Arc<dyn Fn(ProgressChunk) + Send + Sync>>,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
+    pub secret_store: Arc<dyn SecretStore>,
 }
 
 #[derive(Debug)]
@@ -456,7 +460,7 @@ mod tests {
     fn finally_step_applies_to_all_when_on_is_none() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, agent: Default::default() },
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, agent: Default::default() },
             on: None,
         };
         // WHEN / THEN
@@ -469,7 +473,7 @@ mod tests {
     fn finally_step_applies_to_matching_outcome() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, agent: Default::default() },
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, agent: Default::default() },
             on: Some(vec![RunOutcome::Failed]),
         };
         // WHEN / THEN

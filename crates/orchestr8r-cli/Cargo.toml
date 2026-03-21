@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 orchestr8r-core = { path = "../orchestr8r-core" }
 orchestr8r-notify = { path = "../orchestr8r-notify" }
+orchestr8r-secrets = { path = "../orchestr8r-secrets" }
 orchestr8r-storage = { path = "../orchestr8r-storage" }
 orchestr8r-tui = { path = "../orchestr8r-tui" }
 tokio = { workspace = true }

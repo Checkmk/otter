@@ -19,3 +19,36 @@ impl PrependScriptsDir for tokio::process::Command {
         self
     }
 }
+
+/// Safe system variables always preserved when env isolation is active.
+const SAFE_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "TERM",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
+
+/// Clear the subprocess environment and inject only the given resolved secrets
+/// plus a minimal set of safe system variables.
+///
+/// Call this before `prepend_scripts_dir` so PATH is re-extended with the scripts dir.
+pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(String, String)]) {
+    cmd.env_clear();
+    for &key in SAFE_ENV_VARS {
+        if let Some(val) = std::env::var_os(key) {
+            cmd.env(key, val);
+        }
+    }
+    for (k, v) in resolved {
+        cmd.env(k, v);
+    }
+}

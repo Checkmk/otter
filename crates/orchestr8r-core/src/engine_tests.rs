@@ -17,6 +17,7 @@ fn step_def(step_type: StepType) -> StepDef {
         message: None,
         session: None,
         notify: None,
+        secrets: None,
         agent: Default::default(),
     }
 }

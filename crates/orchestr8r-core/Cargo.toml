@@ -16,6 +16,7 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 cron = { workspace = true }
 orchestr8r-notify = { path = "../orchestr8r-notify" }
+orchestr8r-secrets = { path = "../orchestr8r-secrets" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

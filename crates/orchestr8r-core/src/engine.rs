@@ -16,6 +16,7 @@ use crate::types::{
 use crate::resource_limiter::build_limiter;
 use crate::workspace::resolve_workspace;
 use orchestr8r_notify::{NoOpNotifier, Notifier};
+use orchestr8r_secrets::{NoOpSecretStore, SecretStore};
 use tokio::sync::mpsc;
 
 pub struct Engine {
@@ -24,6 +25,7 @@ pub struct Engine {
     scratch_base: std::path::PathBuf,
     notifier: Arc<dyn Notifier>,
     scripts_dir: Option<std::path::PathBuf>,
+    secret_store: Arc<dyn SecretStore>,
 }
 
 impl Engine {
@@ -38,6 +40,7 @@ impl Engine {
             scratch_base,
             notifier,
             scripts_dir: None,
+            secret_store: Arc::new(NoOpSecretStore),
         }
     }
 
@@ -53,6 +56,24 @@ impl Engine {
             scratch_base,
             notifier,
             scripts_dir,
+            secret_store: Arc::new(NoOpSecretStore),
+        }
+    }
+
+    pub fn new_with_secret_store(
+        storage: Arc<dyn StorageBackend>,
+        scratch_base: std::path::PathBuf,
+        notifier: Arc<dyn Notifier>,
+        scripts_dir: Option<std::path::PathBuf>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Self {
+        Self {
+            executors: crate::steps::registry(),
+            storage,
+            scratch_base,
+            notifier,
+            scripts_dir,
+            secret_store,
         }
     }
 
@@ -67,6 +88,7 @@ impl Engine {
             scratch_base,
             notifier: Arc::new(NoOpNotifier),
             scripts_dir: None,
+            secret_store: Arc::new(NoOpSecretStore),
         }
     }
 
@@ -463,6 +485,7 @@ impl Engine {
                 log_fn: Some(log_fn),
                 progress_fn,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
+                secret_store: self.secret_store.clone(),
             };
 
             info!(step = i, step_type = %step_def.step_type, command = ?step_def.command, "Executing step");
@@ -601,6 +624,7 @@ impl Engine {
                 log_fn: Some(log_fn),
                 progress_fn: None,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
+                secret_store: self.secret_store.clone(),
             };
 
             info!(step = i, step_type = %step_def.step_type, "Executing finally step");

@@ -9,8 +9,9 @@
 5. [Workspace Configuration](#workspace-configuration)
 6. [Resource Limits](#resource-limits)
 7. [Triggers](#triggers)
-8. [Workflow Management](#workflow-management)
-9. [Examples](#examples)
+8. [Secrets Management](#secrets-management)
+9. [Workflow Management](#workflow-management)
+10. [Examples](#examples)
 
 ---
 
@@ -337,6 +338,62 @@ cpu_quota = "200%"  # cap the whole run to 2 CPU cores
 - Implemented via `systemd-run --scope --user -p CPUQuota=<value>` wrapping each subprocess invocation
 - The cgroup quota applies to the subprocess and all its children (e.g. `claude` → `bash` → `testing framework`)
 - If `systemd-run` is not available, a warning is logged and the workflow runs without CPU limiting
+
+---
+
+## Secrets Management
+
+Secrets allow workflow steps to receive sensitive values (API keys, tokens, passwords) without
+exposing the daemon's full environment to subprocesses. Each step declares which secrets it needs;
+only those secrets — plus a minimal safe set of system variables — are visible to the subprocess.
+
+### Global secret store
+
+Secrets are stored in `~/.config/orchestr8r/secrets.toml` under a `[secrets]` table:
+
+```toml
+[secrets]
+GITHUB_TOKEN = "ghp_abc123"
+JIRA_API_KEY = "jira_xyz"
+```
+
+Manage secrets via the CLI:
+
+```bash
+orchestr8r secret set GITHUB_TOKEN ghp_abc123   # store or overwrite
+orchestr8r secret get GITHUB_TOKEN              # print value
+orchestr8r secret list                          # list all secret names
+orchestr8r secret delete GITHUB_TOKEN           # remove
+```
+
+### Per-step secret injection
+
+Add a `secrets` field to any `shell` or `agent` step to enable env isolation for that step:
+
+```toml
+[[steps]]
+type = "shell"
+command = ["./deploy.sh"]
+secrets = ["GITHUB_TOKEN", "DEPLOY_KEY"]
+
+[[steps]]
+type = "agent"
+provider = "claude"
+message = "Write an implementation plan for JIRA issue described in trigger-context/issue.json."
+secrets = ["JIRA_API_KEY"]
+```
+
+**Behavior when `secrets` is present:**
+- The subprocess environment is **cleared** (no daemon env vars are inherited)
+- A safe set of system variables is re-injected: (i.e., `PATH`, `HOME`,
+  `USER`, `TMPDIR`, etc.).
+- Each declared secret is looked up in the store and injected as an environment variable
+- If a declared secret name is not found in the store, the step fails with a clear error
+
+**Behavior when `secrets` is absent (default):**
+- Full environment inheritance — the subprocess sees all env vars the daemon sees (existing behavior, backwards compatible)
+
+**`secrets = []`** is valid — it triggers env clearing without injecting any additional secrets (subprocess sees only the safe system vars above).
 
 ---
 

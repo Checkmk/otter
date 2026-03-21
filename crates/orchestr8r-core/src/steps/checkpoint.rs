@@ -81,7 +81,7 @@ async fn execute_via_channel(
                         });
                         tx
                     });
-                    match manager.prompt_last(&text, progress_tx).await {
+                    match manager.prompt_last(&text, progress_tx, None).await {
                         Ok(Some(agent_out)) => {
                             log_immediate(ctx, "agent", agent_out.stdout, agent_out.stderr, agent_out.exit_code);
                         }
@@ -160,6 +160,7 @@ mod tests {
             _session: &AgentSessionHandle,
             message: &str,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+            _secrets: Option<&[(String, String)]>,
         ) -> Result<AgentOutput, AgentError> {
             self.calls.lock().unwrap().push(format!("prompt:{}", message));
             Ok(AgentOutput { stdout: format!("response:{}", message), stderr: String::new(), exit_code: Some(0) })
@@ -185,6 +186,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         }
     }
 
@@ -207,6 +209,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         }
     }
 
@@ -292,6 +295,7 @@ mod tests {
                 None,
                 Arc::new(NoOpLimiter),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -339,6 +343,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 None,
                 Arc::new(NoOpLimiter),
+                None,
                 None,
             )
             .await
@@ -419,6 +424,7 @@ mod tests {
                 None,
                 Arc::new(NoOpLimiter),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -446,6 +452,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         };
 
         // WHEN
@@ -502,6 +509,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         };
 
         // WHEN
@@ -540,6 +548,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         };
 
         // WHEN

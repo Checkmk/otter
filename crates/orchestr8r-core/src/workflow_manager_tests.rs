@@ -22,6 +22,7 @@ fn shell_step() -> StepDef {
         message: None,
         session: None,
         notify: None,
+        secrets: None,
         agent: Default::default(),
     }
 }
@@ -520,6 +521,7 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
             message: None,
             session: None,
             notify: None,
+            secrets: None,
             agent: Default::default(),
         }],
         finally: vec![],

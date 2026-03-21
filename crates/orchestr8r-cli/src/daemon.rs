@@ -22,6 +22,7 @@ use orchestr8r_core::types::{
 };
 use orchestr8r_core::WorkflowManager;
 use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
+use orchestr8r_secrets::FileSecretStore;
 use orchestr8r_storage::SqliteStorage;
 
 use crate::{dirs_config_dir, dirs_data_dir, socket_path};
@@ -60,15 +61,17 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
     let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
+    let secret_store = std::sync::Arc::new(FileSecretStore::new(config_dir.join("secrets.toml")));
 
     mark_interrupted_runs_failed(storage.as_ref(), notifier.as_ref()).await;
 
     let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(256);
-    let manager = Arc::new(Mutex::new(WorkflowManager::new(
+    let manager = Arc::new(Mutex::new(WorkflowManager::new_with_secret_store(
         storage.clone(),
         data_dir.clone(),
         event_tx,
         notifier,
+        secret_store,
     )));
 
     reload_workflows(workflows, &manager, &toml_map).await;

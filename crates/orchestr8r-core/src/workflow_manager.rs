@@ -13,6 +13,7 @@ use crate::types::{
     WorkflowState, WorkflowStatus,
 };
 use orchestr8r_notify::Notifier;
+use orchestr8r_secrets::{NoOpSecretStore, SecretStore};
 
 struct WorkflowHandle {
     def: WorkflowDef,
@@ -28,6 +29,7 @@ pub struct WorkflowManager {
     storage: Arc<dyn StorageBackend>,
     data_dir: PathBuf,
     notifier: Arc<dyn Notifier>,
+    secret_store: Arc<dyn SecretStore>,
 }
 
 impl WorkflowManager {
@@ -43,6 +45,24 @@ impl WorkflowManager {
             storage,
             data_dir,
             notifier,
+            secret_store: Arc::new(NoOpSecretStore),
+        }
+    }
+
+    pub fn new_with_secret_store(
+        storage: Arc<dyn StorageBackend>,
+        data_dir: PathBuf,
+        event_tx: mpsc::Sender<EngineEvent>,
+        notifier: Arc<dyn Notifier>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Self {
+        Self {
+            handles: HashMap::new(),
+            event_tx,
+            storage,
+            data_dir,
+            notifier,
+            secret_store,
         }
     }
 
@@ -163,11 +183,12 @@ impl WorkflowManager {
             (def, scripts_dir)
         };
 
-        let engine = Engine::new_with_scripts_dir(
+        let engine = Engine::new_with_secret_store(
             self.storage.clone(),
             self.data_dir.join("runs"),
             self.notifier.clone(),
             scripts_dir,
+            self.secret_store.clone(),
         );
 
         let handle = self.handles.get_mut(name).unwrap();

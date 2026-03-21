@@ -80,6 +80,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         }
     }
 
@@ -94,6 +95,7 @@ mod tests {
             message: Some("deployment complete".to_string()),
             session: None,
             notify: None,
+            secrets: None,
             agent: Default::default(),
         };
 
@@ -117,6 +119,7 @@ mod tests {
             message: None,
             session: None,
             notify: None,
+            secrets: None,
             agent: Default::default(),
         };
 

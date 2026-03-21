@@ -54,6 +54,16 @@ impl StepExecutor for AgentExecutor {
             tx
         });
 
+        let resolved_secrets = if let Some(ref names) = step_def.secrets {
+            Some(
+                ctx.secret_store
+                    .resolve(names)
+                    .map_err(|e| StepError::ExecutionFailed(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         let output = manager
             .run_step(
                 step_def.session.as_deref(),
@@ -64,6 +74,7 @@ impl StepExecutor for AgentExecutor {
                 progress_tx,
                 ctx.resource_limiter.clone(),
                 ctx.scripts_dir.as_deref(),
+                resolved_secrets.as_deref(),
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -112,6 +123,7 @@ mod tests {
             _session: &AgentSessionHandle,
             _message: &str,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+            _secrets: Option<&[(String, String)]>,
         ) -> Result<AgentOutput, AgentError> {
             Ok(AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) })
         }
@@ -140,6 +152,7 @@ mod tests {
             log_fn: None,
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         };
         let step_def = StepDef {
             step_type: StepType::Agent,
@@ -147,6 +160,7 @@ mod tests {
             message: Some("do work".into()),
             session: None,
             notify: None,
+            secrets: None,
             agent: crate::types::AgentConfig { provider: Some("claude".into()), ..Default::default() },
         };
 

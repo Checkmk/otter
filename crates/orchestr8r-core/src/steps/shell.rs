@@ -1,5 +1,5 @@
 use super::StepExecutor;
-use crate::process::PrependScriptsDir;
+use crate::process::{inject_isolated_env, PrependScriptsDir};
 use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 
@@ -31,6 +31,15 @@ impl StepExecutor for ShellExecutor {
         let command = ctx.resource_limiter.apply(command);
         let mut cmd = tokio::process::Command::new(&command[0]);
         cmd.args(&command[1..]).current_dir(working_dir).kill_on_drop(true);
+
+        if let Some(ref names) = step_def.secrets {
+            let resolved = ctx
+                .secret_store
+                .resolve(names)
+                .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+            inject_isolated_env(&mut cmd, &resolved);
+        }
+
         cmd.prepend_scripts_dir(ctx.scripts_dir.as_deref());
         let output = cmd.output().await?;
 
@@ -80,6 +89,7 @@ mod tests {
             log_fn: None,
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
+            secret_store: Arc::new(orchestr8r_secrets::NoOpSecretStore),
         }
     }
 
@@ -90,6 +100,7 @@ mod tests {
             message: None,
             session: None,
             notify: None,
+            secrets: None,
             agent: Default::default(),
         }
     }
@@ -148,5 +159,55 @@ mod tests {
         // THEN
         let msg = err.to_string();
         assert!(msg.contains("partial output"), "error should contain stdout: {msg}");
+    }
+
+    #[tokio::test]
+    async fn secrets_field_isolates_env_and_injects_declared_secret() {
+        use orchestr8r_secrets::{FileSecretStore, SecretStore as _};
+
+        // GIVEN a store with one secret and a daemon env var that should not leak
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSecretStore::new(dir.path().join("secrets.toml"));
+        store.set("MY_SECRET", "hunter2").unwrap();
+
+        let scratch = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(scratch.path());
+        ctx.secret_store = Arc::new(store);
+
+        // A canary env var set only in the daemon process
+        std::env::set_var("ORCHESTR8R_CANARY", "should_not_leak");
+
+        let step_def = StepDef {
+            secrets: Some(vec!["MY_SECRET".into()]),
+            ..step(vec!["bash", "-c", "echo secret=$MY_SECRET canary=${ORCHESTR8R_CANARY:-absent}"])
+        };
+
+        // WHEN
+        let out = ShellExecutor.execute(&step_def, &ctx).await.unwrap();
+
+        // THEN: declared secret is present, canary is absent
+        assert!(out.stdout.contains("secret=hunter2"), "secret not injected: {}", out.stdout);
+        assert!(out.stdout.contains("canary=absent"), "daemon env leaked: {}", out.stdout);
+    }
+
+    #[tokio::test]
+    async fn secrets_field_fails_step_when_secret_not_in_store() {
+        // GIVEN an empty store and a step that declares a missing secret
+        let dir = tempfile::tempdir().unwrap();
+        let store = orchestr8r_secrets::FileSecretStore::new(dir.path().join("secrets.toml"));
+        let scratch = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(scratch.path());
+        ctx.secret_store = Arc::new(store);
+
+        let step_def = StepDef {
+            secrets: Some(vec!["MISSING_KEY".into()]),
+            ..step(vec!["echo", "hello"])
+        };
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx).await.unwrap_err();
+
+        // THEN
+        assert!(err.to_string().contains("MISSING_KEY"), "error should name the missing key: {err}");
     }
 }
