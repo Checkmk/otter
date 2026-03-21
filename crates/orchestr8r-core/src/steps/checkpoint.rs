@@ -81,7 +81,7 @@ async fn execute_via_channel(
                         });
                         tx
                     });
-                    match manager.prompt_last(&text, progress_tx, None).await {
+                    match manager.prompt_last(&text, progress_tx, &[]).await {
                         Ok(Some(agent_out)) => {
                             log_immediate(ctx, "agent", agent_out.stdout, agent_out.stderr, agent_out.exit_code);
                         }
@@ -160,7 +160,7 @@ mod tests {
             _session: &AgentSessionHandle,
             message: &str,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-            _secrets: Option<&[(String, String)]>,
+            _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
             self.calls.lock().unwrap().push(format!("prompt:{}", message));
             Ok(AgentOutput { stdout: format!("response:{}", message), stderr: String::new(), exit_code: Some(0) })
@@ -295,7 +295,7 @@ mod tests {
                 None,
                 Arc::new(NoOpLimiter),
                 None,
-                None,
+                &[],
             )
             .await
             .unwrap();
@@ -344,7 +344,7 @@ mod tests {
                 None,
                 Arc::new(NoOpLimiter),
                 None,
-                None,
+                &[],
             )
             .await
             .unwrap();
@@ -424,7 +424,7 @@ mod tests {
                 None,
                 Arc::new(NoOpLimiter),
                 None,
-                None,
+                &[],
             )
             .await
             .unwrap();

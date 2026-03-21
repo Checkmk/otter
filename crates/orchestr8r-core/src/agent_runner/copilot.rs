@@ -53,7 +53,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(spec.message.clone());
         let cmd_args = spec.resource_limiter.apply(&cmd_args);
 
-        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir, spec.scripts_dir.as_deref(), spec.secrets.as_deref()).await?;
+        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir, spec.scripts_dir.as_deref(), &spec.secrets).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -69,7 +69,7 @@ impl AgentRunner for CopilotRunner {
         session: &AgentSessionHandle,
         message: &str,
         _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-        secrets: Option<&[(String, String)]>,
+        secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let mut cmd_args = vec!["copilot".to_string()];
         cmd_args.extend(self.base_args.clone());

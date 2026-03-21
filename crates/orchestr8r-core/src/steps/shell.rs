@@ -32,13 +32,11 @@ impl StepExecutor for ShellExecutor {
         let mut cmd = tokio::process::Command::new(&command[0]);
         cmd.args(&command[1..]).current_dir(working_dir).kill_on_drop(true);
 
-        if let Some(ref names) = step_def.secrets {
-            let resolved = ctx
-                .secret_store
-                .resolve(names)
-                .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
-            inject_isolated_env(&mut cmd, &resolved);
-        }
+        let resolved = ctx
+            .secret_store
+            .resolve(step_def.secrets.as_deref().unwrap_or_default())
+            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+        inject_isolated_env(&mut cmd, &resolved);
 
         cmd.prepend_scripts_dir(ctx.scripts_dir.as_deref());
         let output = cmd.output().await?;
@@ -205,6 +203,22 @@ mod tests {
         // THEN: declared secret is present, canary is absent
         assert!(out.stdout.contains("secret=hunter2"), "secret not injected: {}", out.stdout);
         assert!(out.stdout.contains("canary=absent"), "daemon env leaked: {}", out.stdout);
+    }
+
+    #[tokio::test]
+    async fn no_secrets_field_still_isolates_env() {
+        // GIVEN no secrets field (None) and a daemon env var that should not leak
+        let scratch = tempfile::tempdir().unwrap();
+        std::env::set_var("ORCHESTR8R_CANARY_NO_SECRETS", "should_not_leak");
+
+        let step_def = step(vec!["bash", "-c", "echo canary=${ORCHESTR8R_CANARY_NO_SECRETS:-absent}"]);
+        // secrets: None (the default from step())
+
+        // WHEN
+        let out = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap();
+
+        // THEN: daemon env var is not visible
+        assert!(out.stdout.contains("canary=absent"), "daemon env leaked without secrets field: {}", out.stdout);
     }
 
     #[tokio::test]

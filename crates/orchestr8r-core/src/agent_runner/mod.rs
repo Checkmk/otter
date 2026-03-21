@@ -19,8 +19,8 @@ pub struct AgentSpec {
     pub working_dir: PathBuf,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
     pub scripts_dir: Option<PathBuf>,
-    /// Resolved `(name, value)` pairs to inject in an isolated env. `None` = inherit.
-    pub secrets: Option<Vec<(String, String)>>,
+    /// Resolved `(name, value)` pairs to inject to isolated env.
+    pub secrets: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -60,7 +60,7 @@ pub trait AgentRunner: Send + Sync {
         session: &AgentSessionHandle,
         message: &str,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-        secrets: Option<&[(String, String)]>,
+        secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError>;
     async fn stop(&self, session: &AgentSessionHandle) -> Result<(), AgentError>;
 }
@@ -92,7 +92,7 @@ impl AgentRunner for CustomRunner {
         };
 
         let cmd = spec.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), spec.secrets.as_deref()).await?;
+        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), &spec.secrets).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -108,7 +108,7 @@ impl AgentRunner for CustomRunner {
         session: &AgentSessionHandle,
         message: &str,
         _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-        secrets: Option<&[(String, String)]>,
+        secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let cmd = session.resource_limiter.apply(&self.command);
         let output = run_subprocess(&cmd, &session.working_dir, message, session.scripts_dir.as_deref(), secrets).await?;
@@ -171,7 +171,7 @@ pub(super) async fn run_subprocess(
     working_dir: &std::path::Path,
     message: &str,
     scripts_dir: Option<&std::path::Path>,
-    secrets: Option<&[(String, String)]>,
+    secrets: &[(String, String)],
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
@@ -184,9 +184,7 @@ pub(super) async fn run_subprocess(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if let Some(s) = secrets {
-        inject_isolated_env(&mut cmd, s);
-    }
+    inject_isolated_env(&mut cmd, secrets);
     cmd.prepend_scripts_dir(scripts_dir);
     let mut child = cmd.spawn()?;
 
@@ -210,7 +208,7 @@ pub(super) async fn run_subprocess_streaming(
     message: &str,
     progress_tx: &mpsc::Sender<ProgressChunk>,
     scripts_dir: Option<&std::path::Path>,
-    secrets: Option<&[(String, String)]>,
+    secrets: &[(String, String)],
 ) -> Result<AgentOutput, AgentError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -225,9 +223,7 @@ pub(super) async fn run_subprocess_streaming(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if let Some(s) = secrets {
-        inject_isolated_env(&mut cmd, s);
-    }
+    inject_isolated_env(&mut cmd, secrets);
     cmd.prepend_scripts_dir(scripts_dir);
     let mut child = cmd.spawn()?;
 
@@ -300,7 +296,7 @@ pub(super) async fn run_subprocess_no_stdin(
     cmd_args: &[String],
     working_dir: &std::path::Path,
     scripts_dir: Option<&std::path::Path>,
-    secrets: Option<&[(String, String)]>,
+    secrets: &[(String, String)],
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
@@ -312,9 +308,7 @@ pub(super) async fn run_subprocess_no_stdin(
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if let Some(s) = secrets {
-        inject_isolated_env(&mut cmd, s);
-    }
+    inject_isolated_env(&mut cmd, secrets);
     cmd.prepend_scripts_dir(scripts_dir);
     let output = cmd.output().await?;
 

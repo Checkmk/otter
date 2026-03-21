@@ -60,7 +60,7 @@ impl AgentSessionManager {
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         resource_limiter: Arc<dyn ResourceLimiter>,
         scripts_dir: Option<&Path>,
-        secrets: Option<&[(String, String)]>,
+        secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let session_key = session_name
             .map(str::to_string)
@@ -83,7 +83,7 @@ impl AgentSessionManager {
                 working_dir: working_dir.to_path_buf(),
                 resource_limiter,
                 scripts_dir: scripts_dir.map(|p| p.to_path_buf()),
-                secrets: secrets.map(|s| s.to_vec()),
+                secrets: secrets.to_vec(),
             };
 
             let (handle, output) = runner.start(spec, progress_tx).await?;
@@ -129,7 +129,7 @@ impl AgentSessionManager {
         &self,
         message: &str,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-        secrets: Option<&[(String, String)]>,
+        secrets: &[(String, String)],
     ) -> Result<Option<AgentOutput>, AgentError> {
         let key = self.last_key.lock().unwrap().clone();
         let entry = key.and_then(|k| {
@@ -205,7 +205,7 @@ mod tests {
             _session: &AgentSessionHandle,
             message: &str,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-            _secrets: Option<&[(String, String)]>,
+            _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
             self.calls.lock().unwrap().push(format!("prompt:{}", message));
             Ok(AgentOutput { stdout: format!("resp:{}", message), stderr: String::new(), exit_code: Some(0) })
@@ -237,8 +237,8 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("planner"), &claude(), None, "first", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
-        manager.run_step(Some("planner"), &AgentConfig::default(), None, "second", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
+        manager.run_step(Some("planner"), &claude(), None, "first", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
+        manager.run_step(Some("planner"), &AgentConfig::default(), None, "second", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
 
         // THEN — start once, prompt once
         let calls = runner.calls();
@@ -254,7 +254,7 @@ mod tests {
         let manager = manager_with_mock(runner.clone());
 
         // WHEN
-        let result = manager.prompt_last("hello", None, None).await.unwrap();
+        let result = manager.prompt_last("hello", None, &[]).await.unwrap();
 
         // THEN
         assert!(result.is_none());
@@ -270,7 +270,7 @@ mod tests {
 
         // WHEN / THEN
         assert!(!manager.has_active_session());
-        manager.run_step(Some("s"), &claude(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
+        manager.run_step(Some("s"), &claude(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
         assert!(manager.has_active_session());
     }
 
@@ -281,7 +281,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN / THEN — neither provided
-        let err = manager.run_step(None, &AgentConfig::default(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap_err();
+        let err = manager.run_step(None, &AgentConfig::default(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap_err();
         assert!(err.to_string().contains("provider or command"));
     }
 
@@ -294,7 +294,7 @@ mod tests {
 
         // WHEN / THEN
         let err = manager
-            .run_step(None, &claude(), Some(&cmd), "hi", &dir, None, Arc::new(NoOpLimiter), None, None)
+            .run_step(None, &claude(), Some(&cmd), "hi", &dir, None, Arc::new(NoOpLimiter), None, &[])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not both"));
@@ -308,8 +308,8 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(None, &claude(), None, "task one", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
-        manager.run_step(None, &claude(), None, "task two", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
+        manager.run_step(None, &claude(), None, "task one", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
+        manager.run_step(None, &claude(), None, "task two", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
 
         // THEN — two separate start calls (each anonymous session is independent)
         let calls = runner.calls();
@@ -325,7 +325,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("worker"), &claude(), None, "do work", &dir, None, Arc::new(NoOpLimiter), None, None).await.unwrap();
+        manager.run_step(Some("worker"), &claude(), None, "do work", &dir, None, Arc::new(NoOpLimiter), None, &[]).await.unwrap();
         manager.cleanup().await;
 
         // THEN

@@ -388,17 +388,16 @@ message = "Write an implementation plan for JIRA issue described in trigger-cont
 secrets = ["JIRA_API_KEY"]
 ```
 
-**Behavior when `secrets` is present:**
+**Behavior:**
 - The subprocess environment is **cleared** (no daemon env vars are inherited)
 - A safe set of system variables is re-injected: (i.e., `PATH`, `HOME`,
   `USER`, `TMPDIR`, etc.).
 - Each declared secret is looked up in the store and injected as an environment variable
 - If a declared secret name is not found in the store, the step fails with a clear error
 
-**Behavior when `secrets` is absent (default):**
-- Full environment inheritance — the subprocess sees all env vars the daemon sees (existing behavior, backwards compatible)
-
-**`secrets = []`** is valid — it triggers env clearing without injecting any additional secrets (subprocess sees only the safe system vars above).
+Omitting `secrets` and setting `secrets = []` are equivalent — the
+subprocess sees only the safe system vars, with no additional env
+vars injected.
 
 ---
 

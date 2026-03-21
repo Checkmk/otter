@@ -54,15 +54,10 @@ impl StepExecutor for AgentExecutor {
             tx
         });
 
-        let resolved_secrets = if let Some(ref names) = step_def.secrets {
-            Some(
-                ctx.secret_store
-                    .resolve(names)
-                    .map_err(|e| StepError::ExecutionFailed(e.to_string()))?,
-            )
-        } else {
-            None
-        };
+        let resolved_secrets = ctx
+            .secret_store
+            .resolve(step_def.secrets.as_deref().unwrap_or_default())
+            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
 
         let output = manager
             .run_step(
@@ -74,7 +69,7 @@ impl StepExecutor for AgentExecutor {
                 progress_tx,
                 ctx.resource_limiter.clone(),
                 ctx.scripts_dir.as_deref(),
-                resolved_secrets.as_deref(),
+                &resolved_secrets,
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -123,7 +118,7 @@ mod tests {
             _session: &AgentSessionHandle,
             _message: &str,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-            _secrets: Option<&[(String, String)]>,
+            _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
             Ok(AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) })
         }
