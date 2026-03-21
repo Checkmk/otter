@@ -81,7 +81,7 @@ async fn execute_via_channel(
                         });
                         tx
                     });
-                    match manager.prompt_last(&text, progress_tx, &[]).await {
+                    match manager.prompt_last(&text, progress_tx).await {
                         Ok(Some(agent_out)) => {
                             log_immediate(ctx, "agent", agent_out.stdout, agent_out.stderr, agent_out.exit_code);
                         }

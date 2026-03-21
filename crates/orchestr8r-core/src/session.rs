@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 struct SessionEntry {
     handle: AgentSessionHandle,
     runner: Arc<dyn AgentRunner>,
+    secrets: Vec<(String, String)>,
 }
 
 pub struct AgentSessionManager {
@@ -74,7 +75,11 @@ impl AgentSessionManager {
         };
 
         let output = if let Some((handle, runner)) = existing {
-            runner.prompt(&handle, message, progress_tx, secrets).await?
+            let output = runner.prompt(&handle, message, progress_tx, secrets).await?;
+            if let Some(entry) = self.sessions.lock().unwrap().get_mut(&session_key) {
+                entry.secrets = secrets.to_vec();
+            }
+            output
         } else {
             let runner = self.resolve_runner(config, command)?;
 
@@ -90,7 +95,7 @@ impl AgentSessionManager {
             self.sessions
                 .lock()
                 .unwrap()
-                .insert(session_key.clone(), SessionEntry { handle, runner });
+                .insert(session_key.clone(), SessionEntry { handle, runner, secrets: secrets.to_vec() });
             output
         };
 
@@ -129,18 +134,17 @@ impl AgentSessionManager {
         &self,
         message: &str,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
-        secrets: &[(String, String)],
     ) -> Result<Option<AgentOutput>, AgentError> {
         let key = self.last_key.lock().unwrap().clone();
         let entry = key.and_then(|k| {
             let sessions = self.sessions.lock().unwrap();
             sessions
                 .get(&k)
-                .map(|e| (e.handle.clone(), e.runner.clone()))
+                .map(|e| (e.handle.clone(), e.runner.clone(), e.secrets.clone()))
         });
         match entry {
             None => Ok(None),
-            Some((handle, runner)) => Ok(Some(runner.prompt(&handle, message, progress_tx, secrets).await?)),
+            Some((handle, runner, secrets)) => Ok(Some(runner.prompt(&handle, message, progress_tx, &secrets).await?)),
         }
     }
 
@@ -254,7 +258,7 @@ mod tests {
         let manager = manager_with_mock(runner.clone());
 
         // WHEN
-        let result = manager.prompt_last("hello", None, &[]).await.unwrap();
+        let result = manager.prompt_last("hello", None).await.unwrap();
 
         // THEN
         assert!(result.is_none());
