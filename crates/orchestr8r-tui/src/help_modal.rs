@@ -16,15 +16,16 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
 
     let row = |k: &'static str, l: &'static str| -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!("  {:<12}", k), key),
+            Span::styled(format!("  {:<11} ", k), key),
             Span::styled(format!(" {}", l), label),
         ])
     };
 
-    let section = |title: &'static str| -> Line<'static> {
+    let section = |title: &'static str, suffix: &'static str| -> Line<'static> {
         Line::from(vec![
             Span::raw("  "),
             Span::styled(title, heading.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            Span::raw(suffix),
         ])
     };
 
@@ -34,13 +35,17 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
 
     let lines: Vec<Line> = vec![
         Line::from(""),
-        section("Navigation"),
+        section("Navigation", ""),
         Line::from(""),
         row("[q]", "Quit"),
         row("[↑↓] / [jk]", "Move cursor / scroll"),
         row("[Tab]", "Switch panel focus"),
         Line::from(""),
-        section("Trigger"),
+        section("Managing workflows", " (CLI)"),
+        Line::from(""),
+        row("orchest8r workflow help", "See available commands"),
+        Line::from(""),
+        section("Trigger", ""),
         Line::from(""),
         note("Polling triggers run a command that returns a list of hashes."),
         note("Each new hash fires one run. Already-seen hashes are \"consumed\""),
