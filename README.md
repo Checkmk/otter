@@ -28,14 +28,17 @@ cargo build --release
 # Install workflow
 orchestr8r workflow install examples/hello-world.toml
 
-# Start the daemon
-orchestr8r daemon
+# Start background service
+orchestr8r service start
 
 # Open the TUI
 orchestr8r
 
 # or start workflow via CLI:
 orchestr8r start hello-world
+
+# Stop background service
+orchestr8r service stop
 ```
 
 ## Common Commands
@@ -43,8 +46,9 @@ orchestr8r start hello-world
 ```bash
 orchestr8r                         # open the TUI dashboard
 orchestr8r help                    # show all commands
-orchestr8r daemon                  # start the background daemon
-orchestr8r status                  # list all workflows and their state
+orchestr8r status                  # list service and workflow state
+orchestr8r service start           # start background service for this session
+orchestr8r service stop            # stop background service
 orchestr8r workflow install <path> # install a workflow (.toml or package dir)
 orchestr8r start <name>            # start or resume a workflow
 orchestr8r stop <name>             # stop a running workflow

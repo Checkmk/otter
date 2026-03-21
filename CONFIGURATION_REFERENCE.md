@@ -11,7 +11,8 @@
 7. [Triggers](#triggers)
 8. [Secrets Management](#secrets-management)
 9. [Workflow Management](#workflow-management)
-10. [Examples](#examples)
+10. [Service Management](#service-management)
+11. [Examples](#examples)
 
 ---
 
@@ -52,7 +53,7 @@ message = "Review output?"
 
 ### `looping`
 
-Loops continuously while the daemon runs. After each iteration completes, the workflow restarts from the first step. Typically ends with a checkpoint to allow user control.
+Loops continuously while the service runs. After each iteration completes, the workflow restarts from the first step. Typically ends with a checkpoint to allow user control.
 
 ```toml
 name = "continuous-task"
@@ -120,7 +121,7 @@ command = ["bash", "-c", "echo 'Hello' && exit 0"]
 - Runs the command in a shell
 - Captures stdout/stderr and logs them
 - Non-zero exit code causes the workflow to fail and stop
-- All environment variables are inherited from the daemon process
+- All environment variables are inherited from the service process
 
 ---
 
@@ -220,7 +221,7 @@ message = "Build completed successfully!"
 ```
 
 **Behavior:**
-- Sends a desktop notification via the system notification daemon
+- Sends a desktop notification via the system notification service
 - Does not pause the workflow
 - If no `message` is provided, a generic "Workflow step completed" notification is sent
 - Notification sending is fire-and-forget; failures do not stop the workflow
@@ -280,7 +281,7 @@ path = "/home/user/my-project"
 
 **Behavior:**
 - Path is canonicalized at run time; an error is raised if it does not exist or is not a directory
-- Relative paths are resolved relative to the daemon's working directory
+- Relative paths are resolved relative to the service's working directory
 
 ### `script`
 
@@ -344,7 +345,7 @@ cpu_quota = "200%"  # cap the whole run to 2 CPU cores
 ## Secrets Management
 
 Secrets allow workflow steps to receive sensitive values (API keys, tokens, passwords) without
-exposing the daemon's full environment to subprocesses. Each step declares which secrets it needs;
+exposing the service's full environment to subprocesses. Each step declares which secrets it needs;
 only those secrets — plus a minimal safe set of system variables — are visible to the subprocess.
 
 ### Global secret store
@@ -389,7 +390,7 @@ secrets = ["JIRA_API_KEY"]
 ```
 
 **Behavior:**
-- The subprocess environment is **cleared** (no daemon env vars are inherited)
+- The subprocess environment is **cleared** (no service env vars are inherited)
 - A safe set of system variables is re-injected: (i.e., `PATH`, `HOME`,
   `USER`, `TMPDIR`, etc.).
 - Each declared secret is looked up in the store and injected as an environment variable
@@ -478,7 +479,7 @@ message = "Implement the JIRA issue described in trigger-context/issue.json."
 **Seen-hash persistence:**
 - Hashes returned by `poll_command` are stored at `<data-dir>/triggers/<workflow-name>-seen.json` as a sorted JSON array
 - Hashes are marked as seen immediately after polling; if the `context_command` fails, the hash is still considered seen (logged as a warning, not re-polled)
-- The seen-hash file survives daemon restarts
+- The seen-hash file survives service restarts
 
 **Behavior:**
 - Runs `poll_command` on the configured interval
@@ -544,11 +545,26 @@ version = "1.2.0"     # optional; human-readable package version
 orchestr8r workflow install ./my-workflow.toml
 
 # Install a package directory — copies to ~/.config/orchestr8r/workflows/<name>/
-# Both signal the daemon to reload without restart
+# Both signal the service to reload without restart
 orchestr8r workflow install ./my-workflow/
 
-# Remove — deletes the installed file or directory and reloads the daemon
+# Remove — deletes the installed file or directory and reloads the service
 orchestr8r workflow remove my-workflow
+```
+
+---
+
+## Service Management
+
+The orchestr8r service must be running before the TUI or CLI commands can connect to it.
+For boot-time persistence (start on login), enable the platform service:
+
+```bash
+orchestr8r status            # show (service) status
+orchestr8r service start     # start the service for this session only
+orchestr8r service stop      # stop the running service
+orchestr8r service enable    # start service and register start-on-boot
+orchestr8r service disable   # disable automatic startup and stop the service
 ```
 
 ---

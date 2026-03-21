@@ -15,9 +15,9 @@ pub async fn run_ui() -> anyhow::Result<()> {
     let stream = match connect_to_daemon().await {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("The orchestr8r daemon is not running.\n");
-            eprintln!("Start it first (e.g. in a separate terminal):\n");
-            eprintln!("    orchestr8r daemon\n");
+            eprintln!("The orchestr8r service is not running.\n");
+            eprintln!("Start it first:\n");
+            eprintln!("    orchestr8r service start\n");
             eprintln!("Then run `orchestr8r` again to open the dashboard.");
             std::process::exit(1);
         }
@@ -95,15 +95,22 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn print_status() -> anyhow::Result<()> {
-    let resp = send_command_once(DaemonCommand::Status).await?;
-    match resp {
-        DaemonResponse::StatusResponse { workflows } => print_workflows(&workflows),
-        DaemonResponse::Error { message } => {
+pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
+    match send_command_once(DaemonCommand::Status).await {
+        Ok(DaemonResponse::StatusResponse { workflows }) => {
+            let mode = if service_enabled { "systemd (auto-start)" } else { "session only" };
+            println!("Service: running ({mode})\n");
+            print_workflows(&workflows);
+        }
+        Ok(DaemonResponse::Error { message }) => {
             eprintln!("Error: {message}");
             std::process::exit(1);
         }
-        _ => {}
+        Ok(_) => {}
+        Err(_) => {
+            println!("Service: stopped");
+            println!("Run `orchestr8r service start` to start the service.");
+        }
     }
     Ok(())
 }
@@ -131,7 +138,7 @@ pub async fn send_command_once(cmd: DaemonCommand) -> anyhow::Result<DaemonRespo
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     if line.is_empty() {
-        anyhow::bail!("daemon closed connection without a response");
+        anyhow::bail!("service closed connection without a response");
     }
     Ok(serde_json::from_str(line.trim())?)
 }
@@ -141,7 +148,7 @@ async fn connect_to_daemon() -> anyhow::Result<tokio::net::UnixStream> {
     let path = socket_path();
     tokio::net::UnixStream::connect(&path)
         .await
-        .with_context(|| format!("could not connect to daemon socket at {path:?}"))
+        .with_context(|| format!("could not connect to service socket at {path:?}"))
 }
 
 #[cfg(target_os = "windows")]
@@ -149,5 +156,5 @@ async fn connect_to_daemon() -> anyhow::Result<tokio::net::windows::named_pipe::
     let path = socket_path();
     tokio::net::windows::named_pipe::ClientOptions::new()
         .open(&path)
-        .with_context(|| format!("could not connect to daemon pipe at {path:?}"))
+        .with_context(|| format!("could not connect to service pipe at {path:?}"))
 }

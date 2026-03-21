@@ -1,5 +1,6 @@
 mod client;
 mod daemon;
+mod service;
 
 use std::path::PathBuf;
 
@@ -31,8 +32,6 @@ struct Cli {
 enum Commands {
     /// Open the TUI dashboard (default when no subcommand is given)
     Ui,
-    /// Launch the headless background daemon
-    Daemon,
     /// Start a dormant workflow
     Start { name: String },
     /// Stop a running workflow
@@ -59,6 +58,27 @@ enum Commands {
         #[command(subcommand)]
         command: SecretCommands,
     },
+    /// Manage the orchestr8r background service
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
+    },
+    /// Run the daemon process (used internally by the service unit)
+    #[command(hide = true, name = "_daemon")]
+    #[allow(non_camel_case_types)]
+    _Daemon,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommands {
+    /// Install and enable automatic startup via systemd socket activation
+    Enable,
+    /// Disable automatic startup and stop the service
+    Disable,
+    /// Start the daemon for this session (without enabling on boot)
+    Start,
+    /// Stop the running daemon
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -130,18 +150,22 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None | Some(Commands::Ui) => client::run_ui().await,
-        Some(Commands::Daemon) => daemon::run_daemon().await,
+        Some(Commands::_Daemon) => daemon::run_daemon().await,
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
         }
         Some(Commands::Stop { name }) => {
             client::send_command_print(DaemonCommand::Stop { name }).await
         }
-        Some(Commands::Status) => client::print_status().await,
+        Some(Commands::Status) => {
+            let enabled = service::platform_service_manager().is_enabled();
+            client::print_status(enabled).await
+        }
         Some(Commands::Run { command }) => handle_runs_command(command).await,
         Some(Commands::Trigger { command }) => handle_triggers_command(command).await,
         Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
         Some(Commands::Secret { command }) => handle_secret_command(command),
+        Some(Commands::Service { command }) => handle_service_command(command),
     }
 }
 
@@ -218,7 +242,7 @@ async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()
                     eprintln!("Error: {}", message);
                     std::process::exit(1);
                 }
-                _ => eprintln!("Unexpected response from daemon"),
+                _ => eprintln!("Unexpected response from service"),
             }
         }
         TriggersCommands::DeleteConsumed { workflow, trigger } => {
@@ -389,6 +413,16 @@ fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn handle_service_command(command: ServiceCommands) -> anyhow::Result<()> {
+    let mgr = service::platform_service_manager();
+    match command {
+        ServiceCommands::Enable => mgr.enable(),
+        ServiceCommands::Disable => mgr.disable(),
+        ServiceCommands::Start => mgr.start(),
+        ServiceCommands::Stop => mgr.stop(),
+    }
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
