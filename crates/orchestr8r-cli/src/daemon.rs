@@ -22,7 +22,7 @@ use orchestr8r_core::types::{
 };
 use orchestr8r_core::WorkflowManager;
 use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
-use orchestr8r_secrets::FileSecretStore;
+use orchestr8r_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use orchestr8r_storage::SqliteStorage;
 
 use crate::{dirs_config_dir, dirs_data_dir, socket_path};
@@ -32,6 +32,18 @@ struct PendingEntry {
     step_index: usize,
     message: String,
     feedback_available: bool,
+}
+
+/// Returns a key provider for daemon use.
+/// Uses the OS keyring. If unavailable, the daemon starts anyway but steps
+/// that declare `secrets` will fail with SecretError::Locked at resolve time.
+/// Passphrase unlock via the TUI is deferred to a future implementation.
+fn build_daemon_key_provider() -> std::sync::Arc<dyn KeyProvider> {
+    let kp = KeyringKeyProvider::new();
+    if kp.probe().is_err() {
+        warn!("OS keyring unavailable — steps that declare secrets will fail at runtime");
+    }
+    std::sync::Arc::new(kp)
 }
 
 pub async fn run_daemon() -> anyhow::Result<()> {
@@ -61,7 +73,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
     let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
-    let secret_store = std::sync::Arc::new(FileSecretStore::new(config_dir.join("secrets.toml")));
+    let secret_store: std::sync::Arc<dyn SecretStore> = std::sync::Arc::new(
+        EncryptedSecretStore::new(config_dir.join("secrets.age"), build_daemon_key_provider()),
+    );
 
     mark_interrupted_runs_failed(storage.as_ref(), notifier.as_ref()).await;
 

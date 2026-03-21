@@ -74,6 +74,23 @@ mod tests {
     use std::sync::Arc;
     use uuid::Uuid;
 
+    struct PlaintextKeyProvider;
+    impl orchestr8r_secrets::KeyProvider for PlaintextKeyProvider {
+        fn encrypt(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
+            Ok(plaintext.to_vec())
+        }
+        fn decrypt(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
+            Ok(ciphertext.to_vec())
+        }
+    }
+
+    fn test_store(dir: &std::path::Path) -> orchestr8r_secrets::EncryptedSecretStore {
+        orchestr8r_secrets::EncryptedSecretStore::new(
+            dir.join("secrets.age"),
+            Arc::new(PlaintextKeyProvider),
+        )
+    }
+
     fn ctx(scratch: &std::path::Path) -> StepContext {
         StepContext {
             run_id: Uuid::new_v4(),
@@ -163,11 +180,11 @@ mod tests {
 
     #[tokio::test]
     async fn secrets_field_isolates_env_and_injects_declared_secret() {
-        use orchestr8r_secrets::{FileSecretStore, SecretStore as _};
+        use orchestr8r_secrets::SecretStore as _;
 
         // GIVEN a store with one secret and a daemon env var that should not leak
         let dir = tempfile::tempdir().unwrap();
-        let store = FileSecretStore::new(dir.path().join("secrets.toml"));
+        let store = test_store(dir.path());
         store.set("MY_SECRET", "hunter2").unwrap();
 
         let scratch = tempfile::tempdir().unwrap();
@@ -194,7 +211,7 @@ mod tests {
     async fn secrets_field_fails_step_when_secret_not_in_store() {
         // GIVEN an empty store and a step that declares a missing secret
         let dir = tempfile::tempdir().unwrap();
-        let store = orchestr8r_secrets::FileSecretStore::new(dir.path().join("secrets.toml"));
+        let store = test_store(dir.path());
         let scratch = tempfile::tempdir().unwrap();
         let mut ctx = ctx(scratch.path());
         ctx.secret_store = Arc::new(store);

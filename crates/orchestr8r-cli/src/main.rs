@@ -7,7 +7,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use uuid::Uuid;
 
 use orchestr8r_core::types::{DaemonCommand, StorageBackend, WORKFLOW_SCHEMA_VERSION};
-use orchestr8r_secrets::{FileSecretStore, SecretStore};
+use orchestr8r_secrets::{EncryptedSecretStore, KeyringKeyProvider, SecretStore};
 use orchestr8r_storage::SqliteStorage;
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
@@ -356,17 +356,19 @@ async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
 }
 
 fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
-    let store = FileSecretStore::new(dirs_config_dir().join("secrets.toml"));
+    let kp = KeyringKeyProvider::new();
+    kp.probe().map_err(|e| anyhow::anyhow!("OS keyring unavailable: {e}\nSecrets management requires a working OS keyring (libsecret on Linux, Keychain on macOS)."))?;
+    let store = EncryptedSecretStore::new(dirs_config_dir().join("secrets.age"), std::sync::Arc::new(kp));
     match command {
         SecretCommands::Set { name, value } => {
             store.set(&name, &value)?;
             println!("Secret '{}' saved.", name);
         }
         SecretCommands::Get { name } => {
-            match store.get(&name) {
-                Some(val) => println!("{}", val),
-                None => {
-                    eprintln!("Secret '{}' not found.", name);
+            match store.resolve(&[name.clone()]) {
+                Ok(pairs) => println!("{}", pairs[0].1),
+                Err(e) => {
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
             }

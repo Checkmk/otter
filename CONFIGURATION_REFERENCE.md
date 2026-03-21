@@ -349,13 +349,18 @@ only those secrets — plus a minimal safe set of system variables — are visib
 
 ### Global secret store
 
-Secrets are stored in `~/.config/orchestr8r/secrets.toml` under a `[secrets]` table:
+Secrets are stored encrypted at `~/.config/orchestr8r/secrets.age` using
+[age](https://age-encryption.org) encryption.
 
-```toml
-[secrets]
-GITHUB_TOKEN = "ghp_abc123"
-JIRA_API_KEY = "jira_xyz"
-```
+**Key management (automatic):**
+- On first use, a random encryption key is generated and stored in the OS keyring
+  (libsecret on Linux, Keychain on macOS, Windows Credential Manager on Windows).
+- All subsequent operations retrieve the key from the keyring — no passphrase prompts.
+- Secrets are decrypted lazily — only when a workflow step actually resolves a secret.
+- **Requires a working OS keyring.** `orchestr8r secret` commands fail with a clear error if the keyring is unavailable.
+
+**Warning — backup your keyring:**
+The encryption key exists only in the OS keyring. If the keyring is lost (wiped, OS reinstall, machine migration) `secrets.age` becomes permanently unreadable — there is no recovery path. Back up your keyring before migrating machines or reinstalling the OS.
 
 Manage secrets via the CLI:
 
