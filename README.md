@@ -58,6 +58,13 @@ otter stop <name>             # stop a running workflow
 
 Can be found in the [examples/](examples/) directory.
 
+## User Data
+
+| Purpose | Linux | Windows |
+|---|---|---|
+| Configuration & workflows | `~/.config/otter/` | `%APPDATA%\otter\` |
+| State, logs & run scratch dirs | `~/.local/share/otter/` | `%APPDATA%\otter\` |
+
 ## Configuration Reference
 
 A reference for all possible configurations (step types, triggers and
