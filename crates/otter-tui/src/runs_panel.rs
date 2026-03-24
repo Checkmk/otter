@@ -27,9 +27,8 @@ fn workflow_state_color(
         WorkflowState::Dormant => ("·".to_string(), c_dormant()),
         WorkflowState::Running => match run_status {
             Some(RunStatus::WaitingCheckpoint)          => ("~".to_string(), c_waiting_cp()),
-            Some(RunStatus::Failed) | Some(RunStatus::Stopped) => ("✗".to_string(), c_failed()),
-            // Triggered workflow: engine alive but between trigger events
-            Some(RunStatus::Completed) | None
+            // Triggered workflow: engine alive but between trigger events (last run may have failed)
+            Some(RunStatus::Completed) | Some(RunStatus::Failed) | Some(RunStatus::Stopped) | None
                 if matches!(kind, Some(WorkflowType::Triggered)) =>
             {
                 match trigger {
@@ -37,6 +36,7 @@ fn workflow_state_color(
                     _                                => ("·".to_string(), c_dormant()),
                 }
             }
+            Some(RunStatus::Failed) | Some(RunStatus::Stopped) => ("✗".to_string(), c_failed()),
             Some(RunStatus::Completed) => ("✓".to_string(), c_completed()),
             _                          => (spinner_frame(tick).to_string(), c_running()),
         },
