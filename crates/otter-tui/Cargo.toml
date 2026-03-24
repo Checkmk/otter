@@ -1,0 +1,13 @@
+[package]
+name = "otter-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+otter-core = { path = "../otter-core" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

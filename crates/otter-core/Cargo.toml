@@ -1,0 +1,22 @@
+[package]
+name = "otter-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+cron = { workspace = true }
+otter-notify = { path = "../otter-notify" }
+otter-secrets = { path = "../otter-secrets" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

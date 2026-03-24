@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "crates/orchestr8r-core",
-    "crates/orchestr8r-secrets",
-    "crates/orchestr8r-storage",
-    "crates/orchestr8r-tui",
-    "crates/orchestr8r-cli",
-    "crates/orchestr8r-notify",
+    "crates/otter-core",
+    "crates/otter-secrets",
+    "crates/otter-storage",
+    "crates/otter-tui",
+    "crates/otter-cli",
+    "crates/otter-notify",
 ]
 resolver = "2"
 

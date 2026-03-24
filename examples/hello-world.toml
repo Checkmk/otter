@@ -6,8 +6,8 @@ type = "manual"
 
 [[steps]]
 type = "shell"
-command = ["echo", "Hello from orchestr8r!"]
+command = ["echo", "Hello from otter!"]
 
 [[steps]]
 type = "notify"
-message = "orchestr8r said hello."
+message = "otter said hello."

@@ -1,4 +1,4 @@
-# Orchestr8r
+# Otter
 
 Automate multi-step tasks (with AI support) triggered by real-world events.
 
@@ -19,39 +19,39 @@ Automate multi-step tasks (with AI support) triggered by real-world events.
 
 ```bash
 cargo build --release
-# Binary is at: target/release/orchestr8r
+# Binary is at: target/release/otter
 ```
 
 ## Quick Start
 
 ```bash
 # Install workflow
-orchestr8r workflow install examples/hello-world.toml
+otter workflow install examples/hello-world.toml
 
 # Start background service
-orchestr8r service start
+otter service start
 
 # Open the TUI
-orchestr8r
+otter
 
 # or start workflow via CLI:
-orchestr8r start hello-world
+otter start hello-world
 
 # Stop background service
-orchestr8r service stop
+otter service stop
 ```
 
 ## Common Commands
 
 ```bash
-orchestr8r                         # open the TUI dashboard
-orchestr8r help                    # show all commands
-orchestr8r status                  # list service and workflow state
-orchestr8r service start           # start background service for this session
-orchestr8r service stop            # stop background service
-orchestr8r workflow install <path> # install a workflow (.toml or package dir)
-orchestr8r start <name>            # start or resume a workflow
-orchestr8r stop <name>             # stop a running workflow
+otter                         # open the TUI dashboard
+otter help                    # show all commands
+otter status                  # list service and workflow state
+otter service start           # start background service for this session
+otter service stop            # stop background service
+otter workflow install <path> # install a workflow (.toml or package dir)
+otter start <name>            # start or resume a workflow
+otter stop <name>             # stop a running workflow
 ```
 
 ## Example Workflows

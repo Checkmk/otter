@@ -1,0 +1,16 @@
+[package]
+name = "otter-secrets"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+toml = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+age = "0.10"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]

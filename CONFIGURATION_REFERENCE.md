@@ -18,7 +18,7 @@
 
 ## Workflow Structure
 
-Workflows are TOML files in `~/.config/orchestr8r/workflows/`. Each workflow defines a name, type, optional trigger (for triggered workflows), and a sequence of steps.
+Workflows are TOML files in `~/.config/otter/workflows/`. Each workflow defines a name, type, optional trigger (for triggered workflows), and a sequence of steps.
 
 ```toml
 name = "my-workflow"
@@ -44,7 +44,7 @@ message = "Review output?"
 ```
 
 **Workspace behavior:**
-- If `[workspace]` is omitted, all steps execute in the run's isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
+- If `[workspace]` is omitted, all steps execute in the run's isolated scratch directory (`~/.local/share/otter/runs/<run-id>/`).
 - See [Workspace Configuration](#workspace-configuration) for all variants including per-run script setup.
 
 ---
@@ -258,7 +258,7 @@ on = ["success"]
 
 ## Workspace Configuration
 
-The optional `[workspace]` table controls where steps execute. If omitted, each run uses an isolated scratch directory (`~/.local/share/orchestr8r/runs/<run-id>/`).
+The optional `[workspace]` table controls where steps execute. If omitted, each run uses an isolated scratch directory (`~/.local/share/otter/runs/<run-id>/`).
 
 ### `scratch` (default)
 
@@ -304,7 +304,7 @@ command = ["setup-workspace.sh"]
 #!/bin/bash
 WORKFLOW=$1
 RUN_ID=$2
-BRANCH="orchestr8r-${RUN_ID:0:8}"
+BRANCH="otter-${RUN_ID:0:8}"
 git -C ~/my-repo worktree add "/tmp/ws-$RUN_ID" -b "$BRANCH"
 echo "/tmp/ws-$RUN_ID"
 ```
@@ -350,7 +350,7 @@ only those secrets — plus a minimal safe set of system variables — are visib
 
 ### Global secret store
 
-Secrets are stored encrypted at `~/.config/orchestr8r/secrets.age` using
+Secrets are stored encrypted at `~/.config/otter/secrets.age` using
 [age](https://age-encryption.org) encryption.
 
 **Key management (automatic):**
@@ -358,7 +358,7 @@ Secrets are stored encrypted at `~/.config/orchestr8r/secrets.age` using
   (libsecret on Linux, Keychain on macOS, Windows Credential Manager on Windows).
 - All subsequent operations retrieve the key from the keyring — no passphrase prompts.
 - Secrets are decrypted lazily — only when a workflow step actually resolves a secret.
-- **Requires a working OS keyring.** `orchestr8r secret` commands fail with a clear error if the keyring is unavailable.
+- **Requires a working OS keyring.** `otter secret` commands fail with a clear error if the keyring is unavailable.
 
 **Warning — backup your keyring:**
 The encryption key exists only in the OS keyring. If the keyring is lost (wiped, OS reinstall, machine migration) `secrets.age` becomes permanently unreadable — there is no recovery path. Back up your keyring before migrating machines or reinstalling the OS.
@@ -366,10 +366,10 @@ The encryption key exists only in the OS keyring. If the keyring is lost (wiped,
 Manage secrets via the CLI:
 
 ```bash
-orchestr8r secret set GITHUB_TOKEN ghp_abc123   # store or overwrite
-orchestr8r secret get GITHUB_TOKEN              # print value
-orchestr8r secret list                          # list all secret names
-orchestr8r secret delete GITHUB_TOKEN           # remove
+otter secret set GITHUB_TOKEN ghp_abc123   # store or overwrite
+otter secret get GITHUB_TOKEN              # print value
+otter secret list                          # list all secret names
+otter secret delete GITHUB_TOKEN           # remove
 ```
 
 ### Per-step secret injection
@@ -428,7 +428,7 @@ command = ["echo", "Running on demand"]
 
 **Usage:**
 ```bash
-orchestr8r start on-demand       # Fire the trigger via CLI
+otter start on-demand       # Fire the trigger via CLI
 ```
 
 Or click "Start" in the TUI dashboard.
@@ -473,7 +473,7 @@ message = "Implement the JIRA issue described in trigger-context/issue.json."
 
 **Context directory location (adaptive):**
 - **`fixed` or `script` workspace** → Context is written to `<workspace>/trigger-context/`. For `script` workspaces, the workspace is set up first (via the script), then the context command runs inside it.
-- **No workspace / `scratch`** → Trigger pre-allocates a run directory and creates `<run-dir>/trigger-context/`. Persists in `~/.local/share/orchestr8r/runs/<run-id>/trigger-context/`.
+- **No workspace / `scratch`** → Trigger pre-allocates a run directory and creates `<run-dir>/trigger-context/`. Persists in `~/.local/share/otter/runs/<run-id>/trigger-context/`.
 - **No `context_command`** → No context directory is created; the workflow runs without trigger-context files.
 
 **Seen-hash persistence:**
@@ -536,20 +536,20 @@ schema = 1            # optional; defaults to 1
 version = "1.2.0"     # optional; human-readable package version
 ```
 
-**`schema`** declares the minimum orchestr8r workflow schema version required to run this workflow. If the installed orchestr8r does not support the version, it logs a warning and skips the workflow.
+**`schema`** declares the minimum otter workflow schema version required to run this workflow. If the installed otter does not support the version, it logs a warning and skips the workflow.
 
 ### Installing and removing
 
 ```bash
-# Install a flat .toml file — copies to ~/.config/orchestr8r/workflows/<name>.toml
-orchestr8r workflow install ./my-workflow.toml
+# Install a flat .toml file — copies to ~/.config/otter/workflows/<name>.toml
+otter workflow install ./my-workflow.toml
 
-# Install a package directory — copies to ~/.config/orchestr8r/workflows/<name>/
+# Install a package directory — copies to ~/.config/otter/workflows/<name>/
 # Both signal the service to reload without restart
-orchestr8r workflow install ./my-workflow/
+otter workflow install ./my-workflow/
 
 # Remove — deletes the installed file or directory and reloads the service
-orchestr8r workflow remove my-workflow
+otter workflow remove my-workflow
 ```
 
 ### Auto-start on daemon startup
@@ -557,23 +557,23 @@ orchestr8r workflow remove my-workflow
 Workflows can be configured to start automatically whenever the daemon starts:
 
 ```bash
-orchestr8r workflow enable my-workflow   # start automatically on next daemon start
-orchestr8r workflow disable my-workflow  # stop auto-starting
+otter workflow enable my-workflow   # start automatically on next daemon start
+otter workflow disable my-workflow  # stop auto-starting
 ```
 
 ---
 
 ## Service Management
 
-The orchestr8r service must be running before the TUI or CLI commands can connect to it.
+The otter service must be running before the TUI or CLI commands can connect to it.
 For boot-time persistence (start on login), enable the platform service:
 
 ```bash
-orchestr8r status            # show (service) status
-orchestr8r service start     # start the service for this session only
-orchestr8r service stop      # stop the running service
-orchestr8r service enable    # start service and register start-on-boot
-orchestr8r service disable   # disable automatic startup and stop the service
+otter status            # show (service) status
+otter service start     # start the service for this session only
+otter service stop      # stop the running service
+otter service enable    # start service and register start-on-boot
+otter service disable   # disable automatic startup and stop the service
 ```
 
 ---

@@ -1,8 +1,8 @@
-# Orchestr8r — Target Architecture
+# Otter — Target Architecture
 
 ## Overview
 
-Orchestr8r is a **Rust-native workflow automation service** that executes multi-step AI agent tasks in response to real-world events. It runs as a local daemon with a TUI dashboard, deployable on a local machine or self-hosted server with a path to cloud environments.
+Otter is a **Rust-native workflow automation service** that executes multi-step AI agent tasks in response to real-world events. It runs as a local daemon with a TUI dashboard, deployable on a local machine or self-hosted server with a path to cloud environments.
 
 ---
 
@@ -21,7 +21,7 @@ Orchestr8r is a **Rust-native workflow automation service** that executes multi-
 ┌─────────────────────────────────────────────────────┐
 │                    TUI Dashboard                    │  (ratatui)
 ├─────────────────────────────────────────────────────┤
-│                   orchestr8r-core                   │
+│                   otter-core                        │
 │  ┌────────────┐  ┌──────────────┐  ┌─────────────┐  │
 │  │  Scheduler │  │ Workflow     │  │  Step       │  │
 │  │  & Trigger │  │ Engine       │  │  Executor   │  │
@@ -44,16 +44,16 @@ Orchestr8r is a **Rust-native workflow automation service** that executes multi-
 ## Crate Structure
 
 ```
-orchestr8r/
-├── orchestr8r-core/        # Core engine, scheduler, workflow runner
-├── orchestr8r-tui/         # ratatui-based TUI dashboard
-├── orchestr8r-plugin-api/  # Shared traits for steps, triggers, notifiers
-├── orchestr8r-runtime/     # Container runtime abstraction + Docker/Podman impl
-├── orchestr8r-storage/     # StorageBackend trait + SQLite impl
-├── orchestr8r-secrets/     # SecretStore trait + encrypted local file impl
-├── orchestr8r-triggers/    # TriggerSource trait + built-in trigger impls
-├── orchestr8r-notify/      # Notifier trait + desktop notification impl
-└── orchestr8r-cli/         # Binary entrypoint, config loading, daemon setup
+otter/
+├── otter-core/        # Core engine, scheduler, workflow runner
+├── otter-tui/         # ratatui-based TUI dashboard
+├── otter-plugin-api/  # Shared traits for steps, triggers, notifiers
+├── otter-runtime/     # Container runtime abstraction + Docker/Podman impl
+├── otter-storage/     # StorageBackend trait + SQLite impl
+├── otter-secrets/     # SecretStore trait + encrypted local file impl
+├── otter-triggers/    # TriggerSource trait + built-in trigger impls
+├── otter-notify/      # Notifier trait + desktop notification impl
+└── otter-cli/         # Binary entrypoint, config loading, daemon setup
 ```
 
 ---
@@ -163,7 +163,7 @@ pub trait StorageBackend: Send + Sync {
 }
 ```
 
-Initial implementation: **SQLite** via `sqlx` (sqlite feature) or `rusqlite`. Database at `~/.local/share/orchestr8r/state.db`.
+Initial implementation: **SQLite** via `sqlx` (sqlite feature) or `rusqlite`. Database at `~/.local/share/otter/state.db`.
 
 ---
 
@@ -177,7 +177,7 @@ pub trait SecretStore: Send + Sync {
 }
 ```
 
-Initial implementation: **encrypted local file** using `age`. The encryption key is derived from a passphrase stored in the OS keychain (`keyring` crate). Secrets file: `~/.local/share/orchestr8r/secrets.age`.
+Initial implementation: **encrypted local file** using `age`. The encryption key is derived from a passphrase stored in the OS keychain (`keyring` crate). Secrets file: `~/.local/share/otter/secrets.age`.
 
 Agents receive secrets only via explicit injection at runtime — only secrets declared in the step's `secrets` list are visible to the subprocess.
 
@@ -263,10 +263,10 @@ The TUI communicates with the core daemon via an **in-process channel** when run
 
 ## Configuration
 
-All configuration lives in `~/.config/orchestr8r/`:
+All configuration lives in `~/.config/otter/`:
 
 ```
-~/.config/orchestr8r/
+~/.config/otter/
 ├── config.toml          # Global daemon settings
 └── workflows/
     ├── pr-review.toml
@@ -278,11 +278,11 @@ All configuration lives in `~/.config/orchestr8r/`:
 ```toml
 [storage]
 backend = "sqlite"
-path = "~/.local/share/orchestr8r/state.db"
+path = "~/.local/share/otter/state.db"
 
 [secrets]
 backend = "age-file"
-path = "~/.local/share/orchestr8r/secrets.age"
+path = "~/.local/share/otter/secrets.age"
 
 [runtime]
 backend = "docker"
@@ -296,7 +296,7 @@ default = ["desktop"]
 
 ## Inter-Step Data Flow
 
-Steps communicate via a **shared scratch directory** scoped to each workflow run (`~/.local/share/orchestr8r/runs/<run-id>/`), available to every step via `StepContext`.
+Steps communicate via a **shared scratch directory** scoped to each workflow run (`~/.local/share/otter/runs/<run-id>/`), available to every step via `StepContext`.
 
 - Container and agent steps receive it as a bind-mounted volume
 - Shell steps receive it as a working directory or environment variable
@@ -318,7 +318,7 @@ Auto-resume is deferred: it requires step-level idempotency guarantees and caref
 
 | Mode               | Description                                                                                                                    |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Local daemon**   | `orchestr8r daemon` runs as a user systemd service or background process; TUI attaches on demand                               |
+| **Local daemon**   | `otter daemon` runs as a user systemd service or background process; TUI attaches on demand                               |
 | **Self-hosted**    | Same binary, deployed on a VPS; TUI connects over SSH                                                                          |
 | **Cloud (future)** | Storage backend swapped to Postgres; secrets backend swapped to a vault; container runtime targets a remote Docker/k8s context |
 
