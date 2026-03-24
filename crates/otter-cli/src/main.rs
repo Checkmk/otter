@@ -64,6 +64,8 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+    /// Follow the daemon log
+    Log,
     /// Run the daemon process (used internally by the service unit)
     #[command(hide = true, name = "_daemon")]
     #[allow(non_camel_case_types)]
@@ -184,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
         Some(Commands::Secret { command }) => handle_secret_command(command),
         Some(Commands::Service { command }) => handle_service_command(command),
+        Some(Commands::Log) => handle_log_command(),
     }
 }
 
@@ -487,6 +490,35 @@ fn handle_service_command(command: ServiceCommands) -> anyhow::Result<()> {
         ServiceCommands::Disable => mgr.disable(),
         ServiceCommands::Start => mgr.start(),
         ServiceCommands::Stop => mgr.stop(),
+    }
+}
+
+fn handle_log_command() -> anyhow::Result<()> {
+    let log_path = dirs_data_dir().join("daemon.log");
+    if !log_path.exists() {
+        anyhow::bail!(
+            "Log file not found: {}\nStart the daemon first with: otter service start",
+            log_path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new("less")
+            .arg("+F")
+            .arg(&log_path)
+            .exec();
+        // exec() only returns on error
+        return Err(err.into());
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("powershell")
+            .args(["-Command", &format!("Get-Content -Wait '{}'", log_path.display())])
+            .status()?;
+        Ok(())
     }
 }
 
