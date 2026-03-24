@@ -25,7 +25,7 @@ use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
 use orchestr8r_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use orchestr8r_storage::SqliteStorage;
 
-use crate::{dirs_config_dir, dirs_data_dir, socket_path};
+use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path};
 
 struct PendingEntry {
     response_tx: tokio::sync::oneshot::Sender<CheckpointResponse>,
@@ -133,6 +133,20 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     )));
 
     reload_workflows(workflows, &manager, &toml_map).await;
+
+    // Auto-start workflows that have been enabled via `orchestr8r workflow enable`
+    let enabled = read_enabled(&config_dir).unwrap_or_default();
+    for name in &enabled {
+        let mut mgr = manager.lock().await;
+        if mgr.get_def(name).is_some() {
+            match mgr.start(name).await {
+                Ok(()) => info!("auto-start: started '{name}'"),
+                Err(e) => warn!("auto-start: failed to start '{name}': {e}"),
+            }
+        } else {
+            warn!("auto-start: workflow '{name}' not found, skipping");
+        }
+    }
 
     // run_id → pending checkpoint metadata + oneshot sender
     let pending_checkpoints: Arc<std::sync::Mutex<HashMap<Uuid, PendingEntry>>> =

@@ -552,6 +552,15 @@ orchestr8r workflow install ./my-workflow/
 orchestr8r workflow remove my-workflow
 ```
 
+### Auto-start on daemon startup
+
+Workflows can be configured to start automatically whenever the daemon starts:
+
+```bash
+orchestr8r workflow enable my-workflow   # start automatically on next daemon start
+orchestr8r workflow disable my-workflow  # stop auto-starting
+```
+
 ---
 
 ## Service Management

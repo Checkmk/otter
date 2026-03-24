@@ -2,7 +2,8 @@ mod client;
 mod daemon;
 mod service;
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser, Subcommand};
 use uuid::Uuid;
@@ -91,6 +92,16 @@ enum WorkflowCommands {
     /// Remove an installed workflow by name
     Remove {
         /// Name of the workflow to remove
+        name: String,
+    },
+    /// Enable auto-start for a workflow
+    Enable {
+        /// Name of the workflow to enable
+        name: String,
+    },
+    /// Disable auto-start for a workflow
+    Disable {
+        /// Name of the workflow to disable
         name: String,
     },
 }
@@ -263,6 +274,8 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
     match command {
         WorkflowCommands::Install { path } => handle_workflow_install(path).await,
         WorkflowCommands::Remove { name } => handle_workflow_remove(name).await,
+        WorkflowCommands::Enable { name } => handle_workflow_enable(name).await,
+        WorkflowCommands::Disable { name } => handle_workflow_disable(name),
     }
 }
 
@@ -386,6 +399,51 @@ async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── Enabled-workflows helpers ───────────────────────────────────────────────
+
+pub(crate) fn enabled_workflows_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("enabled-workflows.json")
+}
+
+pub(crate) fn read_enabled(config_dir: &Path) -> anyhow::Result<HashSet<String>> {
+    let path = enabled_workflows_path(config_dir);
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let s = std::fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&s)?)
+}
+
+pub(crate) fn write_enabled(config_dir: &Path, set: &HashSet<String>) -> anyhow::Result<()> {
+    let mut sorted: Vec<_> = set.iter().cloned().collect();
+    sorted.sort();
+    let s = serde_json::to_string_pretty(&sorted)?;
+    std::fs::write(enabled_workflows_path(config_dir), s)?;
+    Ok(())
+}
+
+async fn handle_workflow_enable(name: String) -> anyhow::Result<()> {
+    let config_dir = dirs_config_dir();
+    let mut set = read_enabled(&config_dir)?;
+    set.insert(name.clone());
+    write_enabled(&config_dir, &set)?;
+    if client::send_command_once(DaemonCommand::Start { name: name.clone() }).await.is_ok() {
+        println!("Enabled auto-start for '{name}' and started it.");
+    } else {
+        println!("Enabled auto-start for '{name}'. Takes effect on next daemon start.");
+    }
+    Ok(())
+}
+
+fn handle_workflow_disable(name: String) -> anyhow::Result<()> {
+    let config_dir = dirs_config_dir();
+    let mut set = read_enabled(&config_dir)?;
+    set.remove(&name);
+    write_enabled(&config_dir, &set)?;
+    println!("Disabled auto-start for '{name}'.");
+    Ok(())
+}
+
 fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
     let kp = KeyringKeyProvider::new();
     kp.probe().map_err(|e| anyhow::anyhow!("OS keyring unavailable: {e}\nSecrets management requires a working OS keyring (libsecret on Linux, Keychain on macOS)."))?;
@@ -483,5 +541,83 @@ pub(crate) fn dirs_config_dir() -> PathBuf {
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home).join(".config").join("orchestr8r")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn read_enabled_missing_file_returns_empty() {
+        // GIVEN a config dir with no enabled-workflows.json
+        let dir = TempDir::new().unwrap();
+        // WHEN reading the enabled set
+        let set = read_enabled(dir.path()).unwrap();
+        // THEN it is empty
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn round_trip_write_and_read() {
+        // GIVEN a set of workflow names written to disk
+        let dir = TempDir::new().unwrap();
+        let mut set = HashSet::new();
+        set.insert("alpha".to_string());
+        set.insert("beta".to_string());
+        write_enabled(dir.path(), &set).unwrap();
+        // WHEN reading back
+        let loaded = read_enabled(dir.path()).unwrap();
+        // THEN the same names are present
+        assert_eq!(loaded, set);
+    }
+
+    #[test]
+    fn enable_is_idempotent() {
+        // GIVEN a workflow already in the enabled set
+        let dir = TempDir::new().unwrap();
+        let mut set = HashSet::new();
+        set.insert("my-workflow".to_string());
+        write_enabled(dir.path(), &set).unwrap();
+        // WHEN enabling it again
+        set.insert("my-workflow".to_string());
+        write_enabled(dir.path(), &set).unwrap();
+        // THEN it appears exactly once
+        let loaded = read_enabled(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains("my-workflow"));
+    }
+
+    #[test]
+    fn disable_when_absent_is_noop() {
+        // GIVEN an enabled set that does not contain the target workflow
+        let dir = TempDir::new().unwrap();
+        let mut set = HashSet::new();
+        set.insert("other".to_string());
+        write_enabled(dir.path(), &set).unwrap();
+        // WHEN disabling a workflow that was never enabled
+        set.remove("nonexistent");
+        write_enabled(dir.path(), &set).unwrap();
+        // THEN the existing entry is unchanged
+        let loaded = read_enabled(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains("other"));
+    }
+
+    #[test]
+    fn persisted_file_is_sorted_json_array() {
+        // GIVEN names inserted in arbitrary order
+        let dir = TempDir::new().unwrap();
+        let mut set = HashSet::new();
+        set.insert("zebra".to_string());
+        set.insert("alpha".to_string());
+        set.insert("middle".to_string());
+        write_enabled(dir.path(), &set).unwrap();
+        // WHEN reading the raw file
+        let raw = std::fs::read_to_string(enabled_workflows_path(dir.path())).unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&raw).unwrap();
+        // THEN names are sorted
+        assert_eq!(parsed, vec!["alpha", "middle", "zebra"]);
     }
 }
