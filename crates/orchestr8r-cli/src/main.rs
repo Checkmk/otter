@@ -133,6 +133,13 @@ enum TriggersCommands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // The daemon sets up its own file-based subscriber inside run_daemon().
+    // Initialising the global subscriber here would conflict with that, so we
+    // branch early before touching tracing.
+    if matches!(cli.command, Some(Commands::_Daemon)) {
+        return daemon::run_daemon().await;
+    }
+
     let level = if cli.quiet {
         tracing::Level::ERROR
     } else {
@@ -150,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None | Some(Commands::Ui) => client::run_ui().await,
-        Some(Commands::_Daemon) => daemon::run_daemon().await,
+        Some(Commands::_Daemon) => unreachable!(),
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
         }

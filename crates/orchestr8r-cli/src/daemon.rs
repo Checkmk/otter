@@ -77,6 +77,19 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
 
+    // File-based logging: writes to ~/.local/share/orchestr8r/daemon.log.
+    // The _guard must stay alive for the duration of the daemon; dropping it
+    // flushes the non-blocking writer and stops log delivery.
+    let file_appender = tracing_appender::rolling::never(&data_dir, "daemon.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
     // Write pid file so `orchestr8r service stop` can signal the process when not managed by systemd.
     let pid_path = data_dir.join("daemon.pid");
     std::fs::write(&pid_path, std::process::id().to_string())
