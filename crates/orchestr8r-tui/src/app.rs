@@ -42,6 +42,7 @@ pub struct WorkflowEntry {
     pub expanded: bool,
     pub trigger: Option<TriggerDef>,
     pub toml_content: Option<String>,
+    pub autostart: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -145,7 +146,7 @@ impl App {
             DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content } => {
+            DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content, enabled } => {
                 if !self.workflows.iter().any(|e| e.name == name) {
                     let runs = self.removed_workflow_runs.remove(&name).unwrap_or_default();
                     self.workflows.push(WorkflowEntry {
@@ -156,6 +157,7 @@ impl App {
                         expanded: false,
                         trigger,
                         toml_content,
+                        autostart: enabled,
                     });
                 }
             }
@@ -267,6 +269,22 @@ impl App {
         if let Some(entry) = self.selected_workflow() {
             let name = entry.name.clone();
             let _ = self.cmd_tx.try_send(DaemonCommand::Stop { name });
+        }
+    }
+
+    pub fn toggle_enable_selected(&mut self) {
+        if let CursorTarget::Workflow(wi) = self.cursor {
+            if let Some(entry) = self.workflows.get_mut(wi) {
+                let name = entry.name.clone();
+                if entry.autostart {
+                    entry.autostart = false;
+                    let _ = self.cmd_tx.try_send(DaemonCommand::DisableWorkflow { name });
+                } else {
+                    entry.autostart = true;
+                    self.pending_workflow_start = Some(name.clone());
+                    let _ = self.cmd_tx.try_send(DaemonCommand::EnableWorkflow { name });
+                }
+            }
         }
     }
 
@@ -513,6 +531,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf2".to_string(),
@@ -522,6 +541,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Start at first workflow
@@ -559,6 +579,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Navigate through expanded workflow
@@ -596,6 +617,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Select the workflow
@@ -623,6 +645,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Start with cursor on the workflow (not on a run)
@@ -653,6 +676,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -674,6 +698,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Run(0, 0);
@@ -696,6 +721,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Handle RunDeleted event
@@ -718,6 +744,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Add runs in non-chronological order
@@ -757,6 +784,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Cursor on the last run (index 1)
@@ -792,6 +820,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf-b".to_string(),
@@ -801,6 +830,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Cursor on the second run of wf-b (the older one)
@@ -829,6 +859,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Cursor on the only run
@@ -855,6 +886,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -879,6 +911,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Add a new run without starting the workflow
@@ -901,6 +934,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // Start the workflow
@@ -935,6 +969,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
         app.cursor = CursorTarget::Run(0, 0);
 
@@ -978,6 +1013,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -996,6 +1032,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -1015,6 +1052,7 @@ mod tests {
             expanded: true,
             trigger: None,
             toml_content: Some("name = \"wf\"\n".to_string()),
+            autostart: false,
         });
 
         app.cursor = CursorTarget::Run(0, 0);
@@ -1030,6 +1068,7 @@ mod tests {
             kind: WorkflowType::Looping,
             trigger: None,
             toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
+            enabled: false,
         });
 
         assert_eq!(app.workflows.len(), 1);
@@ -1094,6 +1133,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // WHEN the workflow is removed (e.g. during re-install)
@@ -1106,6 +1146,7 @@ mod tests {
             kind: WorkflowType::Looping,
             trigger: None,
             toml_content: None,
+            enabled: false,
         });
 
         // THEN the runs are preserved
@@ -1127,6 +1168,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
 
         // WHEN wf-a is removed permanently
@@ -1138,11 +1180,83 @@ mod tests {
             kind: WorkflowType::Looping,
             trigger: None,
             toml_content: None,
+            enabled: false,
         });
 
         // THEN wf-b starts with no runs (wf-a's runs are not leaked)
         assert_eq!(app.workflows[0].name, "wf-b");
         assert!(app.workflows[0].runs.is_empty());
+    }
+
+    #[test]
+    fn toggle_enable_selected_enables_workflow() {
+        // GIVEN a disabled workflow
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut app = App::new(tx);
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+        });
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN toggled
+        app.toggle_enable_selected();
+
+        // THEN enabled flips to true, pending_workflow_start set, EnableWorkflow sent
+        assert!(app.workflows[0].autostart);
+        assert_eq!(app.pending_workflow_start.as_deref(), Some("wf"));
+        let cmd = rx.try_recv().expect("command sent");
+        assert!(matches!(cmd, DaemonCommand::EnableWorkflow { name } if name == "wf"));
+    }
+
+    #[test]
+    fn toggle_enable_selected_disables_workflow() {
+        // GIVEN an enabled workflow
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut app = App::new(tx);
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: true,
+        });
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN toggled
+        app.toggle_enable_selected();
+
+        // THEN enabled flips to false, DisableWorkflow sent
+        assert!(!app.workflows[0].autostart);
+        let cmd = rx.try_recv().expect("command sent");
+        assert!(matches!(cmd, DaemonCommand::DisableWorkflow { name } if name == "wf"));
+    }
+
+    #[test]
+    fn workflow_registered_event_stores_enabled_flag() {
+        // GIVEN an app with no workflows
+        let mut app = make_test_app();
+
+        // WHEN a WorkflowRegistered event arrives with enabled=true
+        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            trigger: None,
+            toml_content: None,
+            enabled: true,
+        });
+
+        // THEN the entry has enabled=true
+        assert!(app.workflows[0].autostart);
     }
 
     #[test]
@@ -1157,6 +1271,7 @@ mod tests {
             expanded: false,
             trigger: None,
             toml_content: None,
+            autostart: false,
         });
         app.cursor = CursorTarget::Workflow(0);
 

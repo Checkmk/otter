@@ -45,12 +45,12 @@ fn workflow_state_color(
 
 pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width.saturating_sub(2) as usize;
-    let name_width  = inner_width.saturating_sub(1);
     let tick = app.tick;
 
     let make_item = |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
         let prefix_len = prefix.chars().count();
-        let available_for_content = name_width.saturating_sub(prefix_len);
+        let icon_len = icon.chars().count();
+        let available_for_content = inner_width.saturating_sub(prefix_len + icon_len);
 
         let content_style = if is_selected {
             Style::default().fg(c_background()).bg(c_foreground()).add_modifier(Modifier::BOLD)
@@ -90,7 +90,13 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
             if app.pending_checkpoints.get(&r.id).is_some_and(|cp| cp.processing) { &running } else { &r.status }
         });
         let (state_icon, state_color) = workflow_state_color(&entry.state, first_run_status, Some(&entry.kind), entry.trigger.as_ref(), app.tick);
-        items.push(make_item(&expand_char, &entry.name, state_icon, state_color, is_workflow_selected));
+        let name_content = entry.name.clone();
+        let prefixed_icon = if entry.autostart {
+            format!(" (A) {state_icon}")
+        } else {
+            format!(" {state_icon}")
+        };
+        items.push(make_item(&expand_char, &name_content, prefixed_icon, state_color, is_workflow_selected));
 
         if entry.expanded {
             for (ri, run) in entry.runs.iter().enumerate() {
@@ -113,7 +119,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     None,
                     app.tick,
                 );
-                items.push(make_item("   ", &run_content, run_icon, run_color, is_run_selected));
+                items.push(make_item("   ", &run_content, format!(" {run_icon}"), run_color, is_run_selected));
             }
         }
     }
@@ -169,6 +175,16 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
         hints.push(PanelHint::new("[T]", "Consumed triggers"));
     }
 
+    if let CursorTarget::Workflow(wi) = app.cursor {
+        if let Some(entry) = app.workflows.get(wi) {
+            if entry.autostart {
+                hints.push(PanelHint::new("[A]", "Disable auto-start"));
+            } else {
+                hints.push(PanelHint::new("[A]", "Enable auto-start"));
+            }
+        }
+    }
+
     hints.extend(enter_hints);
     hints
 }
@@ -186,7 +202,7 @@ mod tests {
     }
 
     fn make_entry(name: &str, kind: WorkflowType, state: WorkflowState, runs: Vec<WorkflowRun>, expanded: bool) -> WorkflowEntry {
-        WorkflowEntry { name: name.to_string(), kind, state, runs, expanded, trigger: None, toml_content: None }
+        WorkflowEntry { name: name.to_string(), kind, state, runs, expanded, trigger: None, toml_content: None, autostart: false }
     }
 
     fn hint_keys(hints: &[PanelHint]) -> Vec<&str> {
@@ -319,6 +335,42 @@ mod tests {
         assert!(hints.iter().any(|h| h.key == "[Enter]" && h.label == "Stop"));
         assert!(keys.contains(&"[Del]"));
         assert_eq!(hints.iter().filter(|h| h.key == "[Enter]" && h.label == "Stop").count(), 1);
+    }
+
+    #[test]
+    fn left_panel_hints_shows_enable_hint_for_disabled_workflow() {
+        // GIVEN a disabled workflow
+        let mut app = make_app();
+        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false);
+        entry.autostart = false;
+        app.workflows.push(entry);
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [A] Enable auto-start
+        let e_hint = hints.iter().find(|h| h.key == "[A]");
+        assert!(e_hint.is_some());
+        assert_eq!(e_hint.unwrap().label, "Enable auto-start");
+    }
+
+    #[test]
+    fn left_panel_hints_shows_disable_hint_for_enabled_workflow() {
+        // GIVEN an enabled workflow
+        let mut app = make_app();
+        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false);
+        entry.autostart = true;
+        app.workflows.push(entry);
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN
+        let hints = left_panel_hints(&app);
+
+        // THEN [A] Disable auto-start
+        let e_hint = hints.iter().find(|h| h.key == "[A]");
+        assert!(e_hint.is_some());
+        assert_eq!(e_hint.unwrap().label, "Disable auto-start");
     }
 
     #[test]

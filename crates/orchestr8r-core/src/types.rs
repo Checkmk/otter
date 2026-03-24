@@ -352,7 +352,7 @@ pub enum CheckpointAction {
 pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef>, toml_content: Option<String> },
+    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef>, toml_content: Option<String>, enabled: bool },
     WorkflowStateChanged { name: String, state: WorkflowState },
     WorkflowRemoved { name: String },
     CheckpointPending {
@@ -384,6 +384,8 @@ pub enum DaemonCommand {
     ListConsumedTriggers { workflow: String },
     DeleteConsumedTrigger { workflow: String, trigger: String },
     ReloadWorkflows,
+    EnableWorkflow { name: String },
+    DisableWorkflow { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

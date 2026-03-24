@@ -25,7 +25,7 @@ use orchestr8r_notify::{DesktopNotifier, Notification, Notifier};
 use orchestr8r_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use orchestr8r_storage::SqliteStorage;
 
-use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path};
+use crate::{dirs_config_dir, dirs_data_dir, read_enabled, write_enabled, socket_path};
 
 struct PendingEntry {
     response_tx: tokio::sync::oneshot::Sender<CheckpointResponse>,
@@ -165,6 +165,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let recent_runs_fanout = recent_runs.clone();
     let subscribers_fanout = subscribers.clone();
     let toml_map_fanout = toml_map.clone();
+    let config_dir_fanout = config_dir.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             let daemon_ev = match ev {
@@ -175,7 +176,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 }
                 EngineEvent::WorkflowRegistered { name, kind, trigger } => {
                     let toml_content = toml_map_fanout.lock().await.get(&name).cloned();
-                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content }
+                    let enabled = read_enabled(&config_dir_fanout).unwrap_or_default().contains(&name);
+                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content, enabled }
                 }
                 EngineEvent::WorkflowStateChanged { name, state } => {
                     DaemonEvent::WorkflowStateChanged { name, state }
@@ -339,6 +341,8 @@ async fn handle_connection<S>(
         DaemonCommand::Subscribe => {
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
             // Replay current workflow state before streaming live events
+            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
+            let enabled_set = read_enabled(config_dir).unwrap_or_default();
             let current = manager.lock().await.status();
             for wf in current {
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
@@ -346,6 +350,7 @@ async fn handle_connection<S>(
                     name: wf.name.clone(),
                     kind: wf.kind,
                     trigger: wf.trigger.clone(),
+                    enabled: enabled_set.contains(&wf.name),
                 }).await;
                 let _ = write_json(&mut writer, &DaemonEvent::WorkflowStateChanged {
                     name: wf.name,
@@ -488,6 +493,21 @@ async fn handle_connection<S>(
                 Err(e) => DaemonResponse::Error { message: e.to_string() },
             };
             let _ = write_json(&mut writer, &resp).await;
+        }
+        DaemonCommand::EnableWorkflow { name } => {
+            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
+            let mut set = read_enabled(config_dir).unwrap_or_default();
+            set.insert(name.clone());
+            let _ = write_enabled(config_dir, &set);
+            let result = manager.lock().await.start(&name).await;
+            let _ = write_json(&mut writer, &result_to_response(result)).await;
+        }
+        DaemonCommand::DisableWorkflow { name } => {
+            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
+            let mut set = read_enabled(config_dir).unwrap_or_default();
+            set.remove(&name);
+            let _ = write_enabled(config_dir, &set);
+            let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
         }
     }
 }

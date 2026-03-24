@@ -96,6 +96,11 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
         KeyCode::Char('t') if !has_checkpoint => {
             app.open_consumed_triggers();
         }
+        KeyCode::Char('a') if !has_checkpoint => {
+            if matches!(app.cursor, CursorTarget::Workflow(_)) {
+                app.toggle_enable_selected();
+            }
+        }
         KeyCode::Tab => {
             app.enter_right_panel();
         }
