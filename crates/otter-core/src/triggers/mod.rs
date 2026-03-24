@@ -7,6 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use otter_secrets::SecretStore;
+
 use crate::types::{TriggerDef, TriggerError, TriggerEvent};
 
 #[async_trait]
@@ -26,6 +28,7 @@ pub fn build_trigger(
     _scratch_base: &Path,
     _workspace_config: Option<&crate::types::WorkspaceConfig>,
     scripts_dir: Option<&Path>,
+    secret_store: Arc<dyn SecretStore>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -35,7 +38,7 @@ pub fn build_trigger(
                 signal_path,
             )))
         }
-        TriggerDef::Polling { poll_command, context_command, interval_secs } => {
+        TriggerDef::Polling { poll_command, context_command, interval_secs, secrets } => {
             let seen_path = data_dir.join("triggers").join(format!("{}-seen.json", workflow_name));
             Ok(Arc::new(polling::PollingTrigger::new(
                 "polling".to_string(),
@@ -44,6 +47,8 @@ pub fn build_trigger(
                 std::time::Duration::from_secs(*interval_secs),
                 seen_path,
                 scripts_dir.map(|p| p.to_path_buf()),
+                secret_store,
+                secrets.clone().unwrap_or_default(),
             )))
         }
     }

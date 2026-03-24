@@ -232,7 +232,7 @@ impl SecretStore for EncryptedSecretStore {
         match self.unlock() {
             Ok(guard) => guard.as_ref()?.get(key).cloned(),
             Err(e) => {
-                tracing::warn!("secrets store locked, returning None for '{}': {e}", key);
+                tracing::error!("secrets store locked, returning None for '{}': {e}", key);
                 None
             }
         }
@@ -249,7 +249,7 @@ impl SecretStore for EncryptedSecretStore {
                 keys
             }
             Err(e) => {
-                tracing::warn!("secrets store locked, returning empty list: {e}");
+                tracing::error!("secrets store locked, returning empty list: {e}");
                 vec![]
             }
         }

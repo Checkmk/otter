@@ -354,9 +354,11 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![ctx_script.to_string_lossy().into_owned()]),
             interval_secs: 3600, // won't re-poll during the test
+            secrets: None,
         }),
         workspace: Some(WorkspaceConfig::Script {
             command: vec![ws_script.to_string_lossy().into_owned()],
+            secrets: None,
         }),
         resources: None,
         steps: vec![StepDef {
@@ -474,6 +476,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec!["ctx.sh".to_string()]), // bare name — requires scripts_dir in PATH
             interval_secs: 3600,
+            secrets: None,
         }),
         workspace: None,
         resources: None,
@@ -945,6 +948,7 @@ async fn run_finally_uses_stored_workspace_not_script() {
     );
     wf.workspace = Some(WorkspaceConfig::Script {
         command: vec![ws_script.to_string_lossy().into_owned()],
+        secrets: None,
     });
     wf.finally = vec![FinallyStepDef {
         step: StepDef {

@@ -55,6 +55,8 @@ pub enum TriggerDef {
         context_command: Option<Vec<String>>,
         #[serde(default = "default_poll_interval")]
         interval_secs: u64,
+        #[serde(default)]
+        secrets: Option<Vec<String>>,
     },
 }
 
@@ -71,13 +73,21 @@ pub enum WorkspaceConfig {
     Fixed { path: String },
     /// A command whose stdout (trimmed) is the workspace path.
     /// Invoked as: `command[0] command[1..] <workflow-name> <run-id>`.
-    Script { command: Vec<String> },
+    /// Always runs with a clean environment; declare `secrets` to inject from the store.
+    Script {
+        command: Vec<String>,
+        #[serde(default)]
+        secrets: Option<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct PendingContext {
     pub command: Vec<String>,
     pub hash: String,
+    /// Secret names to resolve and inject when running this context command.
+    /// Always isolated (no daemon env); empty = safe system vars only.
+    pub secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -609,7 +619,7 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { poll_command, context_command, interval_secs } => {
+            TriggerDef::Polling { poll_command, context_command, interval_secs, .. } => {
                 assert_eq!(poll_command, vec!["jira-poller.sh".to_string()]);
                 assert!(context_command.is_none());
                 assert_eq!(interval_secs, 600);
@@ -642,7 +652,7 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { poll_command, context_command, interval_secs } => {
+            TriggerDef::Polling { poll_command, context_command, interval_secs, .. } => {
                 assert_eq!(poll_command, vec!["jira-poller.py".to_string()]);
                 assert_eq!(context_command, Some(vec!["jira-poller.py".to_string(), "--context".to_string()]));
                 assert_eq!(interval_secs, 300);

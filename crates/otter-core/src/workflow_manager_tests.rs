@@ -79,6 +79,7 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
             poll_command: command,
             context_command: None,
             interval_secs: 3600, // Very long interval (1 hour)
+            secrets: None,
         }),
         workspace: None,
         resources: None,

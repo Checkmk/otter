@@ -9,7 +9,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::process::PrependScriptsDir;
+use otter_secrets::SecretStore;
+
+use crate::process::{inject_isolated_env, PrependScriptsDir};
 use crate::types::{PendingContext, TriggerError, TriggerEvent};
 use super::TriggerSource;
 
@@ -60,6 +62,8 @@ pub struct PollingTrigger {
     seen_path: PathBuf,
     in_flight: Arc<Mutex<HashSet<String>>>,
     scripts_dir: Option<PathBuf>,
+    secret_store: Arc<dyn SecretStore>,
+    poll_secrets: Vec<String>,
 }
 
 impl PollingTrigger {
@@ -70,6 +74,8 @@ impl PollingTrigger {
         interval: Duration,
         seen_path: PathBuf,
         scripts_dir: Option<PathBuf>,
+        secret_store: Arc<dyn SecretStore>,
+        poll_secrets: Vec<String>,
     ) -> Self {
         Self {
             name,
@@ -79,6 +85,8 @@ impl PollingTrigger {
             seen_path,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             scripts_dir,
+            secret_store,
+            poll_secrets,
         }
     }
 
@@ -140,8 +148,12 @@ impl TriggerSource for PollingTrigger {
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
         debug!("polling: running {:?}", self.poll_command);
+        let resolved = self.secret_store
+            .resolve(&self.poll_secrets)
+            .map_err(|e| anyhow::anyhow!("secret resolution for poll command failed: {}", e))?;
         let mut cmd = Command::new(&self.poll_command[0]);
         cmd.args(&self.poll_command[1..]);
+        inject_isolated_env(&mut cmd, &resolved);
         cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
         let output = cmd
             .output()
@@ -189,6 +201,7 @@ impl PollingTrigger {
                 pending_context: self.context_command.as_ref().map(|cmd| PendingContext {
                     command: cmd.clone(),
                     hash: hash.clone(),
+                    secrets: self.poll_secrets.clone(),
                 }),
             };
 
@@ -207,7 +220,12 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use otter_secrets::NoOpSecretStore;
     use crate::test_helpers::write_executable_script;
+
+    fn no_secrets_store() -> Arc<dyn SecretStore> {
+        Arc::new(NoOpSecretStore)
+    }
 
     #[tokio::test]
     async fn poll_fires_for_new_hashes() {
@@ -226,6 +244,8 @@ mod tests {
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -267,6 +287,8 @@ mod tests {
             Duration::from_millis(100),
             seen_path,
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -297,6 +319,8 @@ mod tests {
             Duration::from_millis(100),
             seen_path.clone(),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -340,6 +364,8 @@ mod tests {
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -380,6 +406,8 @@ mod tests {
             Duration::from_millis(100),
             seen_path.clone(),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -421,6 +449,8 @@ mod tests {
             Duration::from_millis(100),
             seen_path.clone(),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -450,6 +480,8 @@ mod tests {
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -488,6 +520,8 @@ mod tests {
             Duration::from_millis(100),  // 100ms interval
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -540,6 +574,8 @@ mod tests {
             Duration::from_millis(50),
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -582,6 +618,8 @@ mod tests {
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
+            no_secrets_store(),
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -593,5 +631,94 @@ mod tests {
         let event = rx.recv().await.expect("expected event");
         assert_eq!(event.payload, "hash1");
         assert!(event.preallocated_run_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn poll_command_env_is_isolated_and_secret_injected() {
+        // GIVEN a poll command that writes $POLL_SECRET and $OTTER_TEST_LEAK to a file,
+        // then outputs a JSON hash array.
+        let temp_dir = TempDir::new().unwrap();
+        let env_file = temp_dir.path().join("env_check.txt");
+        std::env::set_var("OTTER_TEST_LEAK", "should-not-appear");
+        let poll_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poll.sh",
+            &format!(
+                "#!/bin/bash\nprintf '%s|%s' \"$POLL_SECRET\" \"$OTTER_TEST_LEAK\" > '{}'\necho '[\"hash1\"]'",
+                env_file.display()
+            ),
+        ).unwrap();
+
+        struct OneSecret;
+        impl SecretStore for OneSecret {
+            fn get(&self, key: &str) -> Option<String> {
+                if key == "POLL_SECRET" { Some("injected".to_string()) } else { None }
+            }
+            fn list(&self) -> Vec<String> { vec!["POLL_SECRET".to_string()] }
+            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> { Ok(()) }
+            fn delete(&self, _: &str) -> anyhow::Result<()> { Ok(()) }
+        }
+
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            vec![poll_path.to_string_lossy().to_string()],
+            None,
+            Duration::from_millis(100),
+            temp_dir.path().join("seen.json"),
+            None,
+            Arc::new(OneSecret),
+            vec!["POLL_SECRET".to_string()],
+        );
+
+        let (tx, _rx) = mpsc::channel(32);
+
+        // WHEN
+        trigger.poll_once(&tx).await.unwrap();
+
+        // THEN — secret was injected; daemon-env var did not leak
+        let contents = fs::read_to_string(&env_file).unwrap();
+        let parts: Vec<&str> = contents.trim().splitn(2, '|').collect();
+        assert_eq!(parts[0], "injected", "declared secret must be injected");
+        assert_eq!(parts[1], "", "daemon env must not leak into poll command");
+    }
+
+    #[tokio::test]
+    async fn pending_context_carries_poll_secrets() {
+        // GIVEN
+        struct DummyStore;
+        impl SecretStore for DummyStore {
+            fn get(&self, _: &str) -> Option<String> { Some("dummy".to_string()) }
+            fn list(&self) -> Vec<String> { vec![] }
+            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> { Ok(()) }
+            fn delete(&self, _: &str) -> anyhow::Result<()> { Ok(()) }
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let poll_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poll.sh",
+            "#!/bin/bash\necho '[\"hash1\"]'",
+        ).unwrap();
+        let ctx_cmd = vec!["ctx.sh".to_string()];
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            vec![poll_path.to_string_lossy().to_string()],
+            Some(ctx_cmd),
+            Duration::from_millis(100),
+            temp_dir.path().join("seen.json"),
+            None,
+            Arc::new(DummyStore),
+            vec!["API_KEY".to_string()],
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+
+        // WHEN
+        trigger.poll_once(&tx).await.unwrap();
+
+        // THEN — PendingContext carries the poll_secrets
+        let event = rx.recv().await.unwrap();
+        let ctx = event.pending_context.unwrap();
+        assert_eq!(ctx.secrets, vec!["API_KEY".to_string()]);
     }
 }

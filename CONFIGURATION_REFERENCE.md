@@ -291,7 +291,12 @@ A command is run before each workflow run. Its stdout (trimmed) is used as the w
 [workspace]
 type = "script"
 command = ["setup-workspace.sh"]
+secrets = ["GITHUB_TOKEN"]   # optional
 ```
+
+**Fields:**
+- `command` (required): The command to run
+- `secrets` (optional): Secrets to inject — see [Secret injection](#secret-injection)
 
 **Script contract:**
 - Invoked as: `<command> <workflow-name> <run-id>`
@@ -344,9 +349,10 @@ cpu_quota = "200%"  # cap the whole run to 2 CPU cores
 
 ## Secrets Management
 
-Secrets allow workflow steps to receive sensitive values (API keys, tokens, passwords) without
-exposing the service's full environment to subprocesses. Each step declares which secrets it needs;
-only those secrets — plus a minimal safe set of system variables — are visible to the subprocess.
+Secrets allow workflows to receive sensitive values (API keys, tokens, passwords) without
+exposing the service's full environment to subprocesses. Any subprocess command — steps,
+workspace scripts, and trigger commands — can declare which secrets it needs; only those
+secrets, plus a minimal safe set of system variables, are visible to that subprocess.
 
 ### Global secret store
 
@@ -372,9 +378,12 @@ otter secret list                          # list all secret names
 otter secret delete GITHUB_TOKEN           # remove
 ```
 
-### Per-step secret injection
+### Secret injection
 
-Add a `secrets` field to any `shell` or `agent` step to enable env isolation for that step:
+Add a `secrets` field to any subprocess command to inject secrets from the store. Supported on:
+- `[[steps]]` — `shell` and `agent` steps
+- `[workspace]` — `script` workspace commands
+- `[trigger]` — `polling` trigger commands (`poll_command` and `context_command`)
 
 ```toml
 [[steps]]
@@ -390,15 +399,11 @@ secrets = ["JIRA_API_KEY"]
 ```
 
 **Behavior:**
-- The subprocess environment is **cleared** (no service env vars are inherited)
-- A safe set of system variables is re-injected: (i.e., `PATH`, `HOME`,
-  `USER`, `TMPDIR`, etc.).
+- All subprocess commands always run with a **clean environment** (no service env vars inherited)
+- A safe set of system variables is re-injected (`PATH`, `HOME`, `USER`, `TMPDIR`, etc.)
 - Each declared secret is looked up in the store and injected as an environment variable
-- If a declared secret name is not found in the store, the step fails with a clear error
-
-Omitting `secrets` and setting `secrets = []` are equivalent — the
-subprocess sees only the safe system vars, with no additional env
-vars injected.
+- If a declared secret name is not found in the store, the command fails with a clear error
+- Omitting `secrets` and setting `secrets = []` are equivalent — the subprocess sees only the safe system vars
 
 ---
 
@@ -449,6 +454,7 @@ Polls an external event source on a configurable interval.
 - `poll_command` (required): Array of strings; the command to run on each poll cycle. stdout must be a JSON array of strings (event identifiers/hashes), exit 0 on success
 - `context_command` (optional): Array of strings; the command to run for each new hash. Invoked as `<context_command> <hash> <context-dir>`, which should write trigger context files to `<context-dir>`. If omitted, no context directory is created and the workflow runs without trigger-context files.
 - `interval_secs` (optional, default: 600): Polling interval in seconds
+- `secrets` (optional): Secrets to inject into both `poll_command` and `context_command` — see [Secret injection](#secret-injection)
 
 **Example:**
 ```toml
@@ -460,6 +466,7 @@ type = "polling"
 poll_command = ["poll-jira", "--poll"]
 context_command = ["poll-jira", "--context"]
 interval_secs = 600
+secrets = ["JIRA_PAT"]
 
 [[steps]]
 type = "shell"

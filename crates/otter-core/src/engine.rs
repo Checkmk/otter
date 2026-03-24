@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::session::AgentSessionManager;
-use crate::process::PrependScriptsDir;
+use crate::process::{inject_isolated_env, PrependScriptsDir};
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
@@ -143,7 +143,8 @@ impl Engine {
                 workflow.workspace.as_ref(),
                 &workflow.name,
                 run.id,
-            )?;
+                self.secret_store.as_ref(),
+            ).await?;
             run.workspace_dir = workspace_dir.clone();
             let workspace_type = match &workflow.workspace {
                 None | Some(WorkspaceConfig::Scratch) => "scratch",
@@ -236,6 +237,7 @@ impl Engine {
             &self.scratch_base,
             workflow.workspace.as_ref(),
             self.scripts_dir.as_deref(),
+            self.secret_store.clone(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -345,7 +347,7 @@ impl Engine {
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
-        let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id)?;
+        let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id, self.secret_store.as_ref()).await?;
         run.workspace_dir = workspace_dir.clone();
         self.storage.update_workflow_run(&run)?;
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
@@ -380,10 +382,14 @@ impl Engine {
             };
             std::fs::create_dir_all(&ctx_dir)?;
             info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
+            let resolved = self.secret_store
+                .resolve(&ctx.secrets)
+                .map_err(|e| anyhow::anyhow!("secret resolution for context command failed: {}", e))?;
             let mut cmd = tokio::process::Command::new(&ctx.command[0]);
             cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
                 .arg(&ctx_dir);
+            inject_isolated_env(&mut cmd, &resolved);
             cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
             let out = cmd.output().await?;
             if !out.status.success() {
