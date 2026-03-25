@@ -130,6 +130,7 @@ pub(crate) fn parse_claude_stream_line(line: &str) -> Vec<ProgressChunk> {
 
     match event_type {
         "assistant" => parse_assistant_event(&val),
+        "user" => parse_user_event(&val),
         "result" => parse_result_event(&val),
         _ => vec![],
     }
@@ -160,6 +161,24 @@ fn parse_assistant_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
                 }
             }
             _ => {}
+        }
+    }
+    chunks
+}
+
+fn parse_user_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
+    let Some(content) = val.pointer("/message/content").and_then(|c| c.as_array()) else {
+        return vec![];
+    };
+
+    let mut chunks = Vec::new();
+    for block in content {
+        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if block_type == "tool_result" {
+            let is_error = block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+            if is_error {
+                chunks.push(ProgressChunk::Status("Tool use denied".to_string()));
+            }
         }
     }
     chunks
@@ -282,6 +301,27 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Thinking..."));
         assert!(matches!(&chunks[1], ProgressChunk::Status(s) if s.contains("Edit")));
+    }
+
+    #[test]
+    fn parse_denied_tool_result() {
+        // GIVEN a user event with a tool_result that has is_error: true (denied)
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"This tool is not allowed.","is_error":true}]}}"#;
+        // WHEN
+        let chunks = parse_claude_stream_line(line);
+        // THEN
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Tool use denied"));
+    }
+
+    #[test]
+    fn parse_successful_tool_result_ignored() {
+        // GIVEN a user event with a successful tool_result (no is_error)
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"file contents here"}]}}"#;
+        // WHEN
+        let chunks = parse_claude_stream_line(line);
+        // THEN — successful tool results don't need a progress entry
+        assert!(chunks.is_empty());
     }
 
     #[test]
