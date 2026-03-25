@@ -187,7 +187,9 @@ pub(super) async fn run_subprocess(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
+    })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
@@ -223,7 +225,9 @@ pub(super) async fn run_subprocess_streaming(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
+    })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(message.as_bytes()).await?;
@@ -305,7 +309,9 @@ pub(super) async fn run_subprocess_no_stdin(
     cmd.kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let output = cmd.output().await?;
+    let output = cmd.output().await.map_err(|e| {
+        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
+    })?;
 
     Ok(AgentOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),

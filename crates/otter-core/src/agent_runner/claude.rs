@@ -62,6 +62,7 @@ impl AgentRunner for ClaudeCodeRunner {
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
             run_subprocess_streaming(&cmd_args, &spec.working_dir, &spec.message, &tx, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?
         } else {
+            cmd_args.push("--print".to_string());
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
@@ -96,6 +97,7 @@ impl AgentRunner for ClaudeCodeRunner {
             let cmd_args = session.resource_limiter.apply(&cmd_args);
             run_subprocess_streaming(&cmd_args, &session.working_dir, message, &tx, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?
         } else {
+            cmd_args.push("--print".to_string());
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);

@@ -90,6 +90,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         )
         .init();
 
+    otter_core::process::init_login_path();
+
     // Write pid file so `otter service stop` can signal the process when not managed by systemd.
     let pid_path = data_dir.join("daemon.pid");
     std::fs::write(&pid_path, std::process::id().to_string())
