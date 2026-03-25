@@ -70,4 +70,4 @@ Can be found in the [examples/](examples/) directory.
 ## Configuration Reference
 
 A reference for all possible configurations (step types, triggers and
-workspace configuration) can be found in the [configuration reference](CONFIGURATION_REFERENCE.md).
+workspace configuration) can be found in the [usage guide](USAGE.md).

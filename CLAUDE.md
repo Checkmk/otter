@@ -12,7 +12,7 @@
 
 # Changing user behavior
 
-- Keep @README.md and @CONFIGURATION_REFERENCE.md up to date.
+- Keep @README.md and @USAGE.md up to date.
 
 # Changing schemas
 
