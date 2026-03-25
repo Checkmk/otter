@@ -8,11 +8,12 @@
 4. [Finally Steps](#finally-steps)
 5. [Workspace Configuration](#workspace-configuration)
 6. [Resource Limits](#resource-limits)
-7. [Triggers](#triggers)
-8. [Secrets Management](#secrets-management)
-9. [Workflow Management](#workflow-management)
-10. [Service Management](#service-management)
-11. [Examples](#examples)
+7. [Sandbox Configuration](#sandbox-configuration)
+8. [Triggers](#triggers)
+9. [Secrets Management](#secrets-management)
+10. [Workflow Management](#workflow-management)
+11. [Service Management](#service-management)
+12. [Examples](#examples)
 
 ---
 
@@ -30,6 +31,8 @@ path = "/home/user/my-project"
 
 [resources]         # optional; see Resource Limits below
 cpu_quota = "200%"
+
+[sandbox]           # optional; see Sandbox Configuration below
 
 [trigger]  # optional; required if type = "triggered"
 type = "manual"
@@ -404,6 +407,79 @@ secrets = ["JIRA_API_KEY"]
 - Each declared secret is looked up in the store and injected as an environment variable
 - If a declared secret name is not found in the store, the command fails with a clear error
 - Omitting `secrets` and setting `secrets = []` are equivalent — the subprocess sees only the safe system vars
+
+---
+
+## Sandbox Configuration
+
+The optional `[sandbox]` table enables filesystem and process isolation for shell and agent steps using rootless [Podman](https://podman.io) containers with security hardening (dropped capabilities, read-only rootfs, tmpfs for writable areas).
+
+**Prerequisites:** Podman must be installed and accessible. If Podman is not available, sandboxed steps fail.
+
+### Workflow-level configuration
+
+```toml
+[sandbox]
+image = "localhost/agentbox:latest"  # optional; default image
+network = "none"                      # optional; "bridge" (default) or "none"
+```
+
+The presence of `[sandbox]` enables sandboxing for all shell and agent steps. To use the defaults (default image, bridge networking), an empty `[sandbox]` section suffices.
+
+**Fields:**
+- `image` (optional): Container image to use. Defaults to `localhost/agentbox:latest`
+- `network` (optional): Network mode — `"bridge"` (default, allows network access) or `"none"` (full network isolation)
+
+### Per-step override
+
+Individual steps can opt in or out of sandboxing:
+
+```toml
+[sandbox]
+
+[[steps]]
+type = "agent"
+provider = "claude"
+message = "Review code."
+# inherits sandbox from workflow level
+
+[[steps]]
+type = "shell"
+command = ["git", "push"]
+sandbox = false                       # opt out for this step
+```
+
+**Resolution logic:** When `[sandbox]` is defined, all shell and agent steps are sandboxed unless the step sets `sandbox = false`. When `[sandbox]` is absent, steps run unsandboxed unless a step sets `sandbox = true`.
+
+### Workspace and scripts
+
+- The workspace directory is bind-mounted at `/workspace` inside the container
+- If the workflow has companion scripts (package directory), the scripts directory is bind-mounted at `/opt/scripts:ro` and added to `PATH`
+
+### Building the default image
+
+The `agentbox` CLI can build and manage the default container image:
+
+```bash
+agentbox build                        # build default image
+agentbox build --tag my-image:v1      # build with custom tag
+agentbox export-template              # export Containerfile for customization
+```
+
+### Standalone usage
+
+`agentbox` can also be used standalone to run any command in a sandbox:
+
+```bash
+# Interactive sandboxed Claude Code session
+agentbox run --workspace ~/my-project -- claude
+
+# With network isolation
+agentbox run --workspace ~/my-project --network none -- claude
+
+# Non-interactive YOLO mode
+agentbox run --no-tty --workspace ~/my-project -- claude --permission-mode bypassPermissions --print "fix the bug"
+```
 
 ---
 

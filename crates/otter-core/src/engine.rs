@@ -14,6 +14,7 @@ use crate::types::{
     StorageBackend, TriggerEvent, WorkflowDef, WorkflowType, WorkflowRun, WorkspaceConfig,
 };
 use crate::resource_limiter::build_limiter;
+use crate::sandbox::resolve_sandbox_config;
 use crate::workspace::resolve_workspace;
 use otter_notify::{NoOpNotifier, Notifier};
 use otter_secrets::{NoOpSecretStore, SecretStore};
@@ -477,6 +478,15 @@ impl Engine {
                 }) as Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>
             });
 
+            let sandbox_config = resolve_sandbox_config(
+                workflow.sandbox.as_ref(),
+                step_def,
+                workspace_dir.unwrap_or(scratch_dir),
+                self.scripts_dir.as_deref(),
+                workflow.resources.as_ref(),
+                scratch_dir,
+            );
+
             let ctx = StepContext {
                 run_id: run.id,
                 workflow_name: workflow.name.clone(),
@@ -492,6 +502,7 @@ impl Engine {
                 progress_fn,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
+                sandbox_config,
             };
 
             info!(step = i, step_type = %step_def.step_type, command = ?step_def.command, "Executing step");
@@ -616,6 +627,15 @@ impl Engine {
                     Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
                 });
 
+            let sandbox_config = resolve_sandbox_config(
+                workflow.sandbox.as_ref(),
+                step_def,
+                workspace_dir.unwrap_or(scratch_dir),
+                self.scripts_dir.as_deref(),
+                workflow.resources.as_ref(),
+                scratch_dir,
+            );
+
             let ctx = StepContext {
                 run_id: run.id,
                 workflow_name: workflow.name.clone(),
@@ -631,6 +651,7 @@ impl Engine {
                 progress_fn: None,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
+                sandbox_config,
             };
 
             info!(step = i, step_type = %step_def.step_type, "Executing finally step");

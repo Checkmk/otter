@@ -15,6 +15,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 cron = { workspace = true }
+agentbox = { path = "../agentbox" }
 otter-notify = { path = "../otter-notify" }
 otter-secrets = { path = "../otter-secrets" }
 

@@ -1,5 +1,5 @@
 use super::StepExecutor;
-use crate::process::{inject_isolated_env, PrependScriptsDir};
+use crate::process::build_subprocess_command;
 use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 
@@ -28,17 +28,24 @@ impl StepExecutor for ShellExecutor {
         let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
         let display_cmd = command.join(" ");
-        let command = ctx.resource_limiter.apply(command);
-        let mut cmd = tokio::process::Command::new(&command[0]);
-        cmd.args(&command[1..]).current_dir(working_dir).kill_on_drop(true);
-
         let resolved = ctx
             .secret_store
             .resolve(step_def.secrets.as_deref().unwrap_or_default())
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
-        inject_isolated_env(&mut cmd, &resolved);
 
-        cmd.prepend_scripts_dir(ctx.scripts_dir.as_deref());
+        let command = if ctx.sandbox_config.is_none() {
+            ctx.resource_limiter.apply(command)
+        } else {
+            command.to_vec()
+        };
+        let mut cmd = build_subprocess_command(
+            &command,
+            working_dir,
+            ctx.scripts_dir.as_deref(),
+            &resolved,
+            ctx.sandbox_config.as_ref(),
+        );
+        cmd.kill_on_drop(true);
         let output = cmd.output().await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -105,6 +112,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         }
     }
 
@@ -116,6 +124,7 @@ mod tests {
             session: None,
             notify: None,
             secrets: None,
+            sandbox: None,
             agent: Default::default(),
         }
     }

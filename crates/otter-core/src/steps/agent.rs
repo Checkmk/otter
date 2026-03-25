@@ -70,6 +70,7 @@ impl StepExecutor for AgentExecutor {
                 ctx.resource_limiter.clone(),
                 ctx.scripts_dir.as_deref(),
                 &resolved_secrets,
+                ctx.sandbox_config.clone(),
             )
             .await
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
@@ -108,7 +109,7 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
-                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None },
+                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None, sandbox_config: None },
                 AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -148,6 +149,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         };
         let step_def = StepDef {
             step_type: StepType::Agent,
@@ -156,6 +158,7 @@ mod tests {
             session: None,
             notify: None,
             secrets: None,
+            sandbox: None,
             agent: crate::types::AgentConfig { provider: Some("claude".into()), ..Default::default() },
         };
 

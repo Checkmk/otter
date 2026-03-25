@@ -44,6 +44,7 @@ impl AgentRunner for CopilotRunner {
             working_dir: spec.working_dir.clone(),
             resource_limiter: spec.resource_limiter.clone(),
             scripts_dir: spec.scripts_dir.clone(),
+            sandbox_config: spec.sandbox_config.clone(),
         };
 
         let mut cmd_args = vec!["copilot".to_string()];
@@ -53,7 +54,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(spec.message.clone());
         let cmd_args = spec.resource_limiter.apply(&cmd_args);
 
-        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir, spec.scripts_dir.as_deref(), &spec.secrets).await?;
+        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -78,7 +79,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(message.to_string());
         let cmd_args = session.resource_limiter.apply(&cmd_args);
 
-        let output = run_subprocess_no_stdin(&cmd_args, &session.working_dir, session.scripts_dir.as_deref(), secrets).await?;
+        let output = run_subprocess_no_stdin(&cmd_args, &session.working_dir, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {

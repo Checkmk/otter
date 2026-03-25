@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/agentbox",
     "crates/otter-core",
     "crates/otter-secrets",
     "crates/otter-storage",

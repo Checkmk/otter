@@ -23,6 +23,7 @@ fn shell_step() -> StepDef {
         session: None,
         notify: None,
         secrets: None,
+        sandbox: None,
         agent: Default::default(),
     }
 }
@@ -36,6 +37,7 @@ fn looping_workflow(name: &str) -> WorkflowDef {
         trigger: None,
         workspace: None,
         resources: None,
+        sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
     }
@@ -50,6 +52,7 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
         trigger: None,
         workspace: None,
         resources: None,
+        sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
     }
@@ -64,6 +67,7 @@ fn manual_workflow(name: &str) -> WorkflowDef {
         trigger: Some(TriggerDef::Manual),
         workspace: None,
         resources: None,
+        sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
     }
@@ -83,6 +87,7 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
         }),
         workspace: None,
         resources: None,
+        sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
     }
@@ -516,6 +521,7 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
         trigger: None,
         workspace: None,
         resources: None,
+        sandbox: None,
         steps: vec![StepDef {
             step_type: StepType::Shell,
             command: Some(vec!["sleep".to_string(), "60".to_string()]),
@@ -523,6 +529,7 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
             session: None,
             notify: None,
             secrets: None,
+            sandbox: None,
             agent: Default::default(),
         }],
         finally: vec![],

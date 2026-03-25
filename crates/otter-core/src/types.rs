@@ -15,6 +15,31 @@ pub struct ResourceConfig {
     pub cpu_quota: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxDef {
+    pub image: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_network_mode")]
+    pub network: Option<String>,
+}
+
+fn deserialize_network_mode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let val: Option<String> = Option::deserialize(deserializer)?;
+    if let Some(ref s) = val {
+        match s.as_str() {
+            "bridge" | "none" => {}
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "invalid network mode '{other}': expected 'bridge' or 'none'"
+                )));
+            }
+        }
+    }
+    Ok(val)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowDef {
     pub name: String,
@@ -32,6 +57,8 @@ pub struct WorkflowDef {
     pub workspace: Option<WorkspaceConfig>,
     #[serde(default)]
     pub resources: Option<ResourceConfig>,
+    #[serde(default)]
+    pub sandbox: Option<SandboxDef>,
     pub steps: Vec<StepDef>,
     /// Steps that always run after main steps, regardless of outcome.
     #[serde(default)]
@@ -143,6 +170,10 @@ pub struct StepDef {
     pub notify: Option<Vec<String>>,
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
+    /// Per-step sandbox override: `true` forces sandbox on, `false` opts out,
+    /// absent inherits from workflow-level `[sandbox]`.
+    #[serde(default)]
+    pub sandbox: Option<bool>,
     #[serde(flatten)]
     pub agent: AgentConfig,
 }
@@ -261,6 +292,8 @@ pub struct StepContext {
     pub progress_fn: Option<Arc<dyn Fn(ProgressChunk) + Send + Sync>>,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
     pub secret_store: Arc<dyn SecretStore>,
+    /// Resolved sandbox configuration for this step, if sandboxing is active.
+    pub sandbox_config: Option<agentbox::SandboxConfig>,
 }
 
 #[derive(Debug)]
@@ -472,7 +505,7 @@ mod tests {
     fn finally_step_applies_to_all_when_on_is_none() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, agent: Default::default() },
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, sandbox: None, agent: Default::default() },
             on: None,
         };
         // WHEN / THEN
@@ -485,7 +518,7 @@ mod tests {
     fn finally_step_applies_to_matching_outcome() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, agent: Default::default() },
+            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, sandbox: None, agent: Default::default() },
             on: Some(vec![RunOutcome::Failed]),
         };
         // WHEN / THEN
@@ -659,6 +692,80 @@ mod tests {
             }
             _ => panic!("expected polling trigger"),
         }
+    }
+
+    #[test]
+    fn sandbox_config_deserializes_from_toml() {
+        // GIVEN
+        let toml_str = r#"
+            name = "sandboxed"
+            type = "looping"
+
+            [sandbox]
+            image = "my-image:latest"
+            network = "none"
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+
+            [[steps]]
+            type = "shell"
+            command = ["git", "push"]
+            sandbox = false
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        let sandbox = def.sandbox.unwrap();
+        assert_eq!(sandbox.image.as_deref(), Some("my-image:latest"));
+        assert_eq!(sandbox.network.as_deref(), Some("none"));
+        assert!(def.steps[0].sandbox.is_none());
+        assert_eq!(def.steps[1].sandbox, Some(false));
+    }
+
+    #[test]
+    fn sandbox_invalid_network_mode_fails_deserialization() {
+        // GIVEN
+        let toml_str = r#"
+            name = "bad-network"
+            type = "looping"
+
+            [sandbox]
+            network = "noen"
+
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+
+        // WHEN
+        let err = toml::from_str::<WorkflowDef>(toml_str).unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("invalid network mode"), "error should mention invalid network mode: {msg}");
+    }
+
+    #[test]
+    fn sandbox_absent_deserializes_as_none() {
+        // GIVEN
+        let toml_str = r#"
+            name = "no-sandbox"
+            type = "looping"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        assert!(def.sandbox.is_none());
+        assert!(def.steps[0].sandbox.is_none());
     }
 
     #[test]

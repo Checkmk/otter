@@ -6,6 +6,7 @@ Automate multi-step tasks (with AI support) triggered by real-world events.
 - **Agent steps** drive Claude, Copilot or any AI CLI across steps
 - **Checkpoints** pause for human review and feedback
 - **Workspace** isolates agents in per-run scratch directories, a fixed directory or a per-run script-provisioned directory
+- **Sandbox** optionally runs agent and shell steps in rootless Podman containers with security hardening
 - **TUI dashboard** monitors workflows, views logs, and controls execution
 
 ## Build
@@ -14,6 +15,7 @@ Automate multi-step tasks (with AI support) triggered by real-world events.
 
 - Rust toolchain (`cargo`)
 - For agent steps: Claude Code, Copilot CLI, or any AI CLI tool
+- For sandbox: [Podman](https://podman.io) (rootless)
 
 ### Install
 

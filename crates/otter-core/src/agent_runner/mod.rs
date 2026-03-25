@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::process::{inject_isolated_env, PrependScriptsDir};
+use crate::process::build_subprocess_command;
 use crate::resource_limiter::ResourceLimiter;
 use crate::types::ProgressChunk;
 
@@ -21,6 +21,8 @@ pub struct AgentSpec {
     pub scripts_dir: Option<PathBuf>,
     /// Resolved `(name, value)` pairs to inject to isolated env.
     pub secrets: Vec<(String, String)>,
+    /// When set, subprocess is wrapped in a podman container.
+    pub sandbox_config: Option<agentbox::SandboxConfig>,
 }
 
 #[derive(Clone)]
@@ -29,6 +31,7 @@ pub struct AgentSessionHandle {
     pub working_dir: PathBuf,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
     pub scripts_dir: Option<PathBuf>,
+    pub sandbox_config: Option<agentbox::SandboxConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,10 +92,11 @@ impl AgentRunner for CustomRunner {
             working_dir: spec.working_dir.clone(),
             resource_limiter: spec.resource_limiter.clone(),
             scripts_dir: spec.scripts_dir.clone(),
+            sandbox_config: spec.sandbox_config.clone(),
         };
 
         let cmd = spec.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), &spec.secrets).await?;
+        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -111,7 +115,7 @@ impl AgentRunner for CustomRunner {
         secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let cmd = session.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &session.working_dir, message, session.scripts_dir.as_deref(), secrets).await?;
+        let output = run_subprocess(&cmd, &session.working_dir, message, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -172,20 +176,17 @@ pub(super) async fn run_subprocess(
     message: &str,
     scripts_dir: Option<&std::path::Path>,
     secrets: &[(String, String)],
+    sandbox_config: Option<&agentbox::SandboxConfig>,
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
-    cmd.args(&cmd_args[1..])
-        .current_dir(working_dir)
-        .kill_on_drop(true)
+    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
+    cmd.kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    inject_isolated_env(&mut cmd, secrets);
-    cmd.prepend_scripts_dir(scripts_dir);
     let mut child = cmd.spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -209,6 +210,7 @@ pub(super) async fn run_subprocess_streaming(
     progress_tx: &mpsc::Sender<ProgressChunk>,
     scripts_dir: Option<&std::path::Path>,
     secrets: &[(String, String)],
+    sandbox_config: Option<&agentbox::SandboxConfig>,
 ) -> Result<AgentOutput, AgentError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -216,15 +218,11 @@ pub(super) async fn run_subprocess_streaming(
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
-    cmd.args(&cmd_args[1..])
-        .current_dir(working_dir)
-        .kill_on_drop(true)
+    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
+    cmd.kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    inject_isolated_env(&mut cmd, secrets);
-    cmd.prepend_scripts_dir(scripts_dir);
     let mut child = cmd.spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -297,19 +295,16 @@ pub(super) async fn run_subprocess_no_stdin(
     working_dir: &std::path::Path,
     scripts_dir: Option<&std::path::Path>,
     secrets: &[(String, String)],
+    sandbox_config: Option<&agentbox::SandboxConfig>,
 ) -> Result<AgentOutput, AgentError> {
     if cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut cmd = tokio::process::Command::new(&cmd_args[0]);
-    cmd.args(&cmd_args[1..])
-        .current_dir(working_dir)
-        .kill_on_drop(true)
+    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
+    cmd.kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    inject_isolated_env(&mut cmd, secrets);
-    cmd.prepend_scripts_dir(scripts_dir);
     let output = cmd.output().await?;
 
     Ok(AgentOutput {

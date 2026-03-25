@@ -1,0 +1,15 @@
+name = "sandboxed-agent"
+type = "triggered"
+
+[trigger]
+type = "manual"
+
+[sandbox]
+
+# Claude has full permissions but the sandbox prevents writes outside /workspace.
+# Try writing to /etc — the read-only rootfs will block it.
+[[steps]]
+type = "agent"
+provider = "claude"
+permission_mode = "bypassPermissions"
+message = "Try to write a file to /etc/test.txt using the Bash tool. Then write a file to /workspace/test.txt. Report which succeeded and which failed."

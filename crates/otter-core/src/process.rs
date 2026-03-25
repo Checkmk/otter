@@ -52,3 +52,33 @@ pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(Strin
         cmd.env(k, v);
     }
 }
+
+/// Build a `tokio::process::Command` for a subprocess, handling both sandboxed and
+/// unsandboxed execution. Returns the command ready to spawn.
+///
+/// When `sandbox_config` is `Some`, the command is wrapped via `agentbox::wrap_command`
+/// and secrets are injected as container env vars. When `None`, the command runs directly
+/// with an isolated environment and optional scripts dir on PATH.
+pub fn build_subprocess_command(
+    cmd_args: &[String],
+    working_dir: &Path,
+    scripts_dir: Option<&Path>,
+    secrets: &[(String, String)],
+    sandbox_config: Option<&agentbox::SandboxConfig>,
+) -> tokio::process::Command {
+    if let Some(sandbox) = sandbox_config {
+        let mut sandbox = sandbox.clone();
+        sandbox.env_vars.extend(secrets.iter().cloned());
+        let wrapped = agentbox::wrap_command(cmd_args, &sandbox);
+        let mut cmd = tokio::process::Command::new(&wrapped[0]);
+        cmd.args(&wrapped[1..]);
+        cmd.env_clear();
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new(&cmd_args[0]);
+        cmd.args(&cmd_args[1..]).current_dir(working_dir);
+        inject_isolated_env(&mut cmd, secrets);
+        cmd.prepend_scripts_dir(scripts_dir);
+        cmd
+    }
+}

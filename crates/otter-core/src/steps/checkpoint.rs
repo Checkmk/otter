@@ -150,7 +150,7 @@ mod tests {
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push("start".into());
             Ok((
-                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None },
+                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None, sandbox_config: None },
                 AgentOutput { stdout: "initial".into(), stderr: String::new(), exit_code: Some(0) },
             ))
         }
@@ -187,6 +187,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         }
     }
 
@@ -210,6 +211,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         }
     }
 
@@ -296,6 +298,7 @@ mod tests {
                 Arc::new(NoOpLimiter),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -345,6 +348,7 @@ mod tests {
                 Arc::new(NoOpLimiter),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -425,6 +429,7 @@ mod tests {
                 Arc::new(NoOpLimiter),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -453,6 +458,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         };
 
         // WHEN
@@ -510,6 +516,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         };
 
         // WHEN
@@ -549,6 +556,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         };
 
         // WHEN

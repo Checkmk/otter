@@ -81,6 +81,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            sandbox_config: None,
         }
     }
 
@@ -96,6 +97,7 @@ mod tests {
             session: None,
             notify: None,
             secrets: None,
+            sandbox: None,
             agent: Default::default(),
         };
 
@@ -120,6 +122,7 @@ mod tests {
             session: None,
             notify: None,
             secrets: None,
+            sandbox: None,
             agent: Default::default(),
         };
 
