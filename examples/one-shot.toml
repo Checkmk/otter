@@ -1,0 +1,40 @@
+name = "one-shot-impl-otter"
+type = "triggered"
+
+[trigger]
+type = "manual"
+
+# Point to the correct absolute path of the repository
+# [workspace]
+# type = "fixed"
+# path = "."
+
+[[steps]]
+type = "agent"
+provider = "claude"
+session = "one-shot-session"
+permission_mode = "acceptEdits"
+message = """
+You will be given a task to implement.
+Print 'Ready for the task.' when you are ready to receive the task.
+"""
+
+[[steps]]
+type = "checkpoint"
+message = """
+
+Describe what you want implemented as feedback.
+Continue to commit the implementation.
+"""
+
+[[steps]]
+type = "agent"
+provider = "claude"
+session = "one-shot-session"
+allowed_tools = ["Read", "Bash(git add:)", "Bash(git commit:)"]
+message = """
+Write a compact commit message of the implemented changes.
+Focus on what and why something was done, not how.
+The first line should be at most 50 characters long.
+Stage and commit the changes using 'git add' and 'git commit'.
+"""

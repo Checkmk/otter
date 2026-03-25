@@ -1,9 +1,10 @@
 name = "arch-sync"
 type = "looping"
 
-[workspace]
-type = "fixed"
-path = "."
+# Point to the correct absolute path of the repository
+# [workspace]
+# type = "fixed"
+# path = "."
 
 [[steps]]
 type = "agent"
