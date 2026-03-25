@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -96,7 +96,14 @@ impl AgentRunner for CustomRunner {
         };
 
         let cmd = spec.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?;
+        let output = run_agent_subprocess(&SubprocessSpec {
+            cmd_args: &cmd,
+            working_dir: &spec.working_dir,
+            stdin_message: Some(&spec.message),
+            scripts_dir: spec.scripts_dir.as_deref(),
+            secrets: &spec.secrets,
+            sandbox_config: spec.sandbox_config.as_ref(),
+        }, None).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -115,7 +122,14 @@ impl AgentRunner for CustomRunner {
         secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let cmd = session.resource_limiter.apply(&self.command);
-        let output = run_subprocess(&cmd, &session.working_dir, message, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?;
+        let output = run_agent_subprocess(&SubprocessSpec {
+            cmd_args: &cmd,
+            working_dir: &session.working_dir,
+            stdin_message: Some(message),
+            scripts_dir: session.scripts_dir.as_deref(),
+            secrets,
+            sandbox_config: session.sandbox_config.as_ref(),
+        }, None).await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -170,152 +184,116 @@ pub(super) fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentErro
     AgentError::Failed(format!("agent exited with code {code}{detail}"))
 }
 
-pub(super) async fn run_subprocess(
-    cmd_args: &[String],
-    working_dir: &std::path::Path,
-    message: &str,
-    scripts_dir: Option<&std::path::Path>,
-    secrets: &[(String, String)],
-    sandbox_config: Option<&agentbox::SandboxConfig>,
-) -> Result<AgentOutput, AgentError> {
-    if cmd_args.is_empty() {
-        return Err(AgentError::Failed("empty command".to_string()));
-    }
-
-    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
-    cmd.kill_on_drop(true)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
-    })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin.write_all(message.as_bytes()).await?;
-    }
-
-    let output = child.wait_with_output().await?;
-
-    Ok(AgentOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-    })
+/// Describes how to invoke an agent subprocess.
+pub(super) struct SubprocessSpec<'a> {
+    pub cmd_args: &'a [String],
+    pub working_dir: &'a Path,
+    /// When set, written to subprocess stdin before closing it.
+    pub stdin_message: Option<&'a str>,
+    pub scripts_dir: Option<&'a Path>,
+    pub secrets: &'a [(String, String)],
+    pub sandbox_config: Option<&'a agentbox::SandboxConfig>,
 }
 
-pub(super) async fn run_subprocess_streaming(
-    cmd_args: &[String],
-    working_dir: &std::path::Path,
-    message: &str,
-    progress_tx: &mpsc::Sender<ProgressChunk>,
-    scripts_dir: Option<&std::path::Path>,
-    secrets: &[(String, String)],
-    sandbox_config: Option<&agentbox::SandboxConfig>,
+/// Line parser for streaming mode: receives one stdout line and the accumulated
+/// stdout buffer. Returns progress chunks to forward to the TUI. The parser is
+/// responsible for appending relevant text to `stdout`.
+pub(super) type StreamLineParseFn = fn(&str, &mut String) -> Vec<ProgressChunk>;
+
+/// Run an agent subprocess with optional streaming progress.
+pub(super) async fn run_agent_subprocess(
+    spec: &SubprocessSpec<'_>,
+    streaming: Option<(&mpsc::Sender<ProgressChunk>, StreamLineParseFn)>,
 ) -> Result<AgentOutput, AgentError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    if cmd_args.is_empty() {
+    if spec.cmd_args.is_empty() {
         return Err(AgentError::Failed("empty command".to_string()));
     }
 
-    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
+    let mut cmd = build_subprocess_command(
+        spec.cmd_args, spec.working_dir, spec.scripts_dir,
+        spec.secrets, spec.sandbox_config,
+    );
     cmd.kill_on_drop(true)
-        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
-    })?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(message.as_bytes()).await?;
+    if spec.stdin_message.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
     }
 
-    let stdout_pipe = child.stdout.take()
-        .ok_or_else(|| AgentError::Failed("no stdout pipe".to_string()))?;
-    let stderr_pipe = child.stderr.take()
-        .ok_or_else(|| AgentError::Failed("no stderr pipe".to_string()))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", spec.cmd_args[0], e))
+    })?;
 
-    let mut stdout_reader = BufReader::new(stdout_pipe).lines();
-    let mut stderr_reader = BufReader::new(stderr_pipe).lines();
+    if let Some(message) = spec.stdin_message {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(message.as_bytes()).await?;
+        }
+    }
 
-    let mut result_text = String::new();
-    let mut stderr_buf = String::new();
+    if let Some((progress_tx, parse_line)) = streaming {
+        let stdout_pipe = child.stdout.take()
+            .ok_or_else(|| AgentError::Failed("no stdout pipe".to_string()))?;
+        let stderr_pipe = child.stderr.take()
+            .ok_or_else(|| AgentError::Failed("no stderr pipe".to_string()))?;
 
-    loop {
-        tokio::select! {
-            line = stdout_reader.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        for chunk in claude::parse_claude_stream_line(&line) {
-                            if let ProgressChunk::Stdout(ref text) = chunk {
-                                result_text.push_str(text);
-                                result_text.push('\n');
+        let mut stdout_reader = BufReader::new(stdout_pipe).lines();
+        let mut stderr_reader = BufReader::new(stderr_pipe).lines();
+
+        let mut result_text = String::new();
+        let mut stderr_buf = String::new();
+
+        loop {
+            tokio::select! {
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            for chunk in parse_line(&line, &mut result_text) {
+                                let _ = progress_tx.try_send(chunk);
                             }
-                            let _ = progress_tx.try_send(chunk);
                         }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "error reading agent stdout");
-                        break;
+                        Ok(None) => break,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "error reading agent stdout");
+                            break;
+                        }
                     }
                 }
-            }
-            line = stderr_reader.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        if !stderr_buf.is_empty() {
-                            stderr_buf.push('\n');
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if !stderr_buf.is_empty() {
+                                stderr_buf.push('\n');
+                            }
+                            stderr_buf.push_str(&line);
+                            let _ = progress_tx.try_send(ProgressChunk::Stderr(line));
                         }
-                        stderr_buf.push_str(&line);
-                        let _ = progress_tx.try_send(ProgressChunk::Stderr(line));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!(error = %e, "error reading agent stderr");
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "error reading agent stderr");
+                        }
                     }
                 }
             }
         }
+
+        let status = child.wait().await?;
+        let stdout = result_text.trim_end().to_string();
+
+        Ok(AgentOutput {
+            stdout,
+            stderr: stderr_buf,
+            exit_code: status.code(),
+        })
+    } else {
+        let output = child.wait_with_output().await?;
+
+        Ok(AgentOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code(),
+        })
     }
-
-    let status = child.wait().await?;
-
-    // Trim trailing newline from accumulated result text
-    let stdout = result_text.trim_end().to_string();
-
-    Ok(AgentOutput {
-        stdout,
-        stderr: stderr_buf,
-        exit_code: status.code(),
-    })
-}
-
-pub(super) async fn run_subprocess_no_stdin(
-    cmd_args: &[String],
-    working_dir: &std::path::Path,
-    scripts_dir: Option<&std::path::Path>,
-    secrets: &[(String, String)],
-    sandbox_config: Option<&agentbox::SandboxConfig>,
-) -> Result<AgentOutput, AgentError> {
-    if cmd_args.is_empty() {
-        return Err(AgentError::Failed("empty command".to_string()));
-    }
-
-    let mut cmd = build_subprocess_command(cmd_args, working_dir, scripts_dir, secrets, sandbox_config);
-    cmd.kill_on_drop(true)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let output = cmd.output().await.map_err(|e| {
-        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", cmd_args[0], e))
-    })?;
-
-    Ok(AgentOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-    })
 }

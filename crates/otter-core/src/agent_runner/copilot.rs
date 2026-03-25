@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
-    classify_agent_error, run_subprocess_no_stdin,
+    SubprocessSpec, classify_agent_error, run_agent_subprocess,
 };
 use crate::types::ProgressChunk;
 
@@ -35,7 +35,7 @@ impl AgentRunner for CopilotRunner {
     async fn start(
         &self,
         spec: AgentSpec,
-        _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
         let session_id = Uuid::new_v4().to_string();
 
@@ -52,9 +52,32 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(format!("--resume={session_id}"));
         cmd_args.push("-p".to_string());
         cmd_args.push(spec.message.clone());
-        let cmd_args = spec.resource_limiter.apply(&cmd_args);
 
-        let output = run_subprocess_no_stdin(&cmd_args, &spec.working_dir, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?;
+        let output = if let Some(tx) = progress_tx {
+            cmd_args.push("--stream".to_string());
+            cmd_args.push("on".to_string());
+            cmd_args.push("--output-format".to_string());
+            cmd_args.push("json".to_string());
+            let cmd_args = spec.resource_limiter.apply(&cmd_args);
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &spec.working_dir,
+                stdin_message: None,
+                scripts_dir: spec.scripts_dir.as_deref(),
+                secrets: &spec.secrets,
+                sandbox_config: spec.sandbox_config.as_ref(),
+            }, Some((&tx, parse_copilot_stream_line))).await?
+        } else {
+            let cmd_args = spec.resource_limiter.apply(&cmd_args);
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &spec.working_dir,
+                stdin_message: None,
+                scripts_dir: spec.scripts_dir.as_deref(),
+                secrets: &spec.secrets,
+                sandbox_config: spec.sandbox_config.as_ref(),
+            }, None).await?
+        };
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -69,7 +92,7 @@ impl AgentRunner for CopilotRunner {
         &self,
         session: &AgentSessionHandle,
         message: &str,
-        _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
+        progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let mut cmd_args = vec!["copilot".to_string()];
@@ -77,9 +100,32 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push(format!("--resume={}", session.id));
         cmd_args.push("-p".to_string());
         cmd_args.push(message.to_string());
-        let cmd_args = session.resource_limiter.apply(&cmd_args);
 
-        let output = run_subprocess_no_stdin(&cmd_args, &session.working_dir, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?;
+        let output = if let Some(tx) = progress_tx {
+            cmd_args.push("--stream".to_string());
+            cmd_args.push("on".to_string());
+            cmd_args.push("--output-format".to_string());
+            cmd_args.push("json".to_string());
+            let cmd_args = session.resource_limiter.apply(&cmd_args);
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &session.working_dir,
+                stdin_message: None,
+                scripts_dir: session.scripts_dir.as_deref(),
+                secrets,
+                sandbox_config: session.sandbox_config.as_ref(),
+            }, Some((&tx, parse_copilot_stream_line))).await?
+        } else {
+            let cmd_args = session.resource_limiter.apply(&cmd_args);
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &session.working_dir,
+                stdin_message: None,
+                scripts_dir: session.scripts_dir.as_deref(),
+                secrets,
+                sandbox_config: session.sandbox_config.as_ref(),
+            }, None).await?
+        };
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -92,5 +138,55 @@ impl AgentRunner for CopilotRunner {
 
     async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
         Ok(())
+    }
+}
+
+/// Parse a single JSONL event from `copilot --stream on --output-format json`.
+///
+/// Emits `ProgressChunk::Status` for tool execution and turn events.
+/// Deltas are accumulated silently into `stdout`; the final `assistant.message`
+/// sets the canonical content.
+fn parse_copilot_stream_line(line: &str, stdout: &mut String) -> Vec<ProgressChunk> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return vec![];
+    };
+
+    match val.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+        "assistant.message_delta" => {
+            if let Some(delta) = val.pointer("/data/deltaContent").and_then(|v| v.as_str()) {
+                stdout.push_str(delta);
+            }
+            vec![]
+        }
+        "assistant.message" => {
+            if let Some(content) = val.pointer("/data/content").and_then(|v| v.as_str()) {
+                if !content.is_empty() {
+                    *stdout = content.to_string();
+                }
+            }
+            // Report tool requests as status
+            let mut chunks = Vec::new();
+            if let Some(reqs) = val.pointer("/data/toolRequests").and_then(|v| v.as_array()) {
+                for req in reqs {
+                    let name = req.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                    if name == "report_intent" {
+                        if let Some(intent) = req.pointer("/arguments/intent").and_then(|v| v.as_str()) {
+                            chunks.push(ProgressChunk::Status(intent.to_string()));
+                        }
+                    } else {
+                        chunks.push(ProgressChunk::Status(format!("Using tool: {name}")));
+                    }
+                }
+            }
+            chunks
+        }
+        "tool.execution_start" => {
+            let name = val.pointer("/data/toolName").and_then(|v| v.as_str()).unwrap_or("unknown");
+            if name == "report_intent" {
+                return vec![];
+            }
+            vec![ProgressChunk::Status(format!("Using tool: {name}"))]
+        }
+        _ => vec![],
     }
 }

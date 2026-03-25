@@ -6,7 +6,7 @@ use crate::types::ProgressChunk;
 
 use super::{
     AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
-    classify_agent_error, run_subprocess, run_subprocess_streaming,
+    SubprocessSpec, classify_agent_error, run_agent_subprocess,
 };
 
 /// Agent runner targeting the Claude Code CLI.
@@ -60,13 +60,27 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_subprocess_streaming(&cmd_args, &spec.working_dir, &spec.message, &tx, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &spec.working_dir,
+                stdin_message: Some(&spec.message),
+                scripts_dir: spec.scripts_dir.as_deref(),
+                secrets: &spec.secrets,
+                sandbox_config: spec.sandbox_config.as_ref(),
+            }, Some((&tx, parse_claude_stream_line))).await?
         } else {
             cmd_args.push("--print".to_string());
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_subprocess(&cmd_args, &spec.working_dir, &spec.message, spec.scripts_dir.as_deref(), &spec.secrets, spec.sandbox_config.as_ref()).await?
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &spec.working_dir,
+                stdin_message: Some(&spec.message),
+                scripts_dir: spec.scripts_dir.as_deref(),
+                secrets: &spec.secrets,
+                sandbox_config: spec.sandbox_config.as_ref(),
+            }, None).await?
         };
 
         if let Some(code) = output.exit_code {
@@ -95,13 +109,27 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_subprocess_streaming(&cmd_args, &session.working_dir, message, &tx, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &session.working_dir,
+                stdin_message: Some(message),
+                scripts_dir: session.scripts_dir.as_deref(),
+                secrets,
+                sandbox_config: session.sandbox_config.as_ref(),
+            }, Some((&tx, parse_claude_stream_line))).await?
         } else {
             cmd_args.push("--print".to_string());
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_subprocess(&cmd_args, &session.working_dir, message, session.scripts_dir.as_deref(), secrets, session.sandbox_config.as_ref()).await?
+            run_agent_subprocess(&SubprocessSpec {
+                cmd_args: &cmd_args,
+                working_dir: &session.working_dir,
+                stdin_message: Some(message),
+                scripts_dir: session.scripts_dir.as_deref(),
+                secrets,
+                sandbox_config: session.sandbox_config.as_ref(),
+            }, None).await?
         };
 
         if let Some(code) = output.exit_code {
@@ -120,8 +148,8 @@ impl AgentRunner for ClaudeCodeRunner {
 
 /// Parse a single line of Claude's `--output-format stream-json` output into progress chunks.
 ///
-/// Returns an empty vec for events we don't care about (system init, rate limits, etc.).
-pub(crate) fn parse_claude_stream_line(line: &str) -> Vec<ProgressChunk> {
+/// Accumulates result text into `stdout`. Returns an empty vec for events we don't care about.
+pub(crate) fn parse_claude_stream_line(line: &str, stdout: &mut String) -> Vec<ProgressChunk> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
         return vec![];
     };
@@ -129,14 +157,14 @@ pub(crate) fn parse_claude_stream_line(line: &str) -> Vec<ProgressChunk> {
     let event_type = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match event_type {
-        "assistant" => parse_assistant_event(&val),
+        "assistant" => parse_assistant_event(&val, stdout),
         "user" => parse_user_event(&val),
-        "result" => parse_result_event(&val),
+        "result" => parse_result_event(&val, stdout),
         _ => vec![],
     }
 }
 
-fn parse_assistant_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
+fn parse_assistant_event(val: &serde_json::Value, stdout: &mut String) -> Vec<ProgressChunk> {
     let Some(content) = val.pointer("/message/content").and_then(|c| c.as_array()) else {
         return vec![];
     };
@@ -156,6 +184,8 @@ fn parse_assistant_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
+                        stdout.push_str(text);
+                        stdout.push('\n');
                         chunks.push(ProgressChunk::Stdout(text.to_string()));
                     }
                 }
@@ -184,9 +214,11 @@ fn parse_user_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
     chunks
 }
 
-fn parse_result_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
+fn parse_result_event(val: &serde_json::Value, stdout: &mut String) -> Vec<ProgressChunk> {
     if let Some(result) = val.get("result").and_then(|r| r.as_str()) {
         if !result.is_empty() {
+            stdout.push_str(result);
+            stdout.push('\n');
             return vec![ProgressChunk::Stdout(result.to_string())];
         }
     }
@@ -221,7 +253,7 @@ mod tests {
     #[test]
     fn parse_thinking_event() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me think...","signature":"abc"}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Thinking..."));
     }
@@ -229,7 +261,7 @@ mod tests {
     #[test]
     fn parse_tool_use_event() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Using tool: Read(src/main.rs)"));
     }
@@ -237,7 +269,7 @@ mod tests {
     #[test]
     fn parse_tool_use_with_pattern() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Glob","input":{"pattern":"**/*.rs"}}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Using tool: Glob(**/*.rs)"));
     }
@@ -248,7 +280,7 @@ mod tests {
         let line = format!(
             r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"{cmd}"}}}}]}}}}"#
         );
-        let chunks = parse_claude_stream_line(&line);
+        let chunks = parse_claude_stream_line(&line, &mut String::new());
         assert_eq!(chunks.len(), 1);
         if let ProgressChunk::Status(s) = &chunks[0] {
             assert!(s.contains("..."), "should truncate: {s}");
@@ -261,43 +293,47 @@ mod tests {
     #[test]
     fn parse_text_event() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello, world!"}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let mut stdout = String::new();
+        let chunks = parse_claude_stream_line(line, &mut stdout);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Stdout(s) if s == "Hello, world!"));
+        assert!(stdout.contains("Hello, world!"));
     }
 
     #[test]
     fn parse_result_event() {
         let line = r#"{"type":"result","subtype":"success","result":"The answer is 42","session_id":"abc"}"#;
-        let chunks = parse_claude_stream_line(line);
+        let mut stdout = String::new();
+        let chunks = parse_claude_stream_line(line, &mut stdout);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Stdout(s) if s == "The answer is 42"));
+        assert!(stdout.contains("The answer is 42"));
     }
 
     #[test]
     fn parse_system_init_ignored() {
         let line = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"abc"}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert!(chunks.is_empty());
     }
 
     #[test]
     fn parse_rate_limit_ignored() {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert!(chunks.is_empty());
     }
 
     #[test]
     fn parse_invalid_json_ignored() {
-        let chunks = parse_claude_stream_line("not json at all");
+        let chunks = parse_claude_stream_line("not json at all", &mut String::new());
         assert!(chunks.is_empty());
     }
 
     #[test]
     fn parse_multiple_content_blocks() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm","signature":"x"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 2);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Thinking..."));
         assert!(matches!(&chunks[1], ProgressChunk::Status(s) if s.contains("Edit")));
@@ -308,7 +344,7 @@ mod tests {
         // GIVEN a user event with a tool_result that has is_error: true (denied)
         let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"This tool is not allowed.","is_error":true}]}}"#;
         // WHEN
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         // THEN
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Tool use denied"));
@@ -319,7 +355,7 @@ mod tests {
         // GIVEN a user event with a successful tool_result (no is_error)
         let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"file contents here"}]}}"#;
         // WHEN
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         // THEN — successful tool results don't need a progress entry
         assert!(chunks.is_empty());
     }
@@ -327,20 +363,22 @@ mod tests {
     #[test]
     fn parse_empty_text_ignored() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert!(chunks.is_empty());
     }
 
     #[test]
     fn parse_tool_use_no_input() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"WebSearch"}]}}"#;
-        let chunks = parse_claude_stream_line(line);
+        let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Using tool: WebSearch"));
     }
 
     #[tokio::test]
     async fn streaming_subprocess_emits_chunks() {
+        use super::super::{SubprocessSpec, run_agent_subprocess};
+
         // GIVEN a script that prints stream-json events
         let dir = tempfile::tempdir().unwrap();
         let script = crate::test_helpers::write_executable_script(dir.path(), "mock-claude.sh", r#"#!/bin/bash
@@ -354,7 +392,14 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         let cmd = vec![script.to_string_lossy().to_string()];
 
         // WHEN
-        let output = run_subprocess_streaming(&cmd, dir.path(), "", &tx, None, &[], None).await.unwrap();
+        let output = run_agent_subprocess(&SubprocessSpec {
+            cmd_args: &cmd,
+            working_dir: dir.path(),
+            stdin_message: Some(""),
+            scripts_dir: None,
+            secrets: &[],
+            sandbox_config: None,
+        }, Some((&tx, parse_claude_stream_line))).await.unwrap();
 
         // THEN — output contains the result text
         assert_eq!(output.stdout, "done");
