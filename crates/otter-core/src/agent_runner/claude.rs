@@ -20,7 +20,7 @@ pub struct ClaudeCodeRunner {
 
 impl ClaudeCodeRunner {
     pub fn new(allowed_tools: Option<Vec<String>>, permission_mode: Option<String>) -> Self {
-        let mut base_args = Vec::new();
+        let mut base_args = vec!["--model".to_string(), "claude-sonnet-4-6".to_string()];
         if let Some(tools) = allowed_tools {
             base_args.push("--allowed-tools".to_string());
             base_args.push(tools.join(","));
