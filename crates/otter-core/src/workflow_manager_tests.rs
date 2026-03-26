@@ -244,8 +244,8 @@ async fn polling_trigger_fires_immediately_when_manually_started() {
     let start_time = std::time::Instant::now();
     manager.start("poller").await.unwrap();
 
-    // Give the trigger time to fire and execute
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Give the trigger time to fire and execute (generous for slow CI/parallel test runs)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let elapsed = start_time.elapsed();
 
@@ -313,8 +313,8 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
     // WHEN — manually start the workflow
     manager.start("multi-poller").await.unwrap();
 
-    // Give the trigger time to fire and execute all events
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Give the trigger time to fire and execute all events (generous for slow CI/parallel test runs)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // THEN — all 3 trigger events should result in separate runs
     let runs = storage.runs();

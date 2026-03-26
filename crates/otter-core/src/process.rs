@@ -1,5 +1,21 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// Returns a path suitable for passing as an argument to a subprocess.
+///
+/// On Windows, `std::fs::canonicalize` prepends `\\?\` (extended-length path prefix)
+/// which is not understood by shells like bash. This function strips that prefix so the
+/// path is usable as a subprocess argument on all platforms.
+pub fn subprocess_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path.to_path_buf()
+}
 
 /// Extension trait that prepends a scripts directory to the PATH environment variable
 /// of a subprocess command, giving workflow companion scripts priority over system binaries.
@@ -143,6 +159,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn capture_login_path_returns_nonempty_on_unix() {
         // GIVEN a Unix system with SHELL set
 

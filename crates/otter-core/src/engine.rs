@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::session::AgentSessionManager;
-use crate::process::{inject_isolated_env, PrependScriptsDir};
+use crate::process::{inject_isolated_env, subprocess_path, PrependScriptsDir};
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
@@ -389,7 +389,7 @@ impl Engine {
             let mut cmd = tokio::process::Command::new(&ctx.command[0]);
             cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
-                .arg(&ctx_dir);
+                .arg(subprocess_path(&ctx_dir));
             inject_isolated_env(&mut cmd, &resolved);
             cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
             let out = cmd.output().await?;

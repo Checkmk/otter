@@ -1,6 +1,6 @@
 use super::*;
 use crate::storage::InMemoryStorage;
-use crate::test_helpers::write_executable_script;
+use crate::test_helpers::{bash_path, executable_name, write_executable_script};
 use crate::types::{FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -314,8 +314,8 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
         temp.path(),
         "workspace.sh",
         &format!(
-            "#!/bin/bash\nRUN_DIR='{}/run-$2'\nmkdir -p \"$RUN_DIR\"\necho \"$RUN_DIR\"",
-            workspaces_dir.display()
+            "#!/bin/bash\nRUN_DIR=\"{}/run-$2\"\nmkdir -p \"$RUN_DIR\"\necho \"$RUN_DIR\"",
+            bash_path(&workspaces_dir)
         ),
     )
     .unwrap();
@@ -478,7 +478,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
         version: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
-            context_command: Some(vec!["ctx.sh".to_string()]), // bare name — requires scripts_dir in PATH
+            context_command: Some(vec![executable_name("ctx.sh")]), // bare name — requires scripts_dir in PATH
             interval_secs: 3600,
             secrets: None,
         }),
