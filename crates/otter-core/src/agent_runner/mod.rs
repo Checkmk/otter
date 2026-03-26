@@ -230,6 +230,10 @@ pub(super) async fn run_agent_subprocess(
     if let Some(message) = spec.stdin_message {
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(message.as_bytes()).await?;
+            // Explicitly close stdin so the child receives EOF and can proceed.
+            // On Windows this is required; the child will otherwise block waiting
+            // for more input before producing any output.
+            drop(stdin);
         }
     }
 

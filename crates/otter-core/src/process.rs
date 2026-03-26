@@ -85,6 +85,12 @@ const SAFE_ENV_VARS: &[&str] = &[
     "LC_ALL",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
+    // Windows: required for config/credential lookup and DLL loading
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
 ];
 
 /// Call before `prepend_scripts_dir` so PATH is re-extended with the scripts dir.

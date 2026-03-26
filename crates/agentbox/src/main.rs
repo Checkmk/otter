@@ -158,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let podman_args = agentbox::wrap_command(&command, &config);
 
+            #[cfg(unix)]
             if tty {
                 // Replace this process with podman so the shell's terminal state
                 // is inherited directly — necessary for interactive PTY sessions.
