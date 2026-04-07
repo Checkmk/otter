@@ -43,7 +43,7 @@ pub async fn resolve_workspace(
             cmd.args(&command[1..])
                 .arg(workflow_name)
                 .arg(run_id.to_string());
-            inject_isolated_env(&mut cmd, &resolved_secrets);
+            inject_isolated_env(&mut cmd, &resolved_secrets, true);
             let output = cmd
                 .output()
                 .await

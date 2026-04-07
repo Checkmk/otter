@@ -153,7 +153,7 @@ impl PollingTrigger {
             .map_err(|e| anyhow::anyhow!("secret resolution for poll command failed: {}", e))?;
         let mut cmd = Command::new(&self.poll_command[0]);
         cmd.args(&self.poll_command[1..]);
-        inject_isolated_env(&mut cmd, &resolved);
+        inject_isolated_env(&mut cmd, &resolved, true);
         cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
         let output = cmd
             .output()

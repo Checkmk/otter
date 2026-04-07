@@ -412,7 +412,7 @@ impl Engine {
             cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
                 .arg(subprocess_path(&ctx_dir));
-            inject_isolated_env(&mut cmd, &resolved);
+            inject_isolated_env(&mut cmd, &resolved, true);
             cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
             let out = cmd.output().await?;
             if !out.status.success() {

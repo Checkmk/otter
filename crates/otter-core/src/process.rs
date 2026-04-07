@@ -86,8 +86,8 @@ impl PrependScriptsDir for tokio::process::Command {
     }
 }
 
-/// System variables always preserved when env isolation is active.
-const ENV_VARS: &[&str] = &[
+/// Safe system variables always preserved when env isolation is active.
+const SAFE_ENV_VARS: &[&str] = &[
     "PATH",
     "HOME",
     "USER",
@@ -101,9 +101,6 @@ const ENV_VARS: &[&str] = &[
     "LC_ALL",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
-    // SSH agent forwarding
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
     // Windows: required for config/credential lookup and DLL loading
     "APPDATA",
     "LOCALAPPDATA",
@@ -112,14 +109,28 @@ const ENV_VARS: &[&str] = &[
     "SYSTEMDRIVE",
 ];
 
-/// Call before `prepend_scripts_dir` so PATH is re-extended with the scripts dir.
-pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(String, String)]) {
+/// Variables that grant access to privileged host resources.
+const UNSAFE_ENV_VARS: &[&str] = &[
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+];
+
+/// Reset the command environment to an isolated baseline. Set `include_unsafe`
+/// gives access to some host resource access (e.g. SSH agent for git).
+pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(String, String)], include_unsafe: bool) {
     cmd.env_clear();
-    for &key in ENV_VARS {
+    for &key in SAFE_ENV_VARS {
         if key == "PATH" {
             cmd.env("PATH", login_path());
         } else if let Some(val) = std::env::var_os(key) {
             cmd.env(key, val);
+        }
+    }
+    if include_unsafe {
+        for &key in UNSAFE_ENV_VARS {
+            if let Some(val) = std::env::var_os(key) {
+                cmd.env(key, val);
+            }
         }
     }
     for (k, v) in resolved {
@@ -146,12 +157,12 @@ pub fn build_subprocess_command(
         let wrapped = agentbox::wrap_command(cmd_args, &sandbox);
         let mut cmd = tokio::process::Command::new(&wrapped[0]);
         cmd.args(&wrapped[1..]);
-        inject_isolated_env(&mut cmd, &[]);
+        inject_isolated_env(&mut cmd, &[], false);
         cmd
     } else {
         let mut cmd = tokio::process::Command::new(&cmd_args[0]);
         cmd.args(&cmd_args[1..]).current_dir(working_dir);
-        inject_isolated_env(&mut cmd, secrets);
+        inject_isolated_env(&mut cmd, secrets, true);
         cmd.prepend_scripts_dir(scripts_dir);
         cmd
     }
@@ -197,7 +208,7 @@ mod tests {
         let mut cmd = tokio::process::Command::new("true");
 
         // WHEN we inject the isolated env
-        inject_isolated_env(&mut cmd, &[]);
+        inject_isolated_env(&mut cmd, &[], false);
 
         // THEN the command is configured (we can't inspect env directly,
         // but we verify it doesn't panic and the function completes)
@@ -210,9 +221,54 @@ mod tests {
         let secrets = vec![("MY_SECRET".to_string(), "hunter2".to_string())];
 
         // WHEN we inject isolated env with secrets
-        inject_isolated_env(&mut cmd, &secrets);
+        inject_isolated_env(&mut cmd, &secrets, false);
 
         // THEN the function completes without error
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_env_excludes_ssh_agent_vars() {
+        // GIVEN SSH_AUTH_SOCK is set in the host environment
+        let test_sock = "/tmp/otter-test-ssh-agent.sock";
+        // SAFETY: test process is single-threaded at this point; no concurrent env mutation
+        unsafe { std::env::set_var("SSH_AUTH_SOCK", test_sock) };
+
+        // WHEN we inject isolated env with include_unsafe = false (sandboxed path)
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "printf '%s' \"$SSH_AUTH_SOCK\""]);
+        inject_isolated_env(&mut cmd, &[], false);
+        let output = cmd.output().await.expect("sh must be available");
+
+        // THEN SSH_AUTH_SOCK is absent from the subprocess environment
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.is_empty(),
+            "sandboxed steps must not receive SSH_AUTH_SOCK; got: {stdout:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn unsandboxed_env_includes_ssh_agent_vars() {
+        // GIVEN SSH_AUTH_SOCK is set in the host environment
+        let test_sock = "/tmp/otter-test-ssh-agent.sock";
+        // SAFETY: test process is single-threaded at this point; no concurrent env mutation
+        unsafe { std::env::set_var("SSH_AUTH_SOCK", test_sock) };
+
+        // WHEN we inject isolated env with include_unsafe = true (non-sandboxed path)
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "printf '%s' \"$SSH_AUTH_SOCK\""]);
+        inject_isolated_env(&mut cmd, &[], true);
+        let output = cmd.output().await.expect("sh must be available");
+
+        // THEN SSH_AUTH_SOCK is forwarded to the subprocess
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.as_ref(),
+            test_sock,
+            "non-sandboxed steps must receive SSH_AUTH_SOCK"
+        );
     }
 
     #[test]
@@ -224,7 +280,7 @@ mod tests {
 
         // WHEN we prepend the scripts dir
         let mut cmd = tokio::process::Command::new("true");
-        inject_isolated_env(&mut cmd, &[]);
+        inject_isolated_env(&mut cmd, &[], false);
         cmd.prepend_scripts_dir(Some(scripts_dir));
 
         // THEN the resulting PATH starts with the scripts dir followed by the login PATH,
