@@ -348,7 +348,29 @@ impl Engine {
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
-        let workspace_dir = resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id, self.secret_store.as_ref()).await?;
+        let workspace_dir = match resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id, self.secret_store.as_ref()).await {
+            Ok(dir) => dir,
+            Err(e) => {
+                run.status = RunStatus::Failed;
+                self.storage.update_workflow_run(&run)?;
+                Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
+                let entry = LogEntry {
+                    run_id: run.id,
+                    iteration: run.iteration,
+                    step_index: usize::MAX,
+                    step_type: "workspace_setup".to_string(),
+                    stdout: String::new(),
+                    stderr: format!("Workspace setup failed: {e}"),
+                    exit_code: Some(1),
+                    accepted: None,
+                    feedback: None,
+                    timestamp: Utc::now(),
+                };
+                self.storage.append_log(entry.clone())?;
+                Self::emit(&ui_tx, EngineEvent::LogAppended(entry));
+                return Ok(run.status);
+            }
+        };
         run.workspace_dir = workspace_dir.clone();
         self.storage.update_workflow_run(&run)?;
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
