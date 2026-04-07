@@ -8,6 +8,9 @@ members = [
     "crates/otter-cli",
     "crates/otter-notify",
 ]
+default-members = [
+    "crates/otter-cli",
+]
 resolver = "2"
 
 [workspace.dependencies]
