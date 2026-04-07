@@ -86,8 +86,8 @@ impl PrependScriptsDir for tokio::process::Command {
     }
 }
 
-/// Safe system variables always preserved when env isolation is active.
-const SAFE_ENV_VARS: &[&str] = &[
+/// System variables always preserved when env isolation is active.
+const ENV_VARS: &[&str] = &[
     "PATH",
     "HOME",
     "USER",
@@ -101,6 +101,9 @@ const SAFE_ENV_VARS: &[&str] = &[
     "LC_ALL",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
+    // SSH agent forwarding
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
     // Windows: required for config/credential lookup and DLL loading
     "APPDATA",
     "LOCALAPPDATA",
@@ -112,7 +115,7 @@ const SAFE_ENV_VARS: &[&str] = &[
 /// Call before `prepend_scripts_dir` so PATH is re-extended with the scripts dir.
 pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(String, String)]) {
     cmd.env_clear();
-    for &key in SAFE_ENV_VARS {
+    for &key in ENV_VARS {
         if key == "PATH" {
             cmd.env("PATH", login_path());
         } else if let Some(val) = std::env::var_os(key) {
