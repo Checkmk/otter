@@ -124,10 +124,19 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_right_panel(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc | KeyCode::Tab => app.close_right_panel(),
         KeyCode::Up | KeyCode::Char('k') => app.move_right_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_right_down(),
+        KeyCode::PageUp => app.scroll_right_page_up(),
+        KeyCode::PageDown => app.scroll_right_page_down(),
+        KeyCode::Char('b') if ctrl => app.scroll_right_page_up(),
+        KeyCode::Char('f') if ctrl => app.scroll_right_page_down(),
+        KeyCode::Char('u') if ctrl => app.scroll_right_half_page_up(),
+        KeyCode::Char('d') if ctrl => app.scroll_right_half_page_down(),
+        KeyCode::Home | KeyCode::Char('g') => app.scroll_right_top(),
+        KeyCode::End | KeyCode::Char('G') => app.scroll_right_bottom(),
         KeyCode::Delete => app.delete_selected_consumed_trigger(),
         _ => {}
     }

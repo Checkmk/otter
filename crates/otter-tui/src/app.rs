@@ -68,6 +68,7 @@ pub struct App {
     pub right_panel_content: RightPanelContent,
     pub right_cursor: usize,
     pub right_scroll: usize,
+    pub right_panel_height: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
     pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
     /// Runs saved when a workflow is removed, so they can be restored if the workflow is re-registered
@@ -92,6 +93,7 @@ impl App {
             right_panel_content: RightPanelContent::Contextual,
             right_cursor: 0,
             right_scroll: 0,
+            right_panel_height: 0,
             consumed_triggers: HashMap::new(),
             progress: HashMap::new(),
             removed_workflow_runs: HashMap::new(),
@@ -449,6 +451,53 @@ impl App {
                 // Logs: right_scroll is lines from bottom — ↓ means fewer lines from bottom (toward bottom)
                 CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(1),
             },
+        }
+    }
+
+    pub fn scroll_right_page_up(&mut self) {
+        match self.cursor {
+            CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height),
+            CursorTarget::Run(_, _) => self.right_scroll += self.right_panel_height,
+        }
+    }
+
+    pub fn scroll_right_page_down(&mut self) {
+        match self.cursor {
+            CursorTarget::Workflow(_) => self.right_scroll += self.right_panel_height,
+            CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height),
+        }
+    }
+
+    pub fn scroll_right_half_page_up(&mut self) {
+        let half = (self.right_panel_height / 2).max(1);
+        match self.cursor {
+            CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(half),
+            CursorTarget::Run(_, _) => self.right_scroll += half,
+        }
+    }
+
+    pub fn scroll_right_half_page_down(&mut self) {
+        let half = (self.right_panel_height / 2).max(1);
+        match self.cursor {
+            CursorTarget::Workflow(_) => self.right_scroll += half,
+            CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(half),
+        }
+    }
+
+    pub fn scroll_right_top(&mut self) {
+        match self.cursor {
+            // TOML: absolute offset — top is 0
+            CursorTarget::Workflow(_) => self.right_scroll = 0,
+            // Logs: lines-from-bottom — top is usize::MAX (clamped to auto_bottom on render)
+            CursorTarget::Run(_, _) => self.right_scroll = usize::MAX,
+        }
+    }
+
+    pub fn scroll_right_bottom(&mut self) {
+        // Bottom is 0 for logs (live tail), usize::MAX for TOML (clamped on render)
+        match self.cursor {
+            CursorTarget::Workflow(_) => self.right_scroll = usize::MAX,
+            CursorTarget::Run(_, _) => self.right_scroll = 0,
         }
     }
 

@@ -113,6 +113,7 @@ pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
+    app.right_panel_height = inner_height;
 
     let lines: Vec<Line> = match app.selected_workflow_toml() {
         None => vec![Line::from(Span::styled(
@@ -257,9 +258,10 @@ fn build_log_lines<'a>(
 }
 
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
-    let logs = app.selected_logs();
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
+    app.right_panel_height = inner_height;
+    let logs = app.selected_logs();
 
     let progress = app.selected_progress();
     let dim_style = Style::default().fg(c_dim()).bg(c_background());
@@ -327,7 +329,10 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
     match app.right_panel_content {
-        RightPanelContent::Contextual => vec![PanelHint::new("[↑↓]", "Scroll")],
+        RightPanelContent::Contextual => vec![
+            PanelHint::new("[↑↓]", "Scroll"),
+            PanelHint::new("[Home/End]", "Top/Bottom"),
+        ],
         RightPanelContent::ConsumedTriggers => vec![
             PanelHint::new("[Del]", "Delete trigger"),
         ],
@@ -527,9 +532,11 @@ mod tests {
         // WHEN
         let hints = right_panel_hints(&app);
 
-        // THEN delete hints
-        assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].key, "[Del]");
+        // THEN scroll, delete, and close hints
+        assert_eq!(hints.len(), 3);
+        assert_eq!(hints[0].key, "[↑↓]");
+        assert_eq!(hints[1].key, "[Del]");
+        assert_eq!(hints[2].key, "[Esc]");
     }
 
     #[test]
