@@ -507,6 +507,11 @@ fn handle_log_command() -> anyhow::Result<()> {
         use std::os::unix::process::CommandExt;
         let err = std::process::Command::new("less")
             .arg("+F")
+            .arg("-R")
+            // LESS and LESSKEY are overwritten to ignore user configs that
+            // could interfere with log formatting
+            .env("LESS", "-R")
+            .env("LESSKEY", "/dev/null")
             .arg(&log_path)
             .exec();
         // exec() only returns on error
