@@ -17,7 +17,3 @@
 # Changing schemas
 
 - Keep example workflows up to date in `examples/` and `tests/`.
-
-# Architecture
-
-- Consider @TARGET_ARCHITECTURE.md when planning.
