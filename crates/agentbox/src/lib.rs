@@ -57,9 +57,12 @@ pub fn wrap_command(command: &[String], config: &SandboxConfig) -> Vec<String> {
 
     // Writable tmpfs areas
     args.extend([
-        "--tmpfs".to_string(), "/tmp:rw,noexec,nosuid,size=1g".to_string(),
-        "--tmpfs".to_string(), "/run:rw,noexec,nosuid".to_string(),
-        "--tmpfs".to_string(), "/home/sandbox:rw,exec,nosuid,mode=1777".to_string(),
+        "--tmpfs".to_string(),
+        "/tmp:rw,noexec,nosuid,size=1g".to_string(),
+        "--tmpfs".to_string(),
+        "/run:rw,noexec,nosuid".to_string(),
+        "--tmpfs".to_string(),
+        "/home/sandbox:rw,exec,nosuid,mode=1777".to_string(),
     ]);
 
     // UID mapping
@@ -87,7 +90,11 @@ pub fn wrap_command(command: &[String], config: &SandboxConfig) -> Vec<String> {
         let ro = if mount.read_only { "ro," } else { "" };
         args.extend([
             "-v".to_string(),
-            format!("{}:{}:{ro}Z", mount.host.display(), mount.container.display()),
+            format!(
+                "{}:{}:{ro}Z",
+                mount.host.display(),
+                mount.container.display()
+            ),
         ]);
     }
 
@@ -136,7 +143,12 @@ pub async fn build_image(tag: Option<&str>) -> Result<(), AgentboxError> {
             .collect();
         let message = if error_lines.is_empty() {
             // Fall back to last non-empty line if no error lines found
-            stderr.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("unknown error").to_string()
+            stderr
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .last()
+                .unwrap_or("unknown error")
+                .to_string()
         } else {
             error_lines.join("\n")
         };
@@ -331,7 +343,9 @@ mod tests {
         let result = wrap_command(&cmd, &config);
 
         // THEN
-        let mount_arg = result.windows(2).find(|w| w[0] == "-v" && w[1].contains("/workspace:Z"));
+        let mount_arg = result
+            .windows(2)
+            .find(|w| w[0] == "-v" && w[1].contains("/workspace:Z"));
         assert!(mount_arg.is_some(), "should have workspace bind mount");
     }
 
@@ -340,8 +354,16 @@ mod tests {
         // GIVEN
         let mut config = basic_config();
         config.extra_mounts = vec![
-            Mount { host: PathBuf::from("/host/scripts"), container: PathBuf::from("/opt/scripts"), read_only: true },
-            Mount { host: PathBuf::from("/host/data"), container: PathBuf::from("/data"), read_only: false },
+            Mount {
+                host: PathBuf::from("/host/scripts"),
+                container: PathBuf::from("/opt/scripts"),
+                read_only: true,
+            },
+            Mount {
+                host: PathBuf::from("/host/data"),
+                container: PathBuf::from("/data"),
+                read_only: false,
+            },
         ];
         let cmd = vec!["echo".to_string()];
 
@@ -349,7 +371,9 @@ mod tests {
         let result = wrap_command(&cmd, &config);
 
         // THEN
-        assert!(result.iter().any(|a| a.contains("/host/scripts:/opt/scripts:ro,Z")));
+        assert!(result
+            .iter()
+            .any(|a| a.contains("/host/scripts:/opt/scripts:ro,Z")));
         assert!(result.iter().any(|a| a.contains("/host/data:/data:Z")));
     }
 
@@ -404,6 +428,9 @@ mod tests {
     fn parse_network_mode_parses_correctly() {
         assert!(matches!(parse_network_mode("none"), NetworkMode::None));
         assert!(matches!(parse_network_mode("bridge"), NetworkMode::Bridge));
-        assert!(matches!(parse_network_mode("anything"), NetworkMode::Bridge));
+        assert!(matches!(
+            parse_network_mode("anything"),
+            NetworkMode::Bridge
+        ));
     }
 }

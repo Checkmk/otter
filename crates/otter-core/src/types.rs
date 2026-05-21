@@ -306,7 +306,10 @@ pub enum CheckpointResponse {
 pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowStateChanged { name: String, state: WorkflowState },
+    WorkflowStateChanged {
+        name: String,
+        state: WorkflowState,
+    },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,
@@ -404,8 +407,13 @@ pub enum DaemonEvent {
         message: String,
         feedback_available: bool,
     },
-    RunDeleted { run_id: Uuid },
-    ConsumedTriggersChanged { workflow: String, triggers: Vec<String> },
+    RunDeleted {
+        run_id: Uuid,
+    },
+    ConsumedTriggersChanged {
+        workflow: String,
+        triggers: Vec<String>,
+    },
     /// Ephemeral progress from a running step — not persisted, not replayed on reconnect.
     StepProgress {
         run_id: Uuid,
@@ -416,19 +424,39 @@ pub enum DaemonEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonCommand {
-    Start { name: String },
-    Stop { name: String },
+    Start {
+        name: String,
+    },
+    Stop {
+        name: String,
+    },
     Status,
     /// Persistent subscription: server streams DaemonEvent JSON lines until disconnect.
     Subscribe,
-    CheckpointRespond { run_id: Uuid, action: CheckpointAction },
-    StopRun { run_id: Uuid },
-    DeleteRun { run_id: Uuid },
-    ListConsumedTriggers { workflow: String },
-    DeleteConsumedTrigger { workflow: String, trigger: String },
+    CheckpointRespond {
+        run_id: Uuid,
+        action: CheckpointAction,
+    },
+    StopRun {
+        run_id: Uuid,
+    },
+    DeleteRun {
+        run_id: Uuid,
+    },
+    ListConsumedTriggers {
+        workflow: String,
+    },
+    DeleteConsumedTrigger {
+        workflow: String,
+        trigger: String,
+    },
     ReloadWorkflows,
-    EnableWorkflow { name: String },
-    DisableWorkflow { name: String },
+    EnableWorkflow {
+        name: String,
+    },
+    DisableWorkflow {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,7 +533,16 @@ mod tests {
     fn finally_step_applies_to_all_when_on_is_none() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, sandbox: None, agent: Default::default() },
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: None,
+                message: None,
+                session: None,
+                notify: None,
+                secrets: None,
+                sandbox: None,
+                agent: Default::default(),
+            },
             on: None,
         };
         // WHEN / THEN
@@ -518,7 +555,16 @@ mod tests {
     fn finally_step_applies_to_matching_outcome() {
         // GIVEN
         let step = FinallyStepDef {
-            step: StepDef { step_type: StepType::Shell, command: None, message: None, session: None, notify: None, secrets: None, sandbox: None, agent: Default::default() },
+            step: StepDef {
+                step_type: StepType::Shell,
+                command: None,
+                message: None,
+                session: None,
+                notify: None,
+                secrets: None,
+                sandbox: None,
+                agent: Default::default(),
+            },
             on: Some(vec![RunOutcome::Failed]),
         };
         // WHEN / THEN
@@ -652,7 +698,12 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { poll_command, context_command, interval_secs, .. } => {
+            TriggerDef::Polling {
+                poll_command,
+                context_command,
+                interval_secs,
+                ..
+            } => {
                 assert_eq!(poll_command, vec!["jira-poller.sh".to_string()]);
                 assert!(context_command.is_none());
                 assert_eq!(interval_secs, 600);
@@ -685,9 +736,17 @@ mod tests {
         // THEN
         let trigger = def.trigger.unwrap();
         match trigger {
-            TriggerDef::Polling { poll_command, context_command, interval_secs, .. } => {
+            TriggerDef::Polling {
+                poll_command,
+                context_command,
+                interval_secs,
+                ..
+            } => {
                 assert_eq!(poll_command, vec!["jira-poller.py".to_string()]);
-                assert_eq!(context_command, Some(vec!["jira-poller.py".to_string(), "--context".to_string()]));
+                assert_eq!(
+                    context_command,
+                    Some(vec!["jira-poller.py".to_string(), "--context".to_string()])
+                );
                 assert_eq!(interval_secs, 300);
             }
             _ => panic!("expected polling trigger"),
@@ -746,7 +805,10 @@ mod tests {
 
         // THEN
         let msg = err.to_string();
-        assert!(msg.contains("invalid network mode"), "error should mention invalid network mode: {msg}");
+        assert!(
+            msg.contains("invalid network mode"),
+            "error should mention invalid network mode: {msg}"
+        );
     }
 
     #[test]
@@ -781,5 +843,4 @@ mod tests {
         // WHEN / THEN
         assert!(toml::from_str::<WorkflowDef>(toml_str).is_err());
     }
-
 }

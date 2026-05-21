@@ -1,19 +1,19 @@
 use chrono::Local;
-use otter_core::types::{RunStatus, TriggerDef, WorkflowType, WorkflowState};
+use otter_core::types::{RunStatus, TriggerDef, WorkflowState, WorkflowType};
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState},
+    Frame,
 };
 
 use crate::app::{App, CursorTarget, Focus};
 use crate::scroll::scroll_spans;
 use crate::status_bar::PanelHint;
 use crate::styles::{
-    c_background, c_completed, c_dormant, c_failed, c_foreground, c_running,
-    c_waiting_cp, panel, panel_focused, spinner_frame,
+    c_background, c_completed, c_dormant, c_failed, c_foreground, c_running, c_waiting_cp, panel,
+    panel_focused, spinner_frame,
 };
 
 fn workflow_state_color(
@@ -26,19 +26,22 @@ fn workflow_state_color(
     match state {
         WorkflowState::Dormant => ("·".to_string(), c_dormant()),
         WorkflowState::Running => match run_status {
-            Some(RunStatus::WaitingCheckpoint)          => ("~".to_string(), c_waiting_cp()),
+            Some(RunStatus::WaitingCheckpoint) => ("~".to_string(), c_waiting_cp()),
             // Triggered workflow: engine alive but between trigger events (last run may have failed)
-            Some(RunStatus::Completed) | Some(RunStatus::Failed) | Some(RunStatus::Stopped) | None
+            Some(RunStatus::Completed)
+            | Some(RunStatus::Failed)
+            | Some(RunStatus::Stopped)
+            | None
                 if matches!(kind, Some(WorkflowType::Triggered)) =>
             {
                 match trigger {
                     Some(TriggerDef::Polling { .. }) => ("⏲".to_string(), c_dormant()),
-                    _                                => ("·".to_string(), c_dormant()),
+                    _ => ("·".to_string(), c_dormant()),
                 }
             }
             Some(RunStatus::Failed) | Some(RunStatus::Stopped) => ("✗".to_string(), c_failed()),
             Some(RunStatus::Completed) => ("✓".to_string(), c_completed()),
-            _                          => (spinner_frame(tick).to_string(), c_running()),
+            _ => (spinner_frame(tick).to_string(), c_running()),
         },
     }
 }
@@ -47,27 +50,44 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let tick = app.tick;
 
-    let make_item = |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
-        let prefix_len = prefix.chars().count();
-        let icon_len = icon.chars().count();
-        let available_for_content = inner_width.saturating_sub(prefix_len + icon_len);
+    let make_item =
+        |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
+            let prefix_len = prefix.chars().count();
+            let icon_len = icon.chars().count();
+            let available_for_content = inner_width.saturating_sub(prefix_len + icon_len);
 
-        let content_style = if is_selected {
-            Style::default().fg(c_background()).bg(c_foreground()).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(c_foreground()).bg(c_background())
+            let content_style = if is_selected {
+                Style::default()
+                    .fg(c_background())
+                    .bg(c_foreground())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(c_foreground()).bg(c_background())
+            };
+
+            let scrolled = scroll_spans(
+                vec![Span::styled(content.to_string(), content_style)],
+                available_for_content,
+                tick,
+            );
+            let displayed_len: usize = scrolled.iter().map(|s| s.content.chars().count()).sum();
+            let padding = " ".repeat(available_for_content.saturating_sub(displayed_len));
+
+            let mut spans = vec![Span::styled(
+                prefix.to_string(),
+                Style::default().fg(c_foreground()).bg(c_background()),
+            )];
+            spans.extend(scrolled);
+            spans.push(Span::styled(
+                padding,
+                Style::default().fg(c_foreground()).bg(c_background()),
+            ));
+            spans.push(Span::styled(
+                icon,
+                Style::default().fg(icon_color).bg(c_background()),
+            ));
+            ListItem::new(Line::from(spans))
         };
-
-        let scrolled = scroll_spans(vec![Span::styled(content.to_string(), content_style)], available_for_content, tick);
-        let displayed_len: usize = scrolled.iter().map(|s| s.content.chars().count()).sum();
-        let padding = " ".repeat(available_for_content.saturating_sub(displayed_len));
-
-        let mut spans = vec![Span::styled(prefix.to_string(), Style::default().fg(c_foreground()).bg(c_background()))];
-        spans.extend(scrolled);
-        spans.push(Span::styled(padding, Style::default().fg(c_foreground()).bg(c_background())));
-        spans.push(Span::styled(icon, Style::default().fg(icon_color).bg(c_background())));
-        ListItem::new(Line::from(spans))
-    };
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_index: Option<usize> = None;
@@ -81,22 +101,46 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         }
 
         let expand_char = if !entry.runs.is_empty() {
-            if entry.expanded { "▼ " } else { "▶ " }
+            if entry.expanded {
+                "▼ "
+            } else {
+                "▶ "
+            }
         } else {
             "  "
         };
         let running = RunStatus::Running;
         let first_run_status = entry.runs.first().map(|r| {
-            if app.pending_checkpoints.get(&r.id).is_some_and(|cp| cp.processing) { &running } else { &r.status }
+            if app
+                .pending_checkpoints
+                .get(&r.id)
+                .is_some_and(|cp| cp.processing)
+            {
+                &running
+            } else {
+                &r.status
+            }
         });
-        let (state_icon, state_color) = workflow_state_color(&entry.state, first_run_status, Some(&entry.kind), entry.trigger.as_ref(), app.tick);
+        let (state_icon, state_color) = workflow_state_color(
+            &entry.state,
+            first_run_status,
+            Some(&entry.kind),
+            entry.trigger.as_ref(),
+            app.tick,
+        );
         let name_content = entry.name.clone();
         let prefixed_icon = if entry.autostart {
             format!(" (A) {state_icon}")
         } else {
             format!(" {state_icon}")
         };
-        items.push(make_item(&expand_char, &name_content, prefixed_icon, state_color, is_workflow_selected));
+        items.push(make_item(
+            &expand_char,
+            &name_content,
+            prefixed_icon,
+            state_color,
+            is_workflow_selected,
+        ));
 
         if entry.expanded {
             for (ri, run) in entry.runs.iter().enumerate() {
@@ -105,13 +149,25 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     selected_index = Some(items.len());
                 }
 
-                let datetime = run.started_at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+                let datetime = run
+                    .started_at
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string();
                 let run_content = match run.trigger_payload.as_deref() {
                     Some(p) if !p.is_empty() => format!("{} ({})", p, datetime),
                     _ => datetime,
                 };
                 let running = RunStatus::Running;
-                let effective_run_status = if app.pending_checkpoints.get(&run.id).is_some_and(|cp| cp.processing) { &running } else { &run.status };
+                let effective_run_status = if app
+                    .pending_checkpoints
+                    .get(&run.id)
+                    .is_some_and(|cp| cp.processing)
+                {
+                    &running
+                } else {
+                    &run.status
+                };
                 let (run_icon, run_color) = workflow_state_color(
                     &WorkflowState::Running,
                     Some(effective_run_status),
@@ -119,7 +175,13 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     None,
                     app.tick,
                 );
-                items.push(make_item("   ", &run_content, format!(" {run_icon}"), run_color, is_run_selected));
+                items.push(make_item(
+                    "   ",
+                    &run_content,
+                    format!(" {run_icon}"),
+                    run_color,
+                    is_run_selected,
+                ));
             }
         }
     }
@@ -155,8 +217,15 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
 
     let mut enter_hints: Vec<PanelHint> = vec![];
     if let CursorTarget::Run(wi, ri) = app.cursor {
-        let run_status = app.workflows.get(wi).and_then(|e| e.runs.get(ri)).map(|r| &r.status);
-        if matches!(run_status, Some(RunStatus::Running) | Some(RunStatus::WaitingCheckpoint)) {
+        let run_status = app
+            .workflows
+            .get(wi)
+            .and_then(|e| e.runs.get(ri))
+            .map(|r| &r.status);
+        if matches!(
+            run_status,
+            Some(RunStatus::Running) | Some(RunStatus::WaitingCheckpoint)
+        ) {
             enter_hints.push(PanelHint::new("[Enter]", "Stop"));
         }
         hints.push(PanelHint::new("[Del]", "Delete"));
@@ -192,17 +261,32 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::types::{WorkflowRun, WorkflowType, WorkflowState};
-    use tokio::sync::mpsc;
     use crate::app::WorkflowEntry;
+    use otter_core::types::{WorkflowRun, WorkflowState, WorkflowType};
+    use tokio::sync::mpsc;
 
     fn make_app() -> App {
         let (tx, _rx) = mpsc::channel(32);
         App::new(tx)
     }
 
-    fn make_entry(name: &str, kind: WorkflowType, state: WorkflowState, runs: Vec<WorkflowRun>, expanded: bool) -> WorkflowEntry {
-        WorkflowEntry { name: name.to_string(), kind, state, runs, expanded, trigger: None, toml_content: None, autostart: false }
+    fn make_entry(
+        name: &str,
+        kind: WorkflowType,
+        state: WorkflowState,
+        runs: Vec<WorkflowRun>,
+        expanded: bool,
+    ) -> WorkflowEntry {
+        WorkflowEntry {
+            name: name.to_string(),
+            kind,
+            state,
+            runs,
+            expanded,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+        }
     }
 
     fn hint_keys(hints: &[PanelHint]) -> Vec<&str> {
@@ -213,7 +297,13 @@ mod tests {
     fn left_panel_hints_empty_workflow_has_no_space_hint() {
         // GIVEN a workflow with no runs
         let mut app = make_app();
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![],
+            false,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -228,7 +318,13 @@ mod tests {
         // GIVEN a collapsed workflow with runs
         let mut app = make_app();
         let run = WorkflowRun::new("wf".to_string());
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], false));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![run],
+            false,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -245,7 +341,13 @@ mod tests {
         // GIVEN an expanded workflow
         let mut app = make_app();
         let run = WorkflowRun::new("wf".to_string());
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], true));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![run],
+            true,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -261,7 +363,13 @@ mod tests {
     fn left_panel_hints_expanded_workflow_no_runs_shows_no_space_hint() {
         // GIVEN an expanded workflow with no runs
         let mut app = make_app();
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], true));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![],
+            true,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -276,7 +384,13 @@ mod tests {
         // GIVEN cursor on a run
         let mut app = make_app();
         let run = WorkflowRun::new("wf".to_string());
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], true));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![run],
+            true,
+        ));
         app.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
@@ -290,7 +404,13 @@ mod tests {
     fn left_panel_hints_dormant_workflow_shows_start() {
         // GIVEN a dormant workflow
         let mut app = make_app();
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![],
+            false,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -306,7 +426,13 @@ mod tests {
     fn left_panel_hints_running_shows_stop() {
         // GIVEN a running workflow
         let mut app = make_app();
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Running, vec![], false));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Running,
+            vec![],
+            false,
+        ));
         app.cursor = CursorTarget::Workflow(0);
 
         // WHEN
@@ -315,7 +441,9 @@ mod tests {
 
         // THEN [Enter] Stop, no [p] pause
         assert!(!keys.contains(&"[p]"));
-        assert!(hints.iter().any(|h| h.key == "[Enter]" && h.label == "Stop"));
+        assert!(hints
+            .iter()
+            .any(|h| h.key == "[Enter]" && h.label == "Stop"));
     }
 
     #[test]
@@ -324,7 +452,13 @@ mod tests {
         let mut app = make_app();
         let mut run = WorkflowRun::new("wf".to_string());
         run.status = RunStatus::Running;
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Running, vec![run], true));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Running,
+            vec![run],
+            true,
+        ));
         app.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
@@ -332,16 +466,30 @@ mod tests {
         let keys = hint_keys(&hints);
 
         // THEN [Enter] Stop and [Del] Delete, exactly one Stop (no duplicate workflow-level hint)
-        assert!(hints.iter().any(|h| h.key == "[Enter]" && h.label == "Stop"));
+        assert!(hints
+            .iter()
+            .any(|h| h.key == "[Enter]" && h.label == "Stop"));
         assert!(keys.contains(&"[Del]"));
-        assert_eq!(hints.iter().filter(|h| h.key == "[Enter]" && h.label == "Stop").count(), 1);
+        assert_eq!(
+            hints
+                .iter()
+                .filter(|h| h.key == "[Enter]" && h.label == "Stop")
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn left_panel_hints_shows_enable_hint_for_disabled_workflow() {
         // GIVEN a disabled workflow
         let mut app = make_app();
-        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false);
+        let mut entry = make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![],
+            false,
+        );
         entry.autostart = false;
         app.workflows.push(entry);
         app.cursor = CursorTarget::Workflow(0);
@@ -359,7 +507,13 @@ mod tests {
     fn left_panel_hints_shows_disable_hint_for_enabled_workflow() {
         // GIVEN an enabled workflow
         let mut app = make_app();
-        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![], false);
+        let mut entry = make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![],
+            false,
+        );
         entry.autostart = true;
         app.workflows.push(entry);
         app.cursor = CursorTarget::Workflow(0);
@@ -379,7 +533,13 @@ mod tests {
         let mut app = make_app();
         let mut run = WorkflowRun::new("wf".to_string());
         run.status = RunStatus::Completed;
-        app.workflows.push(make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![run], true));
+        app.workflows.push(make_entry(
+            "wf",
+            WorkflowType::Looping,
+            WorkflowState::Dormant,
+            vec![run],
+            true,
+        ));
         app.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
@@ -387,7 +547,9 @@ mod tests {
         let keys = hint_keys(&hints);
 
         // THEN [Del] Delete run, no [Enter] Stop run
-        assert!(!hints.iter().any(|h| h.key == "[Enter]" && h.label == "Stop run"));
+        assert!(!hints
+            .iter()
+            .any(|h| h.key == "[Enter]" && h.label == "Stop run"));
         assert!(keys.contains(&"[Del]"));
     }
 }

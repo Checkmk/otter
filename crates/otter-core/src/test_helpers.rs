@@ -2,7 +2,6 @@
 ///
 /// Handles platform-specific differences (Unix file permissions, Windows .bat wrappers, etc.)
 /// and ensures proper synchronization before subprocess execution.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

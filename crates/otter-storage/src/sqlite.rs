@@ -40,9 +40,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     },
     // v1 -> v2: add trigger_payload column to workflow_runs
     |conn| {
-        conn.execute_batch(
-            "ALTER TABLE workflow_runs ADD COLUMN trigger_payload TEXT;",
-        )?;
+        conn.execute_batch("ALTER TABLE workflow_runs ADD COLUMN trigger_payload TEXT;")?;
         Ok(())
     },
     // v2 -> v3: add workflows table; orphaned runs are those whose workflow_name
@@ -58,9 +56,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     // v3 -> v4: add workspace_dir column to workflow_runs so run_finally can reuse
     // the originally resolved workspace instead of re-running a workspace script.
     |conn| {
-        conn.execute_batch(
-            "ALTER TABLE workflow_runs ADD COLUMN workspace_dir TEXT;",
-        )?;
+        conn.execute_batch("ALTER TABLE workflow_runs ADD COLUMN workspace_dir TEXT;")?;
         Ok(())
     },
 ];
@@ -89,7 +85,11 @@ impl SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let target = SCHEMA_VERSION;
-        debug_assert_eq!(target, MIGRATIONS.len() as u32, "SCHEMA_VERSION must equal MIGRATIONS.len()");
+        debug_assert_eq!(
+            target,
+            MIGRATIONS.len() as u32,
+            "SCHEMA_VERSION must equal MIGRATIONS.len()"
+        );
 
         if current >= target {
             return Ok(());
@@ -654,7 +654,9 @@ mod tests {
         // THEN — no error, still one entry
         let conn = storage.conn.lock().unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM workflows WHERE name='wf'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM workflows WHERE name='wf'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 1);
     }

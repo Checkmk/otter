@@ -26,7 +26,9 @@ pub struct CgroupLimiter {
 
 impl CgroupLimiter {
     pub fn new(cpu_quota: impl Into<String>) -> Self {
-        Self { cpu_quota: cpu_quota.into() }
+        Self {
+            cpu_quota: cpu_quota.into(),
+        }
     }
 }
 
@@ -111,7 +113,17 @@ mod tests {
         result.extend_from_slice(&cmd);
 
         // THEN — verify format matches what CgroupLimiter produces when available
-        assert_eq!(&result[..6], ["systemd-run", "--scope", "--user", "-p", "CPUQuota=200%", "--"]);
+        assert_eq!(
+            &result[..6],
+            [
+                "systemd-run",
+                "--scope",
+                "--user",
+                "-p",
+                "CPUQuota=200%",
+                "--"
+            ]
+        );
         assert_eq!(&result[6..], &cmd[..]);
         let _ = limiter; // field is correct quota
     }

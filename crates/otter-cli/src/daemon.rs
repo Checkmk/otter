@@ -6,16 +6,18 @@ use tracing::warn;
 
 use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(not(target_os = "windows"))]
-use tokio::net::UnixListener;
 #[cfg(target_os = "windows")]
 use tokio::net::windows::named_pipe::ServerOptions;
+#[cfg(not(target_os = "windows"))]
+use tokio::net::UnixListener;
 use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 use uuid::Uuid;
 
-use otter_core::triggers::polling::{consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers};
 use otter_core::engine::Engine;
+use otter_core::triggers::polling::{
+    consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers,
+};
 use otter_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
     RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
@@ -25,7 +27,7 @@ use otter_notify::{DesktopNotifier, Notification, Notifier};
 use otter_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use otter_storage::SqliteStorage;
 
-use crate::{dirs_config_dir, dirs_data_dir, read_enabled, write_enabled, socket_path};
+use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path, write_enabled};
 
 struct PendingEntry {
     response_tx: tokio::sync::oneshot::Sender<CheckpointResponse>,
@@ -61,7 +63,9 @@ fn get_or_bind_listener(socket_path: &std::path::Path) -> anyhow::Result<(UnixLi
         // systemd passes the activated socket as FD 3 (SD_LISTEN_FDS_START).
         // SAFETY: systemd guarantees FD 3 is a valid, bound, listening socket.
         let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(3) };
-        std_listener.set_nonblocking(true).context("set socket non-blocking")?;
+        std_listener
+            .set_nonblocking(true)
+            .context("set socket non-blocking")?;
         let listener = UnixListener::from_std(std_listener).context("wrap activated socket")?;
         info!("Using systemd socket-activated listener");
         return Ok((listener, true));
@@ -94,8 +98,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     // Write pid file so `otter service stop` can signal the process when not managed by systemd.
     let pid_path = data_dir.join("daemon.pid");
-    std::fs::write(&pid_path, std::process::id().to_string())
-        .context("write service pid file")?;
+    std::fs::write(&pid_path, std::process::id().to_string()).context("write service pid file")?;
 
     #[cfg(not(target_os = "windows"))]
     // When socket-activated, systemd already owns the socket — skip the stale-check.
@@ -112,9 +115,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let workflows_dir = config_dir.join("workflows");
     let workflows = load_workflows_from_dir(&workflows_dir)?;
 
-    let storage: Arc<dyn StorageBackend> = Arc::new(
-        SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
-    );
+    let storage: Arc<dyn StorageBackend> =
+        Arc::new(SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?);
     let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
     let secret_store: std::sync::Arc<dyn SecretStore> = std::sync::Arc::new(
         EncryptedSecretStore::new(config_dir.join("secrets.age"), build_daemon_key_provider()),
@@ -173,11 +175,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     recent_runs_fanout.lock().unwrap().insert(r.id, r.clone());
                     DaemonEvent::RunUpdated(r)
                 }
-                EngineEvent::WorkflowStateChanged { .. } => {
-                    DaemonEvent::WorkflowsSnapshot(
-                        build_workflow_snapshot(&manager_fanout, &config_dir_fanout).await,
-                    )
-                }
+                EngineEvent::WorkflowStateChanged { .. } => DaemonEvent::WorkflowsSnapshot(
+                    build_workflow_snapshot(&manager_fanout, &config_dir_fanout).await,
+                ),
                 EngineEvent::CheckpointPending {
                     run_id,
                     step_index,
@@ -201,9 +201,15 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                         feedback_available,
                     }
                 }
-                EngineEvent::StepProgress { run_id, step_index, chunk } => {
-                    DaemonEvent::StepProgress { run_id, step_index, chunk }
-                }
+                EngineEvent::StepProgress {
+                    run_id,
+                    step_index,
+                    chunk,
+                } => DaemonEvent::StepProgress {
+                    run_id,
+                    step_index,
+                    chunk,
+                },
             };
             broadcast_event(&subscribers_fanout, daemon_ev);
         }
@@ -226,11 +232,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                listener.accept(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
             {
                 Ok(Ok((stream, _addr))) => {
                     let mgr = manager.clone();
@@ -240,7 +243,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let st = storage.clone();
                     let wd = workflows_dir.clone();
                     let cd = config_dir.clone();
-                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, wd, cd));
+                    tokio::spawn(handle_connection(
+                        stream, mgr, pending, runs, subs, st, wd, cd,
+                    ));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -270,11 +275,8 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 .create(pipe_name)
                 .context("create named pipe")?;
             first = false;
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                server.connect(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(100), server.connect())
+                .await
             {
                 Ok(Ok(())) => {
                     let mgr = manager.clone();
@@ -284,7 +286,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let st = storage.clone();
                     let wd = workflows_dir.clone();
                     let cd = config_dir.clone();
-                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, wd, cd));
+                    tokio::spawn(handle_connection(
+                        server, mgr, pending, runs, subs, st, wd, cd,
+                    ));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -323,7 +327,13 @@ async fn handle_connection<S>(
     let cmd: DaemonCommand = match serde_json::from_str(line.trim()) {
         Ok(c) => c,
         Err(e) => {
-            let _ = write_json(&mut writer, &DaemonResponse::Error { message: e.to_string() }).await;
+            let _ = write_json(
+                &mut writer,
+                &DaemonResponse::Error {
+                    message: e.to_string(),
+                },
+            )
+            .await;
             return;
         }
     };
@@ -333,7 +343,11 @@ async fn handle_connection<S>(
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
             // Send a single snapshot of all workflows before streaming live events.
             let snapshot = build_workflow_snapshot(&manager, &config_dir).await;
-            let _ = write_json(&mut writer, &DaemonEvent::WorkflowsSnapshot(snapshot.clone())).await;
+            let _ = write_json(
+                &mut writer,
+                &DaemonEvent::WorkflowsSnapshot(snapshot.clone()),
+            )
+            .await;
             // Replay all historical runs from storage for each workflow
             for wf in &snapshot {
                 if let Ok(runs) = storage.load_workflow_runs(&wf.name) {
@@ -342,7 +356,8 @@ async fn handle_connection<S>(
                         let _ = write_json(&mut writer, &DaemonEvent::RunUpdated(run)).await;
                         if let Ok(logs) = storage.load_run_logs(run_id) {
                             for log in logs {
-                                let _ = write_json(&mut writer, &DaemonEvent::LogAppended(log)).await;
+                                let _ =
+                                    write_json(&mut writer, &DaemonEvent::LogAppended(log)).await;
                             }
                         }
                     }
@@ -399,7 +414,15 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::StopRun { run_id } => {
-            let killed = kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            let killed = kill_active_run(
+                run_id,
+                &recent_runs,
+                &pending_checkpoints,
+                &manager,
+                &storage,
+                &subscribers,
+            )
+            .await;
             if let Some((run, def, scripts_dir)) = killed {
                 // Run finally steps in the background — don't block the response.
                 let st = storage.clone();
@@ -409,14 +432,25 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
         }
         DaemonCommand::DeleteRun { run_id } => {
-            let killed = kill_active_run(run_id, &recent_runs, &pending_checkpoints, &manager, &storage, &subscribers).await;
+            let killed = kill_active_run(
+                run_id,
+                &recent_runs,
+                &pending_checkpoints,
+                &manager,
+                &storage,
+                &subscribers,
+            )
+            .await;
             if let Some((run, def, scripts_dir)) = killed {
                 // Run finally steps before erasing the run record.
-                run_finally_after_kill(run, def, scripts_dir, storage.clone(), subscribers.clone()).await;
+                run_finally_after_kill(run, def, scripts_dir, storage.clone(), subscribers.clone())
+                    .await;
             }
             // Delete from storage and scratch directory
             let storage_result = storage.delete_run(run_id);
-            let scratch_dir = std::path::PathBuf::from(dirs_data_dir()).join("runs").join(run_id.to_string());
+            let scratch_dir = std::path::PathBuf::from(dirs_data_dir())
+                .join("runs")
+                .join(run_id.to_string());
             let dir_result = if scratch_dir.exists() {
                 std::fs::remove_dir_all(&scratch_dir)
             } else {
@@ -432,7 +466,7 @@ async fn handle_connection<S>(
                 }
                 _ => DaemonResponse::Error {
                     message: "Failed to delete run".to_string(),
-                }
+                },
             };
             let _ = write_json(&mut writer, &resp).await;
         }
@@ -440,7 +474,9 @@ async fn handle_connection<S>(
             let path = consumed_triggers_path(&dirs_data_dir(), &workflow);
             let resp = match load_consumed_triggers(&path) {
                 Ok(triggers) => DaemonResponse::ConsumedTriggersResponse { triggers },
-                Err(e) => DaemonResponse::Error { message: e.to_string() },
+                Err(e) => DaemonResponse::Error {
+                    message: e.to_string(),
+                },
             };
             let _ = write_json(&mut writer, &resp).await;
         }
@@ -456,7 +492,9 @@ async fn handle_connection<S>(
                     }
                     DaemonResponse::Ok
                 }
-                Err(e) => DaemonResponse::Error { message: e.to_string() },
+                Err(e) => DaemonResponse::Error {
+                    message: e.to_string(),
+                },
             };
             let _ = write_json(&mut writer, &resp).await;
         }
@@ -467,7 +505,9 @@ async fn handle_connection<S>(
                     broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
                     DaemonResponse::Ok
                 }
-                Err(e) => DaemonResponse::Error { message: e.to_string() },
+                Err(e) => DaemonResponse::Error {
+                    message: e.to_string(),
+                },
             };
             let _ = write_json(&mut writer, &resp).await;
         }
@@ -517,7 +557,9 @@ async fn run_finally_after_kill(
     let scratch_base = PathBuf::from(dirs_data_dir()).join("runs");
     let notifier = Arc::new(DesktopNotifier);
     let engine = Engine::new_with_scripts_dir(storage, scratch_base, notifier, scripts_dir);
-    engine.run_finally(&def, &run, RunOutcome::Stopped, Some(ev_tx)).await;
+    engine
+        .run_finally(&def, &run, RunOutcome::Stopped, Some(ev_tx))
+        .await;
 }
 
 /// Kill an active run immediately. Returns the stopped run snapshot and its workflow def+scripts_dir
@@ -553,7 +595,10 @@ async fn kill_active_run(
     // Mark run as Stopped in storage and broadcast RunUpdated.
     let updated_run = recent_runs.lock().unwrap().get(&run_id).cloned();
     if let Some(mut run) = updated_run {
-        if matches!(run.status, RunStatus::Running | RunStatus::WaitingCheckpoint) {
+        if matches!(
+            run.status,
+            RunStatus::Running | RunStatus::WaitingCheckpoint
+        ) {
             run.status = RunStatus::Stopped;
             let _ = storage.update_workflow_run(&run);
             recent_runs.lock().unwrap().insert(run_id, run.clone());
@@ -608,7 +653,9 @@ fn broadcast_event(
 ///
 /// Scans both flat `.toml` files and one level of subdirectories (each containing `workflow.toml`).
 /// Skips workflows with unsupported `schema_version` with a warning.
-pub(crate) fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(WorkflowDef, String, Option<PathBuf>)>> {
+pub(crate) fn load_workflows_from_dir(
+    dir: &Path,
+) -> anyhow::Result<Vec<(WorkflowDef, String, Option<PathBuf>)>> {
     use otter_core::types::WORKFLOW_SCHEMA_VERSION;
 
     if !dir.exists() {
@@ -634,8 +681,8 @@ pub(crate) fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(Workflo
 
     let mut workflows = Vec::new();
     for (path, scripts_dir) in &entries {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {path:?}"))?;
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
         let def: WorkflowDef = match toml::from_str(&content) {
             Ok(d) => d,
             Err(e) => {
@@ -667,7 +714,9 @@ pub(crate) fn load_workflows_from_dir(dir: &Path) -> anyhow::Result<Vec<(Workflo
 fn result_to_response(result: anyhow::Result<()>) -> DaemonResponse {
     match result {
         Ok(()) => DaemonResponse::Ok,
-        Err(e) => DaemonResponse::Error { message: e.to_string() },
+        Err(e) => DaemonResponse::Error {
+            message: e.to_string(),
+        },
     }
 }
 
@@ -732,7 +781,9 @@ mod tests {
 
     impl TrackingNotifier {
         fn new() -> Self {
-            Self { sent: Mutex::new(Vec::new()) }
+            Self {
+                sent: Mutex::new(Vec::new()),
+            }
         }
 
         fn summaries(&self) -> Vec<String> {
@@ -742,8 +793,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Notifier for TrackingNotifier {
-        fn name(&self) -> &str { "tracking" }
-        async fn send(&self, n: &otter_notify::Notification) -> Result<(), otter_notify::NotifyError> {
+        fn name(&self) -> &str {
+            "tracking"
+        }
+        async fn send(
+            &self,
+            n: &otter_notify::Notification,
+        ) -> Result<(), otter_notify::NotifyError> {
             self.sent.lock().unwrap().push(n.summary.clone());
             Ok(())
         }
@@ -759,39 +815,65 @@ mod tests {
     async fn running_and_waiting_checkpoint_runs_are_marked_failed() {
         // GIVEN one run in each non-terminal state
         let storage = InMemoryStorage::new();
-        storage.save_workflow_run(&run_with_status("wf-a", RunStatus::Running)).unwrap();
-        storage.save_workflow_run(&run_with_status("wf-b", RunStatus::WaitingCheckpoint)).unwrap();
+        storage
+            .save_workflow_run(&run_with_status("wf-a", RunStatus::Running))
+            .unwrap();
+        storage
+            .save_workflow_run(&run_with_status("wf-b", RunStatus::WaitingCheckpoint))
+            .unwrap();
 
         // WHEN
         mark_interrupted_runs_failed(&storage, &NoOpNotifier).await;
 
         // THEN
-        assert_eq!(storage.load_latest_run("wf-a").unwrap().unwrap().status, RunStatus::Failed);
-        assert_eq!(storage.load_latest_run("wf-b").unwrap().unwrap().status, RunStatus::Failed);
+        assert_eq!(
+            storage.load_latest_run("wf-a").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
+        assert_eq!(
+            storage.load_latest_run("wf-b").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
     }
 
     #[tokio::test]
     async fn terminal_runs_are_not_touched() {
         // GIVEN runs already in terminal states
         let storage = InMemoryStorage::new();
-        storage.save_workflow_run(&run_with_status("wf-a", RunStatus::Completed)).unwrap();
-        storage.save_workflow_run(&run_with_status("wf-b", RunStatus::Failed)).unwrap();
+        storage
+            .save_workflow_run(&run_with_status("wf-a", RunStatus::Completed))
+            .unwrap();
+        storage
+            .save_workflow_run(&run_with_status("wf-b", RunStatus::Failed))
+            .unwrap();
 
         // WHEN
         mark_interrupted_runs_failed(&storage, &NoOpNotifier).await;
 
         // THEN
-        assert_eq!(storage.load_latest_run("wf-a").unwrap().unwrap().status, RunStatus::Completed);
-        assert_eq!(storage.load_latest_run("wf-b").unwrap().unwrap().status, RunStatus::Failed);
+        assert_eq!(
+            storage.load_latest_run("wf-a").unwrap().unwrap().status,
+            RunStatus::Completed
+        );
+        assert_eq!(
+            storage.load_latest_run("wf-b").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
     }
 
     #[tokio::test]
     async fn notification_sent_per_interrupted_run() {
         // GIVEN two non-terminal runs and one terminal run
         let storage = InMemoryStorage::new();
-        storage.save_workflow_run(&run_with_status("alpha", RunStatus::Running)).unwrap();
-        storage.save_workflow_run(&run_with_status("beta", RunStatus::WaitingCheckpoint)).unwrap();
-        storage.save_workflow_run(&run_with_status("gamma", RunStatus::Completed)).unwrap();
+        storage
+            .save_workflow_run(&run_with_status("alpha", RunStatus::Running))
+            .unwrap();
+        storage
+            .save_workflow_run(&run_with_status("beta", RunStatus::WaitingCheckpoint))
+            .unwrap();
+        storage
+            .save_workflow_run(&run_with_status("gamma", RunStatus::Completed))
+            .unwrap();
         let notifier = TrackingNotifier::new();
 
         // WHEN

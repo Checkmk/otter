@@ -8,10 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
-use crate::types::{
-    EngineEvent, StorageBackend, WorkflowDef,
-    WorkflowState, WorkflowStatus,
-};
+use crate::types::{EngineEvent, StorageBackend, WorkflowDef, WorkflowState, WorkflowStatus};
 use otter_notify::Notifier;
 use otter_secrets::{NoOpSecretStore, SecretStore};
 
@@ -116,8 +113,10 @@ impl WorkflowManager {
 
     /// Reconcile the registered workflows against a freshly loaded set.
     pub fn reload(&mut self, new_workflows: Vec<(WorkflowDef, String, Option<PathBuf>)>) {
-        let new_names: std::collections::HashSet<String> =
-            new_workflows.iter().map(|(d, _, _)| d.name.clone()).collect();
+        let new_names: std::collections::HashSet<String> = new_workflows
+            .iter()
+            .map(|(d, _, _)| d.name.clone())
+            .collect();
 
         for (def, toml_content, scripts_dir) in new_workflows {
             let name = def.name.clone();
@@ -247,7 +246,9 @@ impl WorkflowManager {
     /// Sets the workflow to Dormant immediately without waiting for the task to finish.
     /// No-op if the workflow is not found or has no running task.
     pub fn abort_and_stop(&mut self, name: &str) {
-        let Some(handle) = self.handles.get_mut(name) else { return };
+        let Some(handle) = self.handles.get_mut(name) else {
+            return;
+        };
         handle.shutdown.store(true, Ordering::Relaxed);
         if let Some(task) = handle.task.take() {
             task.abort();

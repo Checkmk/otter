@@ -3,8 +3,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{
-    AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
-    SubprocessSpec, classify_agent_error, run_agent_subprocess,
+    classify_agent_error, run_agent_subprocess, AgentError, AgentOutput, AgentRunner,
+    AgentSessionHandle, AgentSpec, SubprocessSpec,
 };
 use crate::types::ProgressChunk;
 
@@ -59,24 +59,32 @@ impl AgentRunner for CopilotRunner {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("json".to_string());
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &spec.working_dir,
-                stdin_message: None,
-                scripts_dir: spec.scripts_dir.as_deref(),
-                secrets: &spec.secrets,
-                sandbox_config: spec.sandbox_config.as_ref(),
-            }, Some((&tx, parse_copilot_stream_line))).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &spec.working_dir,
+                    stdin_message: None,
+                    scripts_dir: spec.scripts_dir.as_deref(),
+                    secrets: &spec.secrets,
+                    sandbox_config: spec.sandbox_config.as_ref(),
+                },
+                Some((&tx, parse_copilot_stream_line)),
+            )
+            .await?
         } else {
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &spec.working_dir,
-                stdin_message: None,
-                scripts_dir: spec.scripts_dir.as_deref(),
-                secrets: &spec.secrets,
-                sandbox_config: spec.sandbox_config.as_ref(),
-            }, None).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &spec.working_dir,
+                    stdin_message: None,
+                    scripts_dir: spec.scripts_dir.as_deref(),
+                    secrets: &spec.secrets,
+                    sandbox_config: spec.sandbox_config.as_ref(),
+                },
+                None,
+            )
+            .await?
         };
 
         if let Some(code) = output.exit_code {
@@ -107,24 +115,32 @@ impl AgentRunner for CopilotRunner {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("json".to_string());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &session.working_dir,
-                stdin_message: None,
-                scripts_dir: session.scripts_dir.as_deref(),
-                secrets,
-                sandbox_config: session.sandbox_config.as_ref(),
-            }, Some((&tx, parse_copilot_stream_line))).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &session.working_dir,
+                    stdin_message: None,
+                    scripts_dir: session.scripts_dir.as_deref(),
+                    secrets,
+                    sandbox_config: session.sandbox_config.as_ref(),
+                },
+                Some((&tx, parse_copilot_stream_line)),
+            )
+            .await?
         } else {
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &session.working_dir,
-                stdin_message: None,
-                scripts_dir: session.scripts_dir.as_deref(),
-                secrets,
-                sandbox_config: session.sandbox_config.as_ref(),
-            }, None).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &session.working_dir,
+                    stdin_message: None,
+                    scripts_dir: session.scripts_dir.as_deref(),
+                    secrets,
+                    sandbox_config: session.sandbox_config.as_ref(),
+                },
+                None,
+            )
+            .await?
         };
 
         if let Some(code) = output.exit_code {
@@ -168,9 +184,14 @@ fn parse_copilot_stream_line(line: &str, stdout: &mut String) -> Vec<ProgressChu
             let mut chunks = Vec::new();
             if let Some(reqs) = val.pointer("/data/toolRequests").and_then(|v| v.as_array()) {
                 for req in reqs {
-                    let name = req.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                    let name = req
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown");
                     if name == "report_intent" {
-                        if let Some(intent) = req.pointer("/arguments/intent").and_then(|v| v.as_str()) {
+                        if let Some(intent) =
+                            req.pointer("/arguments/intent").and_then(|v| v.as_str())
+                        {
                             chunks.push(ProgressChunk::Status(intent.to_string()));
                         }
                     } else {
@@ -181,7 +202,10 @@ fn parse_copilot_stream_line(line: &str, stdout: &mut String) -> Vec<ProgressChu
             chunks
         }
         "tool.execution_start" => {
-            let name = val.pointer("/data/toolName").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let name = val
+                .pointer("/data/toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             if name == "report_intent" {
                 return vec![];
             }

@@ -38,8 +38,15 @@ pub fn build_trigger(
                 signal_path,
             )))
         }
-        TriggerDef::Polling { poll_command, context_command, interval_secs, secrets } => {
-            let seen_path = data_dir.join("triggers").join(format!("{}-seen.json", workflow_name));
+        TriggerDef::Polling {
+            poll_command,
+            context_command,
+            interval_secs,
+            secrets,
+        } => {
+            let seen_path = data_dir
+                .join("triggers")
+                .join(format!("{}-seen.json", workflow_name));
             Ok(Arc::new(polling::PollingTrigger::new(
                 "polling".to_string(),
                 poll_command.clone(),

@@ -26,10 +26,7 @@ impl StepExecutor for AgentExecutor {
             .as_deref()
             .ok_or_else(|| StepError::ExecutionFailed("agent step missing message".into()))?;
 
-        let working_dir = ctx
-            .workspace_dir
-            .as_deref()
-            .unwrap_or(&ctx.scratch_dir);
+        let working_dir = ctx.workspace_dir.as_deref().unwrap_or(&ctx.scratch_dir);
 
         if let Some(ref log_fn) = ctx.log_fn {
             let provider = step_def.agent.provider.as_deref().unwrap_or("custom");
@@ -50,7 +47,11 @@ impl StepExecutor for AgentExecutor {
         let progress_tx: Option<mpsc::Sender<ProgressChunk>> = ctx.progress_fn.as_ref().map(|f| {
             let (tx, mut rx) = mpsc::channel::<ProgressChunk>(64);
             let f = f.clone();
-            tokio::spawn(async move { while let Some(chunk) = rx.recv().await { f(chunk); } });
+            tokio::spawn(async move {
+                while let Some(chunk) = rx.recv().await {
+                    f(chunk);
+                }
+            });
             tx
         });
 
@@ -92,7 +93,9 @@ impl StepExecutor for AgentExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::agent_runner::{
+        AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
+    };
     use crate::resource_limiter::NoOpLimiter;
     use crate::types::{ProgressChunk, StepType};
     use std::sync::Arc;
@@ -109,8 +112,18 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             Ok((
-                AgentSessionHandle { id: "s".into(), working_dir: spec.working_dir.clone(), resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None, sandbox_config: None },
-                AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) },
+                AgentSessionHandle {
+                    id: "s".into(),
+                    working_dir: spec.working_dir.clone(),
+                    resource_limiter: Arc::new(NoOpLimiter),
+                    scripts_dir: None,
+                    sandbox_config: None,
+                },
+                AgentOutput {
+                    stdout: "agent output".into(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
             ))
         }
 
@@ -121,7 +134,11 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
             _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
-            Ok(AgentOutput { stdout: "agent output".into(), stderr: String::new(), exit_code: Some(0) })
+            Ok(AgentOutput {
+                stdout: "agent output".into(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
         }
 
         async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
@@ -133,7 +150,9 @@ mod tests {
     async fn execute_writes_output_to_scratch_dir() {
         // GIVEN
         let scratch = tempfile::tempdir().unwrap();
-        let manager = Arc::new(crate::session::AgentSessionManager::new_with_runner_override(Arc::new(FixedRunner)));
+        let manager = Arc::new(
+            crate::session::AgentSessionManager::new_with_runner_override(Arc::new(FixedRunner)),
+        );
         let ctx = StepContext {
             run_id: Uuid::new_v4(),
             workflow_name: "test".into(),
@@ -159,7 +178,10 @@ mod tests {
             notify: None,
             secrets: None,
             sandbox: None,
-            agent: crate::types::AgentConfig { provider: Some("claude".into()), ..Default::default() },
+            agent: crate::types::AgentConfig {
+                provider: Some("claude".into()),
+                ..Default::default()
+            },
         };
 
         // WHEN

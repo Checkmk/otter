@@ -5,8 +5,8 @@ use uuid::Uuid;
 use crate::types::ProgressChunk;
 
 use super::{
-    AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
-    SubprocessSpec, classify_agent_error, run_agent_subprocess,
+    classify_agent_error, run_agent_subprocess, AgentError, AgentOutput, AgentRunner,
+    AgentSessionHandle, AgentSpec, SubprocessSpec,
 };
 
 /// Agent runner targeting the Claude Code CLI.
@@ -60,27 +60,35 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &spec.working_dir,
-                stdin_message: Some(&spec.message),
-                scripts_dir: spec.scripts_dir.as_deref(),
-                secrets: &spec.secrets,
-                sandbox_config: spec.sandbox_config.as_ref(),
-            }, Some((&tx, parse_claude_stream_line))).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &spec.working_dir,
+                    stdin_message: Some(&spec.message),
+                    scripts_dir: spec.scripts_dir.as_deref(),
+                    secrets: &spec.secrets,
+                    sandbox_config: spec.sandbox_config.as_ref(),
+                },
+                Some((&tx, parse_claude_stream_line)),
+            )
+            .await?
         } else {
             cmd_args.push("--print".to_string());
             cmd_args.push("--session-id".to_string());
             cmd_args.push(session_id);
             let cmd_args = spec.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &spec.working_dir,
-                stdin_message: Some(&spec.message),
-                scripts_dir: spec.scripts_dir.as_deref(),
-                secrets: &spec.secrets,
-                sandbox_config: spec.sandbox_config.as_ref(),
-            }, None).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &spec.working_dir,
+                    stdin_message: Some(&spec.message),
+                    scripts_dir: spec.scripts_dir.as_deref(),
+                    secrets: &spec.secrets,
+                    sandbox_config: spec.sandbox_config.as_ref(),
+                },
+                None,
+            )
+            .await?
         };
 
         if let Some(code) = output.exit_code {
@@ -109,27 +117,35 @@ impl AgentRunner for ClaudeCodeRunner {
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &session.working_dir,
-                stdin_message: Some(message),
-                scripts_dir: session.scripts_dir.as_deref(),
-                secrets,
-                sandbox_config: session.sandbox_config.as_ref(),
-            }, Some((&tx, parse_claude_stream_line))).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &session.working_dir,
+                    stdin_message: Some(message),
+                    scripts_dir: session.scripts_dir.as_deref(),
+                    secrets,
+                    sandbox_config: session.sandbox_config.as_ref(),
+                },
+                Some((&tx, parse_claude_stream_line)),
+            )
+            .await?
         } else {
             cmd_args.push("--print".to_string());
             cmd_args.push("--resume".to_string());
             cmd_args.push(session.id.clone());
             let cmd_args = session.resource_limiter.apply(&cmd_args);
-            run_agent_subprocess(&SubprocessSpec {
-                cmd_args: &cmd_args,
-                working_dir: &session.working_dir,
-                stdin_message: Some(message),
-                scripts_dir: session.scripts_dir.as_deref(),
-                secrets,
-                sandbox_config: session.sandbox_config.as_ref(),
-            }, None).await?
+            run_agent_subprocess(
+                &SubprocessSpec {
+                    cmd_args: &cmd_args,
+                    working_dir: &session.working_dir,
+                    stdin_message: Some(message),
+                    scripts_dir: session.scripts_dir.as_deref(),
+                    secrets,
+                    sandbox_config: session.sandbox_config.as_ref(),
+                },
+                None,
+            )
+            .await?
         };
 
         if let Some(code) = output.exit_code {
@@ -177,9 +193,14 @@ fn parse_assistant_event(val: &serde_json::Value, stdout: &mut String) -> Vec<Pr
                 chunks.push(ProgressChunk::Status("Thinking...".to_string()));
             }
             "tool_use" => {
-                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                let name = block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown");
                 let input_summary = summarize_tool_input(name, block.get("input"));
-                chunks.push(ProgressChunk::Status(format!("Using tool: {name}{input_summary}")));
+                chunks.push(ProgressChunk::Status(format!(
+                    "Using tool: {name}{input_summary}"
+                )));
             }
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -205,7 +226,10 @@ fn parse_user_event(val: &serde_json::Value) -> Vec<ProgressChunk> {
     for block in content {
         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if block_type == "tool_result" {
-            let is_error = block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+            let is_error = block
+                .get("is_error")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
             if is_error {
                 chunks.push(ProgressChunk::Status("Tool use denied".to_string()));
             }
@@ -226,9 +250,12 @@ fn parse_result_event(val: &serde_json::Value, stdout: &mut String) -> Vec<Progr
 }
 
 fn summarize_tool_input(tool_name: &str, input: Option<&serde_json::Value>) -> String {
-    let Some(input) = input else { return String::new() };
+    let Some(input) = input else {
+        return String::new();
+    };
     // For file-oriented tools, show the file path
-    let path = input.get("file_path")
+    let path = input
+        .get("file_path")
         .or_else(|| input.get("path"))
         .or_else(|| input.get("pattern"))
         .and_then(|v| v.as_str());
@@ -263,7 +290,9 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#;
         let chunks = parse_claude_stream_line(line, &mut String::new());
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0], ProgressChunk::Status(s) if s == "Using tool: Read(src/main.rs)"));
+        assert!(
+            matches!(&chunks[0], ProgressChunk::Status(s) if s == "Using tool: Read(src/main.rs)")
+        );
     }
 
     #[test]
@@ -377,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_subprocess_emits_chunks() {
-        use super::super::{SubprocessSpec, run_agent_subprocess};
+        use super::super::{run_agent_subprocess, SubprocessSpec};
 
         // GIVEN a script that prints stream-json events
         let dir = tempfile::tempdir().unwrap();
@@ -392,14 +421,19 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         let cmd = vec![script.to_string_lossy().to_string()];
 
         // WHEN
-        let output = run_agent_subprocess(&SubprocessSpec {
-            cmd_args: &cmd,
-            working_dir: dir.path(),
-            stdin_message: Some(""),
-            scripts_dir: None,
-            secrets: &[],
-            sandbox_config: None,
-        }, Some((&tx, parse_claude_stream_line))).await.unwrap();
+        let output = run_agent_subprocess(
+            &SubprocessSpec {
+                cmd_args: &cmd,
+                working_dir: dir.path(),
+                stdin_message: Some(""),
+                scripts_dir: None,
+                secrets: &[],
+                sandbox_config: None,
+            },
+            Some((&tx, parse_claude_stream_line)),
+        )
+        .await
+        .unwrap();
 
         // THEN — output contains the result text
         assert_eq!(output.stdout, "done");
@@ -412,8 +446,14 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         }
 
         // Should have: Thinking, Using tool: Read(foo.rs), Stdout("done")
-        assert!(chunks.iter().any(|c| matches!(c, ProgressChunk::Status(s) if s == "Thinking...")));
-        assert!(chunks.iter().any(|c| matches!(c, ProgressChunk::Status(s) if s.contains("Read"))));
-        assert!(chunks.iter().any(|c| matches!(c, ProgressChunk::Stdout(s) if s == "done")));
+        assert!(chunks
+            .iter()
+            .any(|c| matches!(c, ProgressChunk::Status(s) if s == "Thinking...")));
+        assert!(chunks
+            .iter()
+            .any(|c| matches!(c, ProgressChunk::Status(s) if s.contains("Read"))));
+        assert!(chunks
+            .iter()
+            .any(|c| matches!(c, ProgressChunk::Stdout(s) if s == "done")));
     }
 }

@@ -7,12 +7,7 @@ use otter_notify::NoOpNotifier;
 fn make_manager(event_tx: mpsc::Sender<EngineEvent>) -> WorkflowManager {
     let storage = Arc::new(InMemoryStorage::new());
     let data_dir = std::env::temp_dir().join("otter-wm-tests");
-    WorkflowManager::new(
-        storage,
-        data_dir,
-        event_tx,
-        Arc::new(NoOpNotifier),
-    )
+    WorkflowManager::new(storage, data_dir, event_tx, Arc::new(NoOpNotifier))
 }
 
 fn shell_step() -> StepDef {
@@ -139,7 +134,10 @@ fn status_includes_toml_content() {
 
     // THEN
     let status = manager.status();
-    assert_eq!(status[0].toml_content.as_deref(), Some("name = \"hello\"\n"));
+    assert_eq!(
+        status[0].toml_content.as_deref(),
+        Some("name = \"hello\"\n")
+    );
 }
 
 #[tokio::test]
@@ -237,22 +235,15 @@ async fn polling_trigger_fires_immediately_when_manually_started() {
         &temp_dir,
         "mock-poller.sh",
         "#!/bin/bash\necho '[\"test-hash\"]'\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
     let data_dir = temp_dir.clone();
-    let mut manager = WorkflowManager::new(
-        storage.clone(),
-        data_dir,
-        tx,
-        Arc::new(NoOpNotifier),
-    );
+    let mut manager = WorkflowManager::new(storage.clone(), data_dir, tx, Arc::new(NoOpNotifier));
 
-    let workflow = polling_workflow(
-        "poller",
-        vec![cmd_path.to_string_lossy().to_string()],
-    );
+    let workflow = polling_workflow("poller", vec![cmd_path.to_string_lossy().to_string()]);
     manager.register(workflow, String::new());
 
     // WHEN — manually start the workflow
@@ -307,22 +298,15 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
         &temp_dir,
         "mock-poller.sh",
         "#!/bin/bash\necho '[\"hash1\", \"hash2\", \"hash3\"]'\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
     let data_dir = temp_dir.clone();
-    let mut manager = WorkflowManager::new(
-        storage.clone(),
-        data_dir,
-        tx,
-        Arc::new(NoOpNotifier),
-    );
+    let mut manager = WorkflowManager::new(storage.clone(), data_dir, tx, Arc::new(NoOpNotifier));
 
-    let workflow = polling_workflow(
-        "multi-poller",
-        vec![cmd_path.to_string_lossy().to_string()],
-    );
+    let workflow = polling_workflow("multi-poller", vec![cmd_path.to_string_lossy().to_string()]);
     manager.register(workflow, String::new());
 
     // WHEN — manually start the workflow
@@ -357,12 +341,7 @@ async fn manual_trigger_fires_immediately_on_start() {
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
     let data_dir = std::env::temp_dir().join("otter-manual-trigger-test");
-    let mut manager = WorkflowManager::new(
-        storage.clone(),
-        data_dir,
-        tx,
-        Arc::new(NoOpNotifier),
-    );
+    let mut manager = WorkflowManager::new(storage.clone(), data_dir, tx, Arc::new(NoOpNotifier));
 
     manager.register(manual_workflow("manual-job"), String::new());
 
@@ -506,7 +485,11 @@ fn register_with_scripts_dir_stores_scripts_dir() {
     let scripts_dir = std::path::PathBuf::from("/tmp/scripts");
 
     // WHEN
-    manager.register_with_scripts_dir(looping_workflow("wf"), String::new(), Some(scripts_dir.clone()));
+    manager.register_with_scripts_dir(
+        looping_workflow("wf"),
+        String::new(),
+        Some(scripts_dir.clone()),
+    );
 
     // THEN — workflow is registered (we can't inspect scripts_dir directly, but start should work)
     let status = manager.status();
@@ -520,12 +503,7 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
     let (tx, _rx) = mpsc::channel(64);
     let storage = Arc::new(InMemoryStorage::new());
     let data_dir = std::env::temp_dir().join("otter-abort-test");
-    let mut manager = WorkflowManager::new(
-        storage,
-        data_dir,
-        tx,
-        Arc::new(NoOpNotifier),
-    );
+    let mut manager = WorkflowManager::new(storage, data_dir, tx, Arc::new(NoOpNotifier));
     let wf = WorkflowDef {
         name: "long-job".to_string(),
         workflow_type: WorkflowType::Looping,
@@ -553,8 +531,13 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
     // Wait for the engine to reach Running state
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        if manager.status()[0].state == WorkflowState::Running { break; }
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for Running");
+        if manager.status()[0].state == WorkflowState::Running {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for Running"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 

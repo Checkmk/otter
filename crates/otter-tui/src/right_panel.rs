@@ -1,24 +1,31 @@
 use chrono::Local;
 use ratatui::{
-    Frame,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
+    Frame,
 };
 
 use otter_core::types::ProgressChunk;
 
 use crate::app::{App, CursorTarget, Focus, RightPanelContent};
 use crate::status_bar::PanelHint;
-use crate::styles::{base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color};
+use crate::styles::{
+    base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color,
+};
 use crate::text::wrap_into_chunks;
-
 
 #[derive(Debug, PartialEq)]
 enum WrappedLogLine {
-    Header { time: String, step_type: String, text: String },
-    Continuation { text: String },
+    Header {
+        time: String,
+        step_type: String,
+        text: String,
+    },
+    Continuation {
+        text: String,
+    },
 }
 
 fn format_log_entry(
@@ -30,7 +37,7 @@ fn format_log_entry(
     // "[HH:MM:SS] step_type: " — chars consumed by the header prefix
     let prefix_len = 1 + time.len() + 2 + step_type.len() + 2;
     let first_width = panel_width.saturating_sub(prefix_len);
-    let cont_width  = panel_width.saturating_sub(2);
+    let cont_width = panel_width.saturating_sub(2);
 
     let mut result: Vec<WrappedLogLine> = Vec::new();
     let mut header_emitted = false;
@@ -41,7 +48,7 @@ fn format_log_entry(
             // Take only the first `first_width` chars for the header, then
             // re-split the remainder at cont_width (not first_width).
             let first: String = content.chars().take(first_width).collect();
-            let rest:  String = content.chars().skip(first_width).collect();
+            let rest: String = content.chars().skip(first_width).collect();
             result.push(WrappedLogLine::Header {
                 time: time.to_string(),
                 step_type: step_type.to_string(),
@@ -71,7 +78,11 @@ fn format_log_entry(
     result
 }
 
-pub fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_height: usize) -> Vec<Line> {
+pub fn with_scroll_indicators(
+    lines: Vec<Line>,
+    scroll_offset: usize,
+    inner_height: usize,
+) -> Vec<Line> {
     let total = lines.len();
     if total == 0 {
         return lines;
@@ -81,7 +92,11 @@ pub fn with_scroll_indicators(lines: Vec<Line>, scroll_offset: usize, inner_heig
     let below = total.saturating_sub(scroll_offset + inner_height);
     let dim = Style::default().fg(c_dim()).bg(c_background());
 
-    let mut visible: Vec<Line> = lines.into_iter().skip(scroll_offset).take(inner_height).collect();
+    let mut visible: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll_offset)
+        .take(inner_height)
+        .collect();
 
     if above > 0 && !visible.is_empty() {
         visible[0] = Line::from(Span::styled(format!("  … {above} more ↑"), dim));
@@ -142,7 +157,11 @@ fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bo
     let scroll_offset = if is_focused { app.right_scroll } else { 0 } as u16;
 
     let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
-    let block = if is_focused { panel_focused("Definition") } else { panel("Definition") };
+    let block = if is_focused {
+        panel_focused("Definition")
+    } else {
+        panel("Definition")
+    };
     let para = Paragraph::new(visible).block(block);
 
     f.render_widget(para, area);
@@ -202,7 +221,11 @@ fn build_log_lines<'a>(
     let mut progress_cursor = 0;
 
     for (i, entry) in logs.iter().enumerate() {
-        let time = entry.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
+        let time = entry
+            .timestamp
+            .with_timezone(&Local)
+            .format("%H:%M:%S")
+            .to_string();
         let text = if !entry.stdout.is_empty() {
             &entry.stdout
         } else if !entry.stderr.is_empty() {
@@ -217,17 +240,36 @@ fn build_log_lines<'a>(
         // BEFORE emitting it so progress appears between the first and last log entries
         // of the same step (e.g. "Running agent..." → progress → final output).
         if i > 0 && logs[i - 1].step_index == entry.step_index {
-            while progress_cursor < progress.len() && progress[progress_cursor].0 <= entry.step_index {
-                lines.extend(render_progress_lines(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
+            while progress_cursor < progress.len()
+                && progress[progress_cursor].0 <= entry.step_index
+            {
+                lines.extend(render_progress_lines(
+                    &progress[progress_cursor].1,
+                    inner_width,
+                    dim_style,
+                    stderr_style,
+                ));
                 progress_cursor += 1;
             }
         }
 
         for wl in format_log_entry(&time, &entry.step_type, text, inner_width) {
             match wl {
-                WrappedLogLine::Header { time, step_type, text } => lines.push(Line::from(vec![
-                    Span::styled(format!("[{}] ", time), Style::default().fg(c_dim()).bg(c_background())),
-                    Span::styled(format!("{}:", step_type), Style::default().fg(step_color(&step_type)).bg(c_background())),
+                WrappedLogLine::Header {
+                    time,
+                    step_type,
+                    text,
+                } => lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("[{}] ", time),
+                        Style::default().fg(c_dim()).bg(c_background()),
+                    ),
+                    Span::styled(
+                        format!("{}:", step_type),
+                        Style::default()
+                            .fg(step_color(&step_type))
+                            .bg(c_background()),
+                    ),
                     Span::styled(format!(" {}", text), base_style()),
                 ])),
                 WrappedLogLine::Continuation { text } => lines.push(Line::from(vec![
@@ -243,14 +285,24 @@ fn build_log_lines<'a>(
         let next_step = logs.get(i + 1).map(|e| e.step_index);
         let boundary = next_step.unwrap_or(usize::MAX);
         while progress_cursor < progress.len() && progress[progress_cursor].0 < boundary {
-            lines.extend(render_progress_lines(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
+            lines.extend(render_progress_lines(
+                &progress[progress_cursor].1,
+                inner_width,
+                dim_style,
+                stderr_style,
+            ));
             progress_cursor += 1;
         }
     }
 
     // Remaining progress chunks (for in-flight steps)
     while progress_cursor < progress.len() {
-        lines.extend(render_progress_lines(&progress[progress_cursor].1, inner_width, dim_style, stderr_style));
+        lines.extend(render_progress_lines(
+            &progress[progress_cursor].1,
+            inner_width,
+            dim_style,
+            stderr_style,
+        ));
         progress_cursor += 1;
     }
 
@@ -265,7 +317,9 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
 
     let progress = app.selected_progress();
     let dim_style = Style::default().fg(c_dim()).bg(c_background());
-    let stderr_style = Style::default().fg(ratatui::style::Color::Red).bg(c_background());
+    let stderr_style = Style::default()
+        .fg(ratatui::style::Color::Red)
+        .bg(c_background());
 
     let lines: Vec<Line> = build_log_lines(logs, progress, inner_width, dim_style, stderr_style);
 
@@ -279,7 +333,11 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     } as u16;
 
     let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
-    let block = if is_focused { panel_focused("Run log") } else { panel("Run log") };
+    let block = if is_focused {
+        panel_focused("Run log")
+    } else {
+        panel("Run log")
+    };
     let para = Paragraph::new(visible).block(block);
 
     f.render_widget(para, area);
@@ -299,16 +357,20 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
             Style::default().fg(c_dim()).bg(c_background()),
         ))]
     } else {
-        triggers.iter().enumerate().map(|(i, hash)| {
-            if is_focused && i == app.right_cursor {
-                Line::from(Span::styled(
-                    hash.clone(),
-                    Style::default().fg(c_background()).bg(c_foreground()),
-                ))
-            } else {
-                Line::from(Span::styled(hash.clone(), base_style()))
-            }
-        }).collect()
+        triggers
+            .iter()
+            .enumerate()
+            .map(|(i, hash)| {
+                if is_focused && i == app.right_cursor {
+                    Line::from(Span::styled(
+                        hash.clone(),
+                        Style::default().fg(c_background()).bg(c_foreground()),
+                    ))
+                } else {
+                    Line::from(Span::styled(hash.clone(), base_style()))
+                }
+            })
+            .collect()
     };
 
     // Scroll to keep right_cursor visible
@@ -316,7 +378,8 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     let scroll_offset = if triggers.is_empty() || !is_focused {
         0
     } else {
-        app.right_cursor.saturating_sub(inner_height.saturating_sub(1)) as u16
+        app.right_cursor
+            .saturating_sub(inner_height.saturating_sub(1)) as u16
     };
 
     let para = Paragraph::new(lines)
@@ -333,9 +396,7 @@ pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
         ],
-        RightPanelContent::ConsumedTriggers => vec![
-            PanelHint::new("[Del]", "Delete trigger"),
-        ],
+        RightPanelContent::ConsumedTriggers => vec![PanelHint::new("[Del]", "Delete trigger")],
     }
 }
 
@@ -397,16 +458,34 @@ mod tests {
 
         // THEN progress lines appear after "Running claude agent..." and before "Final output"
         let texts: Vec<String> = lines.iter().map(line_text).collect();
-        let idx_start   = texts.iter().position(|t| t.contains("Running claude agent...")).unwrap();
-        let idx_prog0   = texts.iter().position(|t| t.contains("Thinking...")).unwrap();
-        let idx_prog1   = texts.iter().position(|t| t.contains("Using tool: Read")).unwrap();
-        let idx_final   = texts.iter().position(|t| t.contains("Final output")).unwrap();
-        let idx_next    = texts.iter().position(|t| t.contains("Next step")).unwrap();
+        let idx_start = texts
+            .iter()
+            .position(|t| t.contains("Running claude agent..."))
+            .unwrap();
+        let idx_prog0 = texts
+            .iter()
+            .position(|t| t.contains("Thinking..."))
+            .unwrap();
+        let idx_prog1 = texts
+            .iter()
+            .position(|t| t.contains("Using tool: Read"))
+            .unwrap();
+        let idx_final = texts
+            .iter()
+            .position(|t| t.contains("Final output"))
+            .unwrap();
+        let idx_next = texts.iter().position(|t| t.contains("Next step")).unwrap();
 
-        assert!(idx_start < idx_prog0, "progress must come after agent start");
+        assert!(
+            idx_start < idx_prog0,
+            "progress must come after agent start"
+        );
         assert!(idx_prog0 < idx_prog1, "progress chunks preserve order");
-        assert!(idx_prog1 < idx_final, "progress must come before final output");
-        assert!(idx_final < idx_next,  "final output before next step");
+        assert!(
+            idx_prog1 < idx_final,
+            "progress must come before final output"
+        );
+        assert!(idx_final < idx_next, "final output before next step");
     }
 
     #[test]
@@ -418,17 +497,21 @@ mod tests {
             make_log(usize::MAX, "run_start", "Run started"),
             make_log(0, "agent", "Running claude agent..."),
         ];
-        let progress = vec![
-            (0, ProgressChunk::Status("Thinking...".to_string())),
-        ];
+        let progress = vec![(0, ProgressChunk::Status("Thinking...".to_string()))];
 
         // WHEN
         let lines = build_log_lines(&logs, &progress, 80, dim, red);
 
         // THEN progress appears after the start log (in-flight position)
         let texts: Vec<String> = lines.iter().map(line_text).collect();
-        let idx_start = texts.iter().position(|t| t.contains("Running claude agent...")).unwrap();
-        let idx_prog  = texts.iter().position(|t| t.contains("Thinking...")).unwrap();
+        let idx_start = texts
+            .iter()
+            .position(|t| t.contains("Running claude agent..."))
+            .unwrap();
+        let idx_prog = texts
+            .iter()
+            .position(|t| t.contains("Thinking..."))
+            .unwrap();
 
         assert!(idx_start < idx_prog);
         assert!(is_progress_line(&lines[idx_prog]));
@@ -447,12 +530,20 @@ mod tests {
         let lines = render_progress_lines(&chunk, 20, dim, red);
 
         // THEN multiple lines are returned, each with the progress prefix
-        assert!(lines.len() > 1, "expected wrapping but got {} line(s)", lines.len());
+        assert!(
+            lines.len() > 1,
+            "expected wrapping but got {} line(s)",
+            lines.len()
+        );
         for line in &lines {
-            assert!(is_progress_line(line), "each wrapped line must have the progress prefix");
+            assert!(
+                is_progress_line(line),
+                "each wrapped line must have the progress prefix"
+            );
         }
         // All characters of the original text are preserved across lines
-        let total_text: String = lines.iter()
+        let total_text: String = lines
+            .iter()
             .map(|l| line_text(l).trim_start_matches("  │ ").to_string())
             .collect::<Vec<_>>()
             .join("");
@@ -542,9 +633,14 @@ mod tests {
     #[test]
     fn short_message_produces_single_header_line() {
         let lines = format_log_entry("06:00:00", "agent", "hello", 80);
-        assert_eq!(lines, vec![
-            WrappedLogLine::Header { time: "06:00:00".into(), step_type: "agent".into(), text: "hello".into() },
-        ]);
+        assert_eq!(
+            lines,
+            vec![WrappedLogLine::Header {
+                time: "06:00:00".into(),
+                step_type: "agent".into(),
+                text: "hello".into()
+            },]
+        );
     }
 
     #[test]
@@ -582,9 +678,14 @@ mod tests {
     #[test]
     fn empty_text_produces_header_with_empty_text() {
         let lines = format_log_entry("06:00:00", "agent", "", 80);
-        assert_eq!(lines, vec![
-            WrappedLogLine::Header { time: "06:00:00".into(), step_type: "agent".into(), text: String::new() },
-        ]);
+        assert_eq!(
+            lines,
+            vec![WrappedLogLine::Header {
+                time: "06:00:00".into(),
+                step_type: "agent".into(),
+                text: String::new()
+            },]
+        );
     }
 
     #[test]

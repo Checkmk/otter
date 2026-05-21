@@ -136,11 +136,17 @@ mod tests {
         let step_def = step(vec!["bash", "-c", "exit 1"]);
 
         // WHEN
-        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+        let err = ShellExecutor
+            .execute(&step_def, &ctx(scratch.path()))
+            .await
+            .unwrap_err();
 
         // THEN
         let msg = err.to_string();
-        assert!(msg.contains("bash -c exit 1"), "error should contain the command: {msg}");
+        assert!(
+            msg.contains("bash -c exit 1"),
+            "error should contain the command: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -150,25 +156,41 @@ mod tests {
         let step_def = step(vec!["bash", "-c", "exit 42"]);
 
         // WHEN
-        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+        let err = ShellExecutor
+            .execute(&step_def, &ctx(scratch.path()))
+            .await
+            .unwrap_err();
 
         // THEN
         let msg = err.to_string();
-        assert!(msg.contains("42"), "error should contain the exit code: {msg}");
+        assert!(
+            msg.contains("42"),
+            "error should contain the exit code: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn failed_command_includes_stderr_in_error() {
         // GIVEN
         let scratch = tempfile::tempdir().unwrap();
-        let step_def = step(vec!["bash", "-c", "echo 'something went wrong' >&2; exit 1"]);
+        let step_def = step(vec![
+            "bash",
+            "-c",
+            "echo 'something went wrong' >&2; exit 1",
+        ]);
 
         // WHEN
-        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+        let err = ShellExecutor
+            .execute(&step_def, &ctx(scratch.path()))
+            .await
+            .unwrap_err();
 
         // THEN
         let msg = err.to_string();
-        assert!(msg.contains("something went wrong"), "error should contain stderr: {msg}");
+        assert!(
+            msg.contains("something went wrong"),
+            "error should contain stderr: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -178,11 +200,17 @@ mod tests {
         let step_def = step(vec!["bash", "-c", "echo 'partial output'; exit 1"]);
 
         // WHEN
-        let err = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap_err();
+        let err = ShellExecutor
+            .execute(&step_def, &ctx(scratch.path()))
+            .await
+            .unwrap_err();
 
         // THEN
         let msg = err.to_string();
-        assert!(msg.contains("partial output"), "error should contain stdout: {msg}");
+        assert!(
+            msg.contains("partial output"),
+            "error should contain stdout: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -203,15 +231,27 @@ mod tests {
 
         let step_def = StepDef {
             secrets: Some(vec!["MY_SECRET".into()]),
-            ..step(vec!["bash", "-c", "echo secret=$MY_SECRET canary=${OTTER_CANARY:-absent}"])
+            ..step(vec![
+                "bash",
+                "-c",
+                "echo secret=$MY_SECRET canary=${OTTER_CANARY:-absent}",
+            ])
         };
 
         // WHEN
         let out = ShellExecutor.execute(&step_def, &ctx).await.unwrap();
 
         // THEN: declared secret is present, canary is absent
-        assert!(out.stdout.contains("secret=hunter2"), "secret not injected: {}", out.stdout);
-        assert!(out.stdout.contains("canary=absent"), "daemon env leaked: {}", out.stdout);
+        assert!(
+            out.stdout.contains("secret=hunter2"),
+            "secret not injected: {}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("canary=absent"),
+            "daemon env leaked: {}",
+            out.stdout
+        );
     }
 
     #[tokio::test]
@@ -220,14 +260,25 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         std::env::set_var("OTTER_CANARY_NO_SECRETS", "should_not_leak");
 
-        let step_def = step(vec!["bash", "-c", "echo canary=${OTTER_CANARY_NO_SECRETS:-absent}"]);
+        let step_def = step(vec![
+            "bash",
+            "-c",
+            "echo canary=${OTTER_CANARY_NO_SECRETS:-absent}",
+        ]);
         // secrets: None (the default from step())
 
         // WHEN
-        let out = ShellExecutor.execute(&step_def, &ctx(scratch.path())).await.unwrap();
+        let out = ShellExecutor
+            .execute(&step_def, &ctx(scratch.path()))
+            .await
+            .unwrap();
 
         // THEN: daemon env var is not visible
-        assert!(out.stdout.contains("canary=absent"), "daemon env leaked without secrets field: {}", out.stdout);
+        assert!(
+            out.stdout.contains("canary=absent"),
+            "daemon env leaked without secrets field: {}",
+            out.stdout
+        );
     }
 
     #[tokio::test]
@@ -248,6 +299,9 @@ mod tests {
         let err = ShellExecutor.execute(&step_def, &ctx).await.unwrap_err();
 
         // THEN
-        assert!(err.to_string().contains("MISSING_KEY"), "error should name the missing key: {err}");
+        assert!(
+            err.to_string().contains("MISSING_KEY"),
+            "error should name the missing key: {err}"
+        );
     }
 }

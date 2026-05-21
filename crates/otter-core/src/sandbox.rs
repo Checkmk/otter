@@ -15,9 +15,7 @@ pub fn resolve_sandbox_config(
 ) -> Option<agentbox::SandboxConfig> {
     // [sandbox] present → on for all shell/agent steps; step.sandbox=false opts out.
     // [sandbox] absent  → off unless step.sandbox=true opts in.
-    let enabled = step_def
-        .sandbox
-        .unwrap_or(workflow_sandbox.is_some());
+    let enabled = step_def.sandbox.unwrap_or(workflow_sandbox.is_some());
 
     if !enabled {
         return None;
@@ -52,8 +50,7 @@ pub fn resolve_sandbox_config(
     }
 
     // Bind-mount ~/.claude and ~/.claude.json for auth and session persistence when provider is claude
-    if step_def.step_type == StepType::Agent
-        && step_def.agent.provider.as_deref() == Some("claude")
+    if step_def.step_type == StepType::Agent && step_def.agent.provider.as_deref() == Some("claude")
     {
         if let Some(home) = std::env::var_os("HOME").map(|h| Path::new(&h).to_path_buf()) {
             let claude_dir = home.join(".claude");
@@ -130,7 +127,14 @@ mod tests {
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(None, &step, Path::new("/ws"), None, None, Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            None,
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert!(config.is_none());
@@ -139,11 +143,21 @@ mod tests {
     #[test]
     fn returns_config_when_workflow_level_enabled() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert!(config.is_some());
@@ -152,12 +166,22 @@ mod tests {
     #[test]
     fn step_level_override_opts_out() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let mut step = shell_step();
         step.sandbox = Some(false);
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert!(config.is_none());
@@ -170,7 +194,14 @@ mod tests {
         step.sandbox = Some(true);
 
         // WHEN
-        let config = resolve_sandbox_config(None, &step, Path::new("/ws"), None, None, Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            None,
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert!(config.is_some());
@@ -179,7 +210,10 @@ mod tests {
     #[test]
     fn checkpoint_step_is_never_sandboxed() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = StepDef {
             step_type: StepType::Checkpoint,
             sandbox: None,
@@ -187,7 +221,14 @@ mod tests {
         };
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert!(config.is_none());
@@ -196,12 +237,24 @@ mod tests {
     #[test]
     fn cpu_quota_converted_to_cpus() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
-        let resources = ResourceConfig { cpu_quota: Some("200%".to_string()) };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
+        let resources = ResourceConfig {
+            cpu_quota: Some("200%".to_string()),
+        };
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, Some(&resources), Path::new("/scratch"));
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            Some(&resources),
+            Path::new("/scratch"),
+        );
 
         // THEN
         assert_eq!(config.unwrap().cpus, Some("2.0".to_string()));
@@ -217,7 +270,15 @@ mod tests {
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch")).unwrap();
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        )
+        .unwrap();
 
         // THEN
         assert_eq!(config.image.as_deref(), Some("my-image:v1"));
@@ -227,16 +288,28 @@ mod tests {
     #[test]
     fn scripts_dir_added_as_extra_mount() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = shell_step();
 
         // WHEN
         let config = resolve_sandbox_config(
-            Some(&wf_sandbox), &step, Path::new("/ws"), Some(Path::new("/scripts")), None, Path::new("/scratch"),
-        ).unwrap();
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            Some(Path::new("/scripts")),
+            None,
+            Path::new("/scratch"),
+        )
+        .unwrap();
 
         // THEN
-        assert!(config.extra_mounts.iter().any(|m| m.container.to_str() == Some("/opt/scripts") && m.read_only));
+        assert!(config
+            .extra_mounts
+            .iter()
+            .any(|m| m.container.to_str() == Some("/opt/scripts") && m.read_only));
     }
 
     fn claude_agent_step() -> StepDef {
@@ -258,59 +331,106 @@ mod tests {
     #[test]
     fn claude_agent_without_session_gets_claude_mount() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = claude_agent_step();
         let scratch = tempfile::tempdir().unwrap();
 
         // WHEN
         let config = resolve_sandbox_config(
-            Some(&wf_sandbox), &step, Path::new("/ws"), None, None, scratch.path(),
-        ).unwrap();
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            scratch.path(),
+        )
+        .unwrap();
 
         // THEN
-        assert!(config.extra_mounts.iter().any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+        assert!(config
+            .extra_mounts
+            .iter()
+            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
     }
 
     #[test]
     fn claude_agent_with_session_gets_claude_mount() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let mut step = claude_agent_step();
         step.session = Some("my-session".into());
         let scratch = tempfile::tempdir().unwrap();
 
         // WHEN
         let config = resolve_sandbox_config(
-            Some(&wf_sandbox), &step, Path::new("/ws"), None, None, scratch.path(),
-        ).unwrap();
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            scratch.path(),
+        )
+        .unwrap();
 
         // THEN
-        assert!(config.extra_mounts.iter().any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+        assert!(config
+            .extra_mounts
+            .iter()
+            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
     }
 
     #[test]
     fn shell_step_does_not_get_claude_mount() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = shell_step();
 
         // WHEN
         let config = resolve_sandbox_config(
-            Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch"),
-        ).unwrap();
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        )
+        .unwrap();
 
         // THEN
-        assert!(!config.extra_mounts.iter().any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+        assert!(!config
+            .extra_mounts
+            .iter()
+            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
     }
 
     #[test]
     fn tty_is_always_false() {
         // GIVEN
-        let wf_sandbox = SandboxDef { image: None, network: None };
+        let wf_sandbox = SandboxDef {
+            image: None,
+            network: None,
+        };
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(Some(&wf_sandbox), &step, Path::new("/ws"), None, None, Path::new("/scratch")).unwrap();
+        let config = resolve_sandbox_config(
+            Some(&wf_sandbox),
+            &step,
+            Path::new("/ws"),
+            None,
+            None,
+            Path::new("/scratch"),
+        )
+        .unwrap();
 
         // THEN
         assert!(!config.tty);

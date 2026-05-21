@@ -4,17 +4,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::session::AgentSessionManager;
 use crate::process::{inject_isolated_env, subprocess_path, PrependScriptsDir};
+use crate::resource_limiter::build_limiter;
+use crate::sandbox::resolve_sandbox_config;
+use crate::session::AgentSessionManager;
 use crate::steps::StepExecutor;
 use crate::triggers::build_trigger;
 use crate::types::StepError;
 use crate::types::{
-    EngineEvent, LogEntry, RunOutcome, RunStatus, StepContext, StepType,
-    StorageBackend, TriggerEvent, WorkflowDef, WorkflowType, WorkflowRun, WorkspaceConfig,
+    EngineEvent, LogEntry, RunOutcome, RunStatus, StepContext, StepType, StorageBackend,
+    TriggerEvent, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig,
 };
-use crate::resource_limiter::build_limiter;
-use crate::sandbox::resolve_sandbox_config;
 use crate::workspace::resolve_workspace;
 use otter_notify::{NoOpNotifier, Notifier};
 use otter_secrets::{NoOpSecretStore, SecretStore};
@@ -139,7 +139,8 @@ impl Engine {
                 &workflow.name,
                 run.id,
                 self.secret_store.as_ref(),
-            ).await?;
+            )
+            .await?;
             run.workspace_dir = workspace_dir.clone();
             let workspace_type = match &workflow.workspace {
                 None | Some(WorkspaceConfig::Scratch) => "scratch",
@@ -157,7 +158,12 @@ impl Engine {
                 iteration: run.iteration,
                 step_index: usize::MAX,
                 step_type: "run_start".to_string(),
-                stdout: format!("\nRun ID: {}\nWorkspace ({}): {}", run.id, workspace_type, effective_dir.display()),
+                stdout: format!(
+                    "\nRun ID: {}\nWorkspace ({}): {}",
+                    run.id,
+                    workspace_type,
+                    effective_dir.display()
+                ),
                 stderr: String::new(),
                 exit_code: None,
                 accepted: None,
@@ -191,7 +197,15 @@ impl Engine {
             };
 
             if !workflow.finally.is_empty() {
-                self.execute_finally_steps(workflow, &run, &outcome, &scratch_dir, workspace_dir.as_deref(), &ui_tx).await;
+                self.execute_finally_steps(
+                    workflow,
+                    &run,
+                    &outcome,
+                    &scratch_dir,
+                    workspace_dir.as_deref(),
+                    &ui_tx,
+                )
+                .await;
             }
 
             session_manager.cleanup().await;
@@ -297,8 +311,12 @@ impl Engine {
                 "Trigger fired, starting run"
             );
 
-            let run_status = self.run_once(workflow, Some(&event), shutdown.clone(), ui_tx.clone()).await?;
-            trigger.on_run_completed(&event.payload, run_status == RunStatus::Completed).await;
+            let run_status = self
+                .run_once(workflow, Some(&event), shutdown.clone(), ui_tx.clone())
+                .await?;
+            trigger
+                .on_run_completed(&event.payload, run_status == RunStatus::Completed)
+                .await;
 
             // Collect events that arrived during the run
             while let Ok(e) = trigger_rx.try_recv() {
@@ -323,7 +341,9 @@ impl Engine {
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<RunStatus> {
-        let run_id = event.and_then(|e| e.preallocated_run_id).unwrap_or_else(uuid::Uuid::new_v4);
+        let run_id = event
+            .and_then(|e| e.preallocated_run_id)
+            .unwrap_or_else(uuid::Uuid::new_v4);
         let mut run = WorkflowRun::new(workflow.name.clone());
         run.id = run_id;
         if let Some(event) = event {
@@ -337,7 +357,14 @@ impl Engine {
 
         let session_manager = Arc::new(AgentSessionManager::new());
 
-        let workspace_dir = match resolve_workspace(workflow.workspace.as_ref(), &workflow.name, run.id, self.secret_store.as_ref()).await {
+        let workspace_dir = match resolve_workspace(
+            workflow.workspace.as_ref(),
+            &workflow.name,
+            run.id,
+            self.secret_store.as_ref(),
+        )
+        .await
+        {
             Ok(dir) => dir,
             Err(e) => {
                 run.status = RunStatus::Failed;
@@ -376,7 +403,12 @@ impl Engine {
             iteration: run.iteration,
             step_index: usize::MAX,
             step_type: "run_start".to_string(),
-            stdout: format!("\nRun ID: {}\nWorkspace ({}): {}", run.id, workspace_type, effective_dir.display()),
+            stdout: format!(
+                "\nRun ID: {}\nWorkspace ({}): {}",
+                run.id,
+                workspace_type,
+                effective_dir.display()
+            ),
             stderr: String::new(),
             exit_code: None,
             accepted: None,
@@ -394,9 +426,9 @@ impl Engine {
             };
             std::fs::create_dir_all(&ctx_dir)?;
             info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
-            let resolved = self.secret_store
-                .resolve(&ctx.secrets)
-                .map_err(|e| anyhow::anyhow!("secret resolution for context command failed: {}", e))?;
+            let resolved = self.secret_store.resolve(&ctx.secrets).map_err(|e| {
+                anyhow::anyhow!("secret resolution for context command failed: {}", e)
+            })?;
             let mut cmd = tokio::process::Command::new(&ctx.command[0]);
             cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
@@ -436,7 +468,15 @@ impl Engine {
         };
 
         if !workflow.finally.is_empty() {
-            self.execute_finally_steps(workflow, &run, &outcome, &scratch_dir, workspace_dir.as_deref(), &ui_tx).await;
+            self.execute_finally_steps(
+                workflow,
+                &run,
+                &outcome,
+                &scratch_dir,
+                workspace_dir.as_deref(),
+                &ui_tx,
+            )
+            .await;
         }
 
         session_manager.cleanup().await;
@@ -481,13 +521,18 @@ impl Engine {
                     Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
                 });
 
-            let progress_fn: Option<Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>> = ui_tx.as_ref().map(|tx| {
-                let tx = tx.clone();
-                let run_id = run.id;
-                Arc::new(move |chunk: crate::types::ProgressChunk| {
-                    let _ = tx.try_send(EngineEvent::StepProgress { run_id, step_index: i, chunk });
-                }) as Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>
-            });
+            let progress_fn: Option<Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>> =
+                ui_tx.as_ref().map(|tx| {
+                    let tx = tx.clone();
+                    let run_id = run.id;
+                    Arc::new(move |chunk: crate::types::ProgressChunk| {
+                        let _ = tx.try_send(EngineEvent::StepProgress {
+                            run_id,
+                            step_index: i,
+                            chunk,
+                        });
+                    }) as Arc<dyn Fn(crate::types::ProgressChunk) + Send + Sync>
+                });
 
             let sandbox_config = resolve_sandbox_config(
                 workflow.sandbox.as_ref(),
@@ -549,7 +594,11 @@ impl Engine {
                     info!(step = i, "Step completed successfully");
                 }
                 Err(StepError::Rejected) => {
-                    warn!(step = i, iteration = run.iteration, "Step rejected — stopping workflow");
+                    warn!(
+                        step = i,
+                        iteration = run.iteration,
+                        "Step rejected — stopping workflow"
+                    );
                     let entry = LogEntry {
                         run_id: run.id,
                         iteration: run.iteration,
@@ -608,7 +657,15 @@ impl Engine {
         }
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         let _ = std::fs::create_dir_all(&scratch_dir);
-        self.execute_finally_steps(workflow, run, &outcome, &scratch_dir, run.workspace_dir.as_deref(), &ui_tx).await;
+        self.execute_finally_steps(
+            workflow,
+            run,
+            &outcome,
+            &scratch_dir,
+            run.workspace_dir.as_deref(),
+            &ui_tx,
+        )
+        .await;
     }
 
     /// Runs `[[finally]]` steps that match the given run outcome.
@@ -632,11 +689,10 @@ impl Engine {
 
             let storage_log = self.storage.clone();
             let ui_tx_log = ui_tx.clone();
-            let log_fn: Arc<dyn Fn(LogEntry) + Send + Sync> =
-                Arc::new(move |entry: LogEntry| {
-                    let _ = storage_log.append_log(entry.clone());
-                    Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
-                });
+            let log_fn: Arc<dyn Fn(LogEntry) + Send + Sync> = Arc::new(move |entry: LogEntry| {
+                let _ = storage_log.append_log(entry.clone());
+                Self::emit(&ui_tx_log, EngineEvent::LogAppended(entry));
+            });
 
             let sandbox_config = resolve_sandbox_config(
                 workflow.sandbox.as_ref(),

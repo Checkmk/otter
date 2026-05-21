@@ -59,40 +59,37 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             // Del key deletes a run (only on run rows)
             app.delete_selected_run();
         }
-        KeyCode::Char('c') if has_checkpoint => {
-            app.respond_checkpoint(CheckpointAction::Continue)
-        }
+        KeyCode::Char('c') if has_checkpoint => app.respond_checkpoint(CheckpointAction::Continue),
         KeyCode::Char('f') if has_checkpoint => {
-            if app.active_checkpoint().map_or(false, |cp| cp.feedback_available) {
+            if app
+                .active_checkpoint()
+                .map_or(false, |cp| cp.feedback_available)
+            {
                 app.mode = Mode::FeedbackInput;
                 app.feedback_input.clear();
             }
         }
         // Enter: context-sensitive — run row stops active run, workflow row starts/stops workflow
-        KeyCode::Enter if !has_checkpoint => {
-            match app.cursor {
-                CursorTarget::Run(wi, ri) => {
-                    let is_active = app.workflows.get(wi)
-                        .and_then(|e| e.runs.get(ri))
-                        .map(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
-                        .unwrap_or(false);
-                    if is_active {
-                        app.stop_selected_run();
-                    }
-                }
-                CursorTarget::Workflow(_) => {
-                    match app.selected_workflow_state() {
-                        Some(WorkflowState::Dormant) => app.start_selected(),
-                        Some(WorkflowState::Running) => app.stop_selected(),
-                        _ => {}
-                    }
+        KeyCode::Enter if !has_checkpoint => match app.cursor {
+            CursorTarget::Run(wi, ri) => {
+                let is_active = app
+                    .workflows
+                    .get(wi)
+                    .and_then(|e| e.runs.get(ri))
+                    .map(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
+                    .unwrap_or(false);
+                if is_active {
+                    app.stop_selected_run();
                 }
             }
-        }
+            CursorTarget::Workflow(_) => match app.selected_workflow_state() {
+                Some(WorkflowState::Dormant) => app.start_selected(),
+                Some(WorkflowState::Running) => app.stop_selected(),
+                _ => {}
+            },
+        },
         // When checkpoint is active, 's' stops the checkpoint
-        KeyCode::Char('s') if has_checkpoint => {
-            app.respond_checkpoint(CheckpointAction::Stop)
-        }
+        KeyCode::Char('s') if has_checkpoint => app.respond_checkpoint(CheckpointAction::Stop),
         KeyCode::Char('t') if !has_checkpoint => {
             app.open_consumed_triggers();
         }
@@ -111,8 +108,14 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
 fn handle_modal(app: &mut App, key: KeyEvent) {
     let handled = if let Some(Modal::Help { scroll }) = &mut app.modal {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => { *scroll = scroll.saturating_sub(1); true }
-            KeyCode::Down | KeyCode::Char('j') => { *scroll += 1; true }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll = scroll.saturating_sub(1);
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                *scroll += 1;
+                true
+            }
             _ => false,
         }
     } else {

@@ -1,7 +1,10 @@
 use super::*;
 use crate::storage::InMemoryStorage;
 use crate::test_helpers::{bash_path, executable_name, write_executable_script};
-use crate::types::{FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig};
+use crate::types::{
+    FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowRun,
+    WorkflowType, WorkspaceConfig,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -85,7 +88,10 @@ async fn shell_step_runs_and_logs() {
 
     // THEN
     let logs = storage.logs();
-    let shell_log = logs.iter().find(|l| l.step_type == "shell").expect("shell log not found");
+    let shell_log = logs
+        .iter()
+        .find(|l| l.step_type == "shell")
+        .expect("shell log not found");
     assert!(shell_log.stdout.contains("hello"));
 }
 
@@ -163,7 +169,6 @@ async fn workspace_step_sets_working_dir_for_shell() {
     assert!(marker_clone.exists());
 }
 
-
 #[tokio::test]
 async fn triggered_workflow_runs_once_per_event() {
     // GIVEN a triggered workflow with a ManualTrigger
@@ -200,7 +205,10 @@ async fn triggered_workflow_runs_once_per_event() {
     let storage_clone = storage.clone();
 
     let handle = tokio::spawn(async move {
-        engine.run_once(&wf, None, shutdown_clone, None).await.unwrap();
+        engine
+            .run_once(&wf, None, shutdown_clone, None)
+            .await
+            .unwrap();
         storage_clone
     });
 
@@ -212,7 +220,10 @@ async fn triggered_workflow_runs_once_per_event() {
     assert_eq!(runs[0].status, RunStatus::Completed);
 
     let logs = storage.logs();
-    assert!(logs.iter().any(|l| l.stdout.contains("triggered")), "no log containing 'triggered' found");
+    assert!(
+        logs.iter().any(|l| l.stdout.contains("triggered")),
+        "no log containing 'triggered' found"
+    );
 
     // Cleanup
     shutdown.store(true, Ordering::Relaxed);
@@ -299,7 +310,6 @@ async fn looping_workflow_creates_new_run_per_iteration() {
     assert_eq!(ids.len(), runs.len(), "all run IDs should be distinct");
 }
 
-
 #[tokio::test]
 async fn script_workspace_polling_trigger_context_written_to_workspace() {
     // GIVEN
@@ -329,12 +339,9 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     .unwrap();
 
     // Poll script: returns a single hash once, then nothing.
-    let poll_script = write_executable_script(
-        temp.path(),
-        "poll.sh",
-        "#!/bin/bash\necho '[\"hash-001\"]'",
-    )
-    .unwrap();
+    let poll_script =
+        write_executable_script(temp.path(), "poll.sh", "#!/bin/bash\necho '[\"hash-001\"]'")
+            .unwrap();
 
     let storage = Arc::new(InMemoryStorage::new());
     let scratch = temp.path().join("scratch");
@@ -389,7 +396,11 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     // WHEN: wait for the single run to complete, then shut down.
     let start = tokio::time::Instant::now();
     loop {
-        if storage.runs().iter().any(|r| r.status == RunStatus::Completed) {
+        if storage
+            .runs()
+            .iter()
+            .any(|r| r.status == RunStatus::Completed)
+        {
             break;
         }
         assert!(
@@ -403,7 +414,10 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
 
     // THEN: the run completed successfully (shell step found context.txt in its CWD).
     assert!(
-        storage.runs().iter().any(|r| r.status == RunStatus::Completed),
+        storage
+            .runs()
+            .iter()
+            .any(|r| r.status == RunStatus::Completed),
         "run should have completed"
     );
 
@@ -421,16 +435,22 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     let context_in_workspace = std::fs::read_dir(&workspaces_dir)
         .unwrap()
         .filter_map(Result::ok)
-        .any(|e| e.path().join("trigger-context").join("context.txt").exists());
+        .any(|e| {
+            e.path()
+                .join("trigger-context")
+                .join("context.txt")
+                .exists()
+        });
     assert!(
         context_in_workspace,
         "trigger-context/context.txt should be inside the workspace dir"
     );
 
-    let context_in_scratch = scratch.exists() && std::fs::read_dir(&scratch)
-        .unwrap()
-        .filter_map(Result::ok)
-        .any(|e| e.path().join("trigger-context").exists());
+    let context_in_scratch = scratch.exists()
+        && std::fs::read_dir(&scratch)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().join("trigger-context").exists());
     assert!(
         !context_in_scratch,
         "context should not have been placed in the scratch dir"
@@ -445,12 +465,9 @@ async fn context_command_resolves_via_scripts_dir_path() {
     std::fs::create_dir_all(&scripts_dir).unwrap();
 
     // Poll script: absolute path (polls are resolved before scripts_dir is known to engine)
-    let poll_script = write_executable_script(
-        temp.path(),
-        "poll.sh",
-        "#!/bin/bash\necho '[\"hash-abc\"]'",
-    )
-    .unwrap();
+    let poll_script =
+        write_executable_script(temp.path(), "poll.sh", "#!/bin/bash\necho '[\"hash-abc\"]'")
+            .unwrap();
 
     // Context script: lives in scripts_dir, referenced by bare name only
     write_executable_script(
@@ -508,7 +525,11 @@ async fn context_command_resolves_via_scripts_dir_path() {
     // WHEN: wait for the run to complete
     let start = tokio::time::Instant::now();
     loop {
-        if storage.runs().iter().any(|r| r.status == RunStatus::Completed) {
+        if storage
+            .runs()
+            .iter()
+            .any(|r| r.status == RunStatus::Completed)
+        {
             break;
         }
         assert!(
@@ -522,7 +543,10 @@ async fn context_command_resolves_via_scripts_dir_path() {
 
     // THEN: the run completed (context command was found via PATH and ctx.txt was written)
     assert!(
-        storage.runs().iter().any(|r| r.status == RunStatus::Completed),
+        storage
+            .runs()
+            .iter()
+            .any(|r| r.status == RunStatus::Completed),
         "run should have completed — context command must be resolved via scripts_dir"
     );
 }
@@ -567,7 +591,8 @@ async fn finally_step_runs_on_success() {
     // THEN
     let logs = storage.logs();
     assert!(
-        logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup")),
+        logs.iter()
+            .any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup")),
         "finally:shell log not found"
     );
 }
@@ -604,7 +629,8 @@ async fn finally_step_runs_on_failure() {
     assert_eq!(runs.last().unwrap().status, RunStatus::Failed);
     let logs = storage.logs();
     assert!(
-        logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup-on-fail")),
+        logs.iter()
+            .any(|l| l.step_type == "finally:shell" && l.stdout.contains("cleanup-on-fail")),
         "finally:shell log not found on failure"
     );
 }
@@ -682,7 +708,9 @@ async fn finally_step_filtered_on_failure_only_skipped_on_success() {
     // THEN — finally step NOT executed (run succeeded, on = [failed])
     let logs = storage.logs();
     assert!(
-        !logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("fail-only")),
+        !logs
+            .iter()
+            .any(|l| l.step_type == "finally:shell" && l.stdout.contains("fail-only")),
         "finally:shell should NOT have run when on=[failed] and run succeeded"
     );
 }
@@ -718,7 +746,10 @@ async fn finally_step_failure_does_not_change_run_status() {
     assert_eq!(result, RunStatus::Completed);
     // AND — the finally step log entry is present (with exit_code 1)
     let logs = storage.logs();
-    let finally_log = logs.iter().find(|l| l.step_type == "finally:shell").expect("finally:shell log not found");
+    let finally_log = logs
+        .iter()
+        .find(|l| l.step_type == "finally:shell")
+        .expect("finally:shell log not found");
     assert_eq!(finally_log.exit_code, Some(1));
 }
 
@@ -761,9 +792,18 @@ async fn finally_steps_continue_after_one_fails() {
 
     // THEN — both finally step log entries are present
     let logs = storage.logs();
-    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
-    assert_eq!(finally_logs.len(), 2, "both finally steps should have logged");
-    assert!(finally_logs.iter().any(|l| l.stdout.contains("second-cleanup")));
+    let finally_logs: Vec<_> = logs
+        .iter()
+        .filter(|l| l.step_type == "finally:shell")
+        .collect();
+    assert_eq!(
+        finally_logs.len(),
+        2,
+        "both finally steps should have logged"
+    );
+    assert!(finally_logs
+        .iter()
+        .any(|l| l.stdout.contains("second-cleanup")));
 }
 
 #[tokio::test]
@@ -814,7 +854,10 @@ async fn finally_steps_run_in_order() {
     assert!(marker1.exists(), "marker1.txt should exist");
     assert!(marker2.exists(), "marker2.txt should exist");
     let logs = storage.logs();
-    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
+    let finally_logs: Vec<_> = logs
+        .iter()
+        .filter(|l| l.step_type == "finally:shell")
+        .collect();
     assert_eq!(finally_logs.len(), 2);
     assert_eq!(finally_logs[0].step_index, 1); // 1 main step + 0
     assert_eq!(finally_logs[1].step_index, 2); // 1 main step + 1
@@ -863,7 +906,10 @@ async fn shutdown_between_steps_sets_stopped_status_and_runs_finally() {
 
     // THEN — run status is Stopped and the on=[stopped] finally step ran
     assert_eq!(storage.runs().last().unwrap().status, RunStatus::Stopped);
-    assert!(finally_marker.exists(), "on=[stopped] finally step should have run");
+    assert!(
+        finally_marker.exists(),
+        "on=[stopped] finally step should have run"
+    );
 }
 
 #[tokio::test]
@@ -912,15 +958,25 @@ async fn run_finally_executes_stopped_finally_steps() {
     storage.save_workflow_run(&run).unwrap();
 
     // WHEN — engine.run_finally called directly (simulates run_finally_after_kill)
-    engine.run_finally(&wf, &run, RunOutcome::Stopped, None).await;
+    engine
+        .run_finally(&wf, &run, RunOutcome::Stopped, None)
+        .await;
 
     // THEN — only the on=[stopped] step ran
     let logs = storage.logs();
-    let finally_logs: Vec<_> = logs.iter().filter(|l| l.step_type == "finally:shell").collect();
+    let finally_logs: Vec<_> = logs
+        .iter()
+        .filter(|l| l.step_type == "finally:shell")
+        .collect();
     assert_eq!(finally_logs.len(), 1, "only one finally step should run");
-    assert!(finally_marker.exists(), "on=[stopped] finally step should have created the marker");
     assert!(
-        !logs.iter().any(|l| l.step_type == "finally:shell" && l.stdout.contains("success-only")),
+        finally_marker.exists(),
+        "on=[stopped] finally step should have created the marker"
+    );
+    assert!(
+        !logs
+            .iter()
+            .any(|l| l.step_type == "finally:shell" && l.stdout.contains("success-only")),
         "on=[success] step should NOT have run"
     );
 }
@@ -971,7 +1027,9 @@ async fn run_finally_uses_stored_workspace_not_script() {
     storage.save_workflow_run(&run).unwrap();
 
     // WHEN
-    engine.run_finally(&wf, &run, RunOutcome::Stopped, None).await;
+    engine
+        .run_finally(&wf, &run, RunOutcome::Stopped, None)
+        .await;
 
     // THEN — finally step ran in original-slot, NOT in wrong-slot
     assert!(

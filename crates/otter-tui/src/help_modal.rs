@@ -1,16 +1,19 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
+    Frame,
 };
 
 use crate::right_panel::with_scroll_indicators;
 use crate::styles::{base_style, c_background, c_dim, c_foreground, panel_focused};
 
 pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
-    let key = Style::default().fg(c_foreground()).bg(c_background()).add_modifier(Modifier::BOLD);
+    let key = Style::default()
+        .fg(c_foreground())
+        .bg(c_background())
+        .add_modifier(Modifier::BOLD);
     let label = Style::default().fg(c_dim()).bg(c_background());
     let heading = Style::default().fg(c_foreground()).bg(c_background());
 
@@ -24,7 +27,10 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
     let section = |title: &'static str, suffix: &'static str| -> Line<'static> {
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(title, heading.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            Span::styled(
+                title,
+                heading.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
             Span::raw(suffix),
         ])
     };
@@ -59,6 +65,8 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
     *scroll = (*scroll).min(max_scroll);
 
     let visible = with_scroll_indicators(lines, *scroll, inner_height);
-    let para = Paragraph::new(visible).block(panel_focused(" Help ")).style(base_style());
+    let para = Paragraph::new(visible)
+        .block(panel_focused(" Help "))
+        .style(base_style());
     f.render_widget(para, area);
 }

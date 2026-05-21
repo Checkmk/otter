@@ -37,8 +37,7 @@ impl SystemdServiceManager {
     }
 
     fn write_unit_files(&self) -> anyhow::Result<()> {
-        std::fs::create_dir_all(&self.unit_dir)
-            .context("create systemd user unit directory")?;
+        std::fs::create_dir_all(&self.unit_dir).context("create systemd user unit directory")?;
 
         let binary = std::env::current_exe().context("resolve current binary path")?;
         let binary_str = binary.to_string_lossy();
@@ -128,7 +127,9 @@ mod tests {
     use tempfile::tempdir;
 
     fn manager_in(dir: &std::path::Path) -> SystemdServiceManager {
-        SystemdServiceManager { unit_dir: dir.to_path_buf() }
+        SystemdServiceManager {
+            unit_dir: dir.to_path_buf(),
+        }
     }
 
     #[test]

@@ -194,7 +194,8 @@ async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
     match command {
         RunCommands::List { workflow } => {
             let data_dir = dirs_data_dir();
-            let storage: std::sync::Arc<dyn StorageBackend> = std::sync::Arc::new(SqliteStorage::open(&data_dir.join("state.db"))?);
+            let storage: std::sync::Arc<dyn StorageBackend> =
+                std::sync::Arc::new(SqliteStorage::open(&data_dir.join("state.db"))?);
             let runs = match &workflow {
                 Some(name) => storage.load_workflow_runs(name)?,
                 None => storage.load_all_runs()?,
@@ -227,7 +228,10 @@ async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
                     run.workflow_name.clone()
                 };
                 let trigger = run.trigger_payload.unwrap_or_else(|| "-".to_string());
-                println!("{:<37} {:<19} {:<12} {:<20} {}", run_id, started, status, wf_name, trigger);
+                println!(
+                    "{:<37} {:<19} {:<12} {:<20} {}",
+                    run_id, started, status, wf_name, trigger
+                );
             }
         }
         RunCommands::Stop { run_id } => {
@@ -247,7 +251,10 @@ async fn handle_runs_command(command: RunCommands) -> anyhow::Result<()> {
 async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()> {
     match command {
         TriggersCommands::ListConsumed { workflow } => {
-            let resp = client::send_command_once(DaemonCommand::ListConsumedTriggers { workflow: workflow.clone() }).await?;
+            let resp = client::send_command_once(DaemonCommand::ListConsumedTriggers {
+                workflow: workflow.clone(),
+            })
+            .await?;
             match resp {
                 otter_core::types::DaemonResponse::ConsumedTriggersResponse { triggers } => {
                     if triggers.is_empty() {
@@ -267,7 +274,8 @@ async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()
             }
         }
         TriggersCommands::DeleteConsumed { workflow, trigger } => {
-            client::send_command_print(DaemonCommand::DeleteConsumedTrigger { workflow, trigger }).await?;
+            client::send_command_print(DaemonCommand::DeleteConsumedTrigger { workflow, trigger })
+                .await?;
         }
     }
     Ok(())
@@ -283,12 +291,17 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
 }
 
 async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
-    let path = path.canonicalize()
+    let path = path
+        .canonicalize()
         .map_err(|e| anyhow::anyhow!("Cannot access '{}': {}", path.display(), e))?;
 
     let (toml_path, is_package) = if path.is_dir() {
         let tp = path.join("workflow.toml");
-        anyhow::ensure!(tp.exists(), "No workflow.toml found in '{}'", path.display());
+        anyhow::ensure!(
+            tp.exists(),
+            "No workflow.toml found in '{}'",
+            path.display()
+        );
         (tp, true)
     } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
         (path.clone(), false)
@@ -327,21 +340,35 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
 
     if is_package {
         copy_dir_all(&path, &dir_dest)?;
-        println!("Installed workflow '{}' to '{}'.", def.name, dir_dest.display());
+        println!(
+            "Installed workflow '{}' to '{}'.",
+            def.name,
+            dir_dest.display()
+        );
     } else {
         std::fs::copy(&path, &file_dest)?;
-        println!("Installed workflow '{}' to '{}'.", def.name, file_dest.display());
+        println!(
+            "Installed workflow '{}' to '{}'.",
+            def.name,
+            file_dest.display()
+        );
     }
 
     // Notify the daemon to reload
-    if client::send_command_once(DaemonCommand::ReloadWorkflows).await.is_ok() {
+    if client::send_command_once(DaemonCommand::ReloadWorkflows)
+        .await
+        .is_ok()
+    {
         println!("Daemon reloaded.");
     }
 
     Ok(())
 }
 
-fn find_workflow_by_name(workflows_dir: &std::path::Path, name: &str) -> anyhow::Result<Option<std::path::PathBuf>> {
+fn find_workflow_by_name(
+    workflows_dir: &std::path::Path,
+    name: &str,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
     let Ok(entries) = std::fs::read_dir(workflows_dir) else {
         return Ok(None);
     };
@@ -354,8 +381,12 @@ fn find_workflow_by_name(workflows_dir: &std::path::Path, name: &str) -> anyhow:
         } else {
             continue;
         };
-        let Ok(content) = std::fs::read_to_string(&toml_path) else { continue };
-        let Ok(def) = toml::from_str::<otter_core::types::WorkflowDef>(&content) else { continue };
+        let Ok(content) = std::fs::read_to_string(&toml_path) else {
+            continue;
+        };
+        let Ok(def) = toml::from_str::<otter_core::types::WorkflowDef>(&content) else {
+            continue;
+        };
         if def.name == name {
             return Ok(Some(path));
         }
@@ -374,12 +405,8 @@ async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
         file_path
     } else {
         // Fall back: scan directory for any entry whose workflow name field matches
-        find_workflow_by_name(&workflows_dir, &name)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Workflow '{}' is not installed",
-                name,
-            )
-        })?
+        find_workflow_by_name(&workflows_dir, &name)?
+            .ok_or_else(|| anyhow::anyhow!("Workflow '{}' is not installed", name,))?
     };
 
     // Ask the daemon to stop the workflow first (ignore errors — it may already be dormant)
@@ -395,7 +422,10 @@ async fn handle_workflow_remove(name: String) -> anyhow::Result<()> {
     println!("Removed workflow '{}'.", name);
 
     // Notify the daemon to reload
-    if client::send_command_once(DaemonCommand::ReloadWorkflows).await.is_ok() {
+    if client::send_command_once(DaemonCommand::ReloadWorkflows)
+        .await
+        .is_ok()
+    {
         println!("Daemon reloaded.");
     }
 
@@ -430,7 +460,10 @@ async fn handle_workflow_enable(name: String) -> anyhow::Result<()> {
     let mut set = read_enabled(&config_dir)?;
     set.insert(name.clone());
     write_enabled(&config_dir, &set)?;
-    if client::send_command_once(DaemonCommand::Start { name: name.clone() }).await.is_ok() {
+    if client::send_command_once(DaemonCommand::Start { name: name.clone() })
+        .await
+        .is_ok()
+    {
         println!("Enabled auto-start for '{name}' and started it.");
     } else {
         println!("Enabled auto-start for '{name}'. Takes effect on next daemon start.");
@@ -450,21 +483,22 @@ fn handle_workflow_disable(name: String) -> anyhow::Result<()> {
 fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
     let kp = KeyringKeyProvider::new();
     kp.probe().map_err(|e| anyhow::anyhow!("OS keyring unavailable: {e}\nSecrets management requires a working OS keyring (libsecret on Linux, Keychain on macOS)."))?;
-    let store = EncryptedSecretStore::new(dirs_config_dir().join("secrets.age"), std::sync::Arc::new(kp));
+    let store = EncryptedSecretStore::new(
+        dirs_config_dir().join("secrets.age"),
+        std::sync::Arc::new(kp),
+    );
     match command {
         SecretCommands::Set { name, value } => {
             store.set(&name, &value)?;
             println!("Secret '{}' saved.", name);
         }
-        SecretCommands::Get { name } => {
-            match store.resolve(&[name.clone()]) {
-                Ok(pairs) => println!("{}", pairs[0].1),
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
+        SecretCommands::Get { name } => match store.resolve(&[name.clone()]) {
+            Ok(pairs) => println!("{}", pairs[0].1),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
-        }
+        },
         SecretCommands::List => {
             let keys = store.list();
             if keys.is_empty() {
@@ -521,7 +555,10 @@ fn handle_log_command() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         std::process::Command::new("powershell")
-            .args(["-Command", &format!("Get-Content -Wait '{}'", log_path.display())])
+            .args([
+                "-Command",
+                &format!("Get-Content -Wait '{}'", log_path.display()),
+            ])
             .status()?;
         Ok(())
     }
@@ -564,7 +601,10 @@ pub(crate) fn dirs_data_dir() -> PathBuf {
     #[cfg(not(target_os = "windows"))]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".local").join("share").join("otter")
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("otter")
     }
 }
 

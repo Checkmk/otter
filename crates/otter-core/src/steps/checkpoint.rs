@@ -1,5 +1,7 @@
 use super::StepExecutor;
-use crate::types::{CheckpointResponse, EngineEvent, LogEntry, StepContext, StepDef, StepError, StepOutput};
+use crate::types::{
+    CheckpointResponse, EngineEvent, LogEntry, StepContext, StepDef, StepError, StepOutput,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use otter_notify::Notification;
@@ -73,7 +75,8 @@ async fn execute_via_channel(
                 if let Some(manager) = &ctx.session_manager {
                     let progress_tx = ctx.progress_fn.as_ref().map(|pf| {
                         let pf = pf.clone();
-                        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::types::ProgressChunk>(64);
+                        let (tx, mut rx) =
+                            tokio::sync::mpsc::channel::<crate::types::ProgressChunk>(64);
                         tokio::spawn(async move {
                             while let Some(chunk) = rx.recv().await {
                                 pf(chunk);
@@ -83,7 +86,13 @@ async fn execute_via_channel(
                     });
                     match manager.prompt_last(&text, progress_tx).await {
                         Ok(Some(agent_out)) => {
-                            log_immediate(ctx, "agent", agent_out.stdout, agent_out.stderr, agent_out.exit_code);
+                            log_immediate(
+                                ctx,
+                                "agent",
+                                agent_out.stdout,
+                                agent_out.stderr,
+                                agent_out.exit_code,
+                            );
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -98,7 +107,13 @@ async fn execute_via_channel(
     }
 }
 
-fn log_immediate(ctx: &StepContext, step_type: &str, stdout: String, stderr: String, exit_code: Option<i32>) {
+fn log_immediate(
+    ctx: &StepContext,
+    step_type: &str,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+) {
     if let Some(log) = &ctx.log_fn {
         log(LogEntry {
             run_id: ctx.run_id,
@@ -118,7 +133,9 @@ fn log_immediate(ctx: &StepContext, step_type: &str, stdout: String, stderr: Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::agent_runner::{
+        AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
+    };
     use crate::resource_limiter::NoOpLimiter;
     use crate::session::AgentSessionManager;
     use crate::types::ProgressChunk;
@@ -133,7 +150,9 @@ mod tests {
 
     impl MockRunner {
         fn new() -> Arc<Self> {
-            Arc::new(Self { calls: Mutex::new(Vec::new()) })
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+            })
         }
 
         fn calls(&self) -> Vec<String> {
@@ -150,8 +169,18 @@ mod tests {
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
             self.calls.lock().unwrap().push("start".into());
             Ok((
-                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None, sandbox_config: None },
-                AgentOutput { stdout: "initial".into(), stderr: String::new(), exit_code: Some(0) },
+                AgentSessionHandle {
+                    id: "s1".into(),
+                    working_dir: spec.working_dir,
+                    resource_limiter: Arc::new(NoOpLimiter),
+                    scripts_dir: None,
+                    sandbox_config: None,
+                },
+                AgentOutput {
+                    stdout: "initial".into(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
             ))
         }
 
@@ -162,8 +191,15 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
             _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
-            self.calls.lock().unwrap().push(format!("prompt:{}", message));
-            Ok(AgentOutput { stdout: format!("response:{}", message), stderr: String::new(), exit_code: Some(0) })
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("prompt:{}", message));
+            Ok(AgentOutput {
+                stdout: format!("response:{}", message),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
         }
 
         async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
@@ -328,7 +364,12 @@ mod tests {
         let seen_clone = feedback_available_seen.clone();
 
         tokio::spawn(async move {
-            if let Some(EngineEvent::CheckpointPending { feedback_available, response_tx, .. }) = rx.recv().await {
+            if let Some(EngineEvent::CheckpointPending {
+                feedback_available,
+                response_tx,
+                ..
+            }) = rx.recv().await
+            {
                 *seen_clone.lock().unwrap() = Some(feedback_available);
                 let _ = response_tx.send(CheckpointResponse::Continue);
             }
@@ -372,7 +413,12 @@ mod tests {
         let seen_clone = feedback_available_seen.clone();
 
         tokio::spawn(async move {
-            if let Some(EngineEvent::CheckpointPending { feedback_available, response_tx, .. }) = rx.recv().await {
+            if let Some(EngineEvent::CheckpointPending {
+                feedback_available,
+                response_tx,
+                ..
+            }) = rx.recv().await
+            {
                 *seen_clone.lock().unwrap() = Some(feedback_available);
                 let _ = response_tx.send(CheckpointResponse::Continue);
             }
@@ -404,9 +450,13 @@ mod tests {
             let mut count = 0;
             while let Some(ev) = rx.recv().await {
                 if let EngineEvent::CheckpointPending { response_tx, .. } = ev {
-                    events_rx.lock().unwrap().push(format!("checkpoint_pending:{}", count));
+                    events_rx
+                        .lock()
+                        .unwrap()
+                        .push(format!("checkpoint_pending:{}", count));
                     if count == 0 {
-                        let _ = response_tx.send(CheckpointResponse::Feedback("my feedback".into()));
+                        let _ =
+                            response_tx.send(CheckpointResponse::Feedback("my feedback".into()));
                     } else {
                         let _ = response_tx.send(CheckpointResponse::Continue);
                         break;
@@ -439,7 +489,10 @@ mod tests {
         let logged_clone = logged.clone();
         // Wrap log_fn to also record into `events` so we can compare ordering.
         let log_fn: Arc<dyn Fn(LogEntry) + Send + Sync> = Arc::new(move |entry: LogEntry| {
-            events_log.lock().unwrap().push(format!("log:{}", entry.step_type));
+            events_log
+                .lock()
+                .unwrap()
+                .push(format!("log:{}", entry.step_type));
             logged_clone.lock().unwrap().push(entry);
         });
 
@@ -469,14 +522,26 @@ mod tests {
 
         // Event order must be: checkpoint_pending:0, log:feedback, log:agent, checkpoint_pending:1
         let order = events.lock().unwrap().clone();
-        let cp0 = order.iter().position(|s| s == "checkpoint_pending:0").unwrap();
+        let cp0 = order
+            .iter()
+            .position(|s| s == "checkpoint_pending:0")
+            .unwrap();
         let log_fb = order.iter().position(|s| s == "log:feedback").unwrap();
         let log_ag = order.iter().position(|s| s == "log:agent").unwrap();
-        let cp1 = order.iter().position(|s| s == "checkpoint_pending:1").unwrap();
+        let cp1 = order
+            .iter()
+            .position(|s| s == "checkpoint_pending:1")
+            .unwrap();
 
-        assert!(cp0 < log_fb, "feedback must be logged after first checkpoint");
+        assert!(
+            cp0 < log_fb,
+            "feedback must be logged after first checkpoint"
+        );
         assert!(log_fb < log_ag, "agent must be logged after feedback");
-        assert!(log_ag < cp1, "second checkpoint_pending must come after agent log");
+        assert!(
+            log_ag < cp1,
+            "second checkpoint_pending must come after agent log"
+        );
 
         // log_fn received correct entries
         let entries = logged.lock().unwrap().clone();
@@ -511,7 +576,9 @@ mod tests {
             checkpoint_tx: Some(tx.clone()),
             session_manager: None,
             notifier: Arc::new(otter_notify::NoOpNotifier),
-            log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
+            log_fn: Some(Arc::new(move |e| {
+                logged_clone.lock().unwrap().push(e);
+            })),
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
@@ -551,7 +618,9 @@ mod tests {
             checkpoint_tx: Some(tx.clone()),
             session_manager: None,
             notifier: Arc::new(otter_notify::NoOpNotifier),
-            log_fn: Some(Arc::new(move |e| { logged_clone.lock().unwrap().push(e); })),
+            log_fn: Some(Arc::new(move |e| {
+                logged_clone.lock().unwrap().push(e);
+            })),
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,

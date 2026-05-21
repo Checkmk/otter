@@ -96,14 +96,18 @@ impl AgentRunner for CustomRunner {
         };
 
         let cmd = spec.resource_limiter.apply(&self.command);
-        let output = run_agent_subprocess(&SubprocessSpec {
-            cmd_args: &cmd,
-            working_dir: &spec.working_dir,
-            stdin_message: Some(&spec.message),
-            scripts_dir: spec.scripts_dir.as_deref(),
-            secrets: &spec.secrets,
-            sandbox_config: spec.sandbox_config.as_ref(),
-        }, None).await?;
+        let output = run_agent_subprocess(
+            &SubprocessSpec {
+                cmd_args: &cmd,
+                working_dir: &spec.working_dir,
+                stdin_message: Some(&spec.message),
+                scripts_dir: spec.scripts_dir.as_deref(),
+                secrets: &spec.secrets,
+                sandbox_config: spec.sandbox_config.as_ref(),
+            },
+            None,
+        )
+        .await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -122,14 +126,18 @@ impl AgentRunner for CustomRunner {
         secrets: &[(String, String)],
     ) -> Result<AgentOutput, AgentError> {
         let cmd = session.resource_limiter.apply(&self.command);
-        let output = run_agent_subprocess(&SubprocessSpec {
-            cmd_args: &cmd,
-            working_dir: &session.working_dir,
-            stdin_message: Some(message),
-            scripts_dir: session.scripts_dir.as_deref(),
-            secrets,
-            sandbox_config: session.sandbox_config.as_ref(),
-        }, None).await?;
+        let output = run_agent_subprocess(
+            &SubprocessSpec {
+                cmd_args: &cmd,
+                working_dir: &session.working_dir,
+                stdin_message: Some(message),
+                scripts_dir: session.scripts_dir.as_deref(),
+                secrets,
+                sandbox_config: session.sandbox_config.as_ref(),
+            },
+            None,
+        )
+        .await?;
 
         if let Some(code) = output.exit_code {
             if code != 0 {
@@ -161,7 +169,9 @@ pub fn build_runner(
         "copilot" => Ok(Arc::new(CopilotRunner::new(
             allowed_tools.map(|t| t.to_vec()),
         ))),
-        other => Err(AgentError::Failed(format!("unknown agent provider: {other}"))),
+        other => Err(AgentError::Failed(format!(
+            "unknown agent provider: {other}"
+        ))),
     }
 }
 
@@ -173,7 +183,11 @@ pub(super) fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentErro
         || combined.contains("429")
     {
         let msg = output.stdout.trim().to_string();
-        return AgentError::RateLimited(if msg.is_empty() { output.stderr.trim().to_string() } else { msg });
+        return AgentError::RateLimited(if msg.is_empty() {
+            output.stderr.trim().to_string()
+        } else {
+            msg
+        });
     }
     let detail = match (output.stdout.trim(), output.stderr.trim()) {
         ("", "") => String::new(),
@@ -212,8 +226,11 @@ pub(super) async fn run_agent_subprocess(
     }
 
     let mut cmd = build_subprocess_command(
-        spec.cmd_args, spec.working_dir, spec.scripts_dir,
-        spec.secrets, spec.sandbox_config,
+        spec.cmd_args,
+        spec.working_dir,
+        spec.scripts_dir,
+        spec.secrets,
+        spec.sandbox_config,
     );
     cmd.kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
@@ -224,7 +241,10 @@ pub(super) async fn run_agent_subprocess(
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        std::io::Error::new(e.kind(), format!("failed to spawn `{}`: {}", spec.cmd_args[0], e))
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to spawn `{}`: {}", spec.cmd_args[0], e),
+        )
     })?;
 
     if let Some(message) = spec.stdin_message {
@@ -238,9 +258,13 @@ pub(super) async fn run_agent_subprocess(
     }
 
     if let Some((progress_tx, parse_line)) = streaming {
-        let stdout_pipe = child.stdout.take()
+        let stdout_pipe = child
+            .stdout
+            .take()
             .ok_or_else(|| AgentError::Failed("no stdout pipe".to_string()))?;
-        let stderr_pipe = child.stderr.take()
+        let stderr_pipe = child
+            .stderr
+            .take()
             .ok_or_else(|| AgentError::Failed("no stderr pipe".to_string()))?;
 
         let mut stdout_reader = BufReader::new(stdout_pipe).lines();

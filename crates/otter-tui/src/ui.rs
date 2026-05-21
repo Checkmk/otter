@@ -1,19 +1,20 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     widgets::{Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::{App, Focus, Modal, Mode};
 use crate::help_modal::render_help_modal;
 use crate::right_panel::{render_right_panel, right_panel_hints};
-use crate::runs_panel::{render_runs, left_panel_hints};
+use crate::runs_panel::{left_panel_hints, render_runs};
 use crate::status_bar::{render_status_bar, PanelHint, StatusBarMode};
 use crate::styles::base_style;
 use crate::text::wrap_into_chunks;
 
 fn centered_rect(width: Constraint, height: Constraint, area: Rect) -> Rect {
-    let [_, v, _] = Layout::vertical([Constraint::Fill(1), height, Constraint::Fill(1)]).areas(area);
+    let [_, v, _] =
+        Layout::vertical([Constraint::Fill(1), height, Constraint::Fill(1)]).areas(area);
     let [_, h, _] = Layout::horizontal([Constraint::Fill(1), width, Constraint::Fill(1)]).areas(v);
     h
 }
@@ -88,13 +89,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let status_mode = if let Some(modal) = &app.modal {
         match modal {
-            Modal::Help { .. } => {
-                StatusBarMode::Modal {
-                    hints: vec![PanelHint::new("[↑↓]", "Scroll")],
-                    close: PanelHint::new("[Any]", "Close help"),
-                    tick: app.tick,
-                }
-            }
+            Modal::Help { .. } => StatusBarMode::Modal {
+                hints: vec![PanelHint::new("[↑↓]", "Scroll")],
+                close: PanelHint::new("[Any]", "Close help"),
+                tick: app.tick,
+            },
         }
     } else {
         match app.mode {
@@ -113,7 +112,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 tick: app.tick,
             },
             Mode::Normal => match app.active_checkpoint() {
-                Some(cp) => StatusBarMode::Action { feedback_available: cp.feedback_available },
+                Some(cp) => StatusBarMode::Action {
+                    feedback_available: cp.feedback_available,
+                },
                 None => StatusBarMode::Normal {
                     panel_hints: left_panel_hints(app),
                     other_checkpoints: app.other_checkpoint_count(),

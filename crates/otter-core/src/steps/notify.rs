@@ -11,7 +11,11 @@ impl StepExecutor for NotifyExecutor {
         StepType::Notify
     }
 
-    async fn execute(&self, step_def: &StepDef, ctx: &StepContext) -> Result<StepOutput, StepError> {
+    async fn execute(
+        &self,
+        step_def: &StepDef,
+        ctx: &StepContext,
+    ) -> Result<StepOutput, StepError> {
         let body = step_def.message.clone().unwrap_or_default();
         ctx.notifier
             .send(&Notification {
@@ -34,7 +38,7 @@ mod tests {
     use super::*;
     use crate::resource_limiter::NoOpLimiter;
     use crate::types::{StepDef, StepType};
-    use otter_notify::{Notification, NotifyError, Notifier};
+    use otter_notify::{Notification, Notifier, NotifyError};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
 

@@ -12,15 +12,15 @@ mod ui;
 
 use std::io::stdout;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::{event, execute, terminal};
 use otter_core::types::{DaemonCommand, DaemonEvent};
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 pub fn run(

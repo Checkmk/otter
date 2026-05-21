@@ -5,8 +5,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::agent_runner::{
-    AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec, CustomRunner,
-    build_runner,
+    build_runner, AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec, CustomRunner,
 };
 use crate::resource_limiter::ResourceLimiter;
 use crate::types::{AgentConfig, ProgressChunk};
@@ -76,7 +75,9 @@ impl AgentSessionManager {
         };
 
         let output = if let Some((handle, runner)) = existing {
-            let output = runner.prompt(&handle, message, progress_tx, secrets).await?;
+            let output = runner
+                .prompt(&handle, message, progress_tx, secrets)
+                .await?;
             if let Some(entry) = self.sessions.lock().unwrap().get_mut(&session_key) {
                 entry.secrets = secrets.to_vec();
             }
@@ -94,10 +95,14 @@ impl AgentSessionManager {
             };
 
             let (handle, output) = runner.start(spec, progress_tx).await?;
-            self.sessions
-                .lock()
-                .unwrap()
-                .insert(session_key.clone(), SessionEntry { handle, runner, secrets: secrets.to_vec() });
+            self.sessions.lock().unwrap().insert(
+                session_key.clone(),
+                SessionEntry {
+                    handle,
+                    runner,
+                    secrets: secrets.to_vec(),
+                },
+            );
             output
         };
 
@@ -146,7 +151,11 @@ impl AgentSessionManager {
         });
         match entry {
             None => Ok(None),
-            Some((handle, runner, secrets)) => Ok(Some(runner.prompt(&handle, message, progress_tx, &secrets).await?)),
+            Some((handle, runner, secrets)) => Ok(Some(
+                runner
+                    .prompt(&handle, message, progress_tx, &secrets)
+                    .await?,
+            )),
         }
     }
 
@@ -174,7 +183,9 @@ impl AgentSessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_runner::{AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec};
+    use crate::agent_runner::{
+        AgentError, AgentOutput, AgentRunner, AgentSessionHandle, AgentSpec,
+    };
     use crate::resource_limiter::NoOpLimiter;
     use std::sync::Mutex;
 
@@ -184,7 +195,9 @@ mod tests {
 
     impl MockRunner {
         fn new() -> Arc<Self> {
-            Arc::new(Self { calls: Mutex::new(Vec::new()) })
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+            })
         }
 
         fn calls(&self) -> Vec<String> {
@@ -199,10 +212,23 @@ mod tests {
             spec: AgentSpec,
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
         ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-            self.calls.lock().unwrap().push(format!("start:{}", spec.message));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("start:{}", spec.message));
             Ok((
-                AgentSessionHandle { id: "s1".into(), working_dir: spec.working_dir, resource_limiter: Arc::new(NoOpLimiter), scripts_dir: None, sandbox_config: None },
-                AgentOutput { stdout: format!("resp:{}", spec.message), stderr: String::new(), exit_code: Some(0) },
+                AgentSessionHandle {
+                    id: "s1".into(),
+                    working_dir: spec.working_dir,
+                    resource_limiter: Arc::new(NoOpLimiter),
+                    scripts_dir: None,
+                    sandbox_config: None,
+                },
+                AgentOutput {
+                    stdout: format!("resp:{}", spec.message),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
             ))
         }
 
@@ -213,8 +239,15 @@ mod tests {
             _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
             _secrets: &[(String, String)],
         ) -> Result<AgentOutput, AgentError> {
-            self.calls.lock().unwrap().push(format!("prompt:{}", message));
-            Ok(AgentOutput { stdout: format!("resp:{}", message), stderr: String::new(), exit_code: Some(0) })
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("prompt:{}", message));
+            Ok(AgentOutput {
+                stdout: format!("resp:{}", message),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
         }
 
         async fn stop(&self, _session: &AgentSessionHandle) -> Result<(), AgentError> {
@@ -232,7 +265,10 @@ mod tests {
     }
 
     fn claude() -> AgentConfig {
-        AgentConfig { provider: Some("claude".into()), ..Default::default() }
+        AgentConfig {
+            provider: Some("claude".into()),
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
@@ -243,8 +279,36 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("planner"), &claude(), None, "first", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
-        manager.run_step(Some("planner"), &AgentConfig::default(), None, "second", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
+        manager
+            .run_step(
+                Some("planner"),
+                &claude(),
+                None,
+                "first",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .run_step(
+                Some("planner"),
+                &AgentConfig::default(),
+                None,
+                "second",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
 
         // THEN — start once, prompt once
         let calls = runner.calls();
@@ -276,7 +340,21 @@ mod tests {
 
         // WHEN / THEN
         assert!(!manager.has_active_session());
-        manager.run_step(Some("s"), &claude(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
+        manager
+            .run_step(
+                Some("s"),
+                &claude(),
+                None,
+                "hi",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
         assert!(manager.has_active_session());
     }
 
@@ -287,7 +365,21 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN / THEN — neither provided
-        let err = manager.run_step(None, &AgentConfig::default(), None, "hi", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap_err();
+        let err = manager
+            .run_step(
+                None,
+                &AgentConfig::default(),
+                None,
+                "hi",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("provider or command"));
     }
 
@@ -300,7 +392,18 @@ mod tests {
 
         // WHEN / THEN
         let err = manager
-            .run_step(None, &claude(), Some(&cmd), "hi", &dir, None, Arc::new(NoOpLimiter), None, &[], None)
+            .run_step(
+                None,
+                &claude(),
+                Some(&cmd),
+                "hi",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not both"));
@@ -314,13 +417,44 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(None, &claude(), None, "task one", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
-        manager.run_step(None, &claude(), None, "task two", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
+        manager
+            .run_step(
+                None,
+                &claude(),
+                None,
+                "task one",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .run_step(
+                None,
+                &claude(),
+                None,
+                "task two",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
 
         // THEN — two separate start calls (each anonymous session is independent)
         let calls = runner.calls();
         let starts = calls.iter().filter(|c| c.starts_with("start:")).count();
-        assert_eq!(starts, 2, "each anonymous session should start independently");
+        assert_eq!(
+            starts, 2,
+            "each anonymous session should start independently"
+        );
     }
 
     #[tokio::test]
@@ -331,11 +465,28 @@ mod tests {
         let dir = std::path::PathBuf::from("/tmp");
 
         // WHEN
-        manager.run_step(Some("worker"), &claude(), None, "do work", &dir, None, Arc::new(NoOpLimiter), None, &[], None).await.unwrap();
+        manager
+            .run_step(
+                Some("worker"),
+                &claude(),
+                None,
+                "do work",
+                &dir,
+                None,
+                Arc::new(NoOpLimiter),
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
         manager.cleanup().await;
 
         // THEN
         let calls = runner.calls();
-        assert!(calls.iter().any(|c| c == "stop"), "cleanup should call stop");
+        assert!(
+            calls.iter().any(|c| c == "stop"),
+            "cleanup should call stop"
+        );
     }
 }

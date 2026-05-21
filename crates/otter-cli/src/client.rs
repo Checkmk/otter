@@ -1,13 +1,11 @@
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-use otter_core::types::{
-    DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus,
-};
+use otter_core::types::{DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus};
 
 use crate::socket_path;
 
@@ -64,7 +62,9 @@ pub async fn run_ui() -> anyhow::Result<()> {
             match send_command_once(cmd).await {
                 Ok(DaemonResponse::ConsumedTriggersResponse { triggers }) => {
                     if let Some(workflow) = workflow_hint {
-                        let _ = event_tx_cmd.send(DaemonEvent::ConsumedTriggersChanged { workflow, triggers }).await;
+                        let _ = event_tx_cmd
+                            .send(DaemonEvent::ConsumedTriggersChanged { workflow, triggers })
+                            .await;
                     }
                 }
                 Ok(_) => {}
@@ -75,8 +75,7 @@ pub async fn run_ui() -> anyhow::Result<()> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    tokio::task::spawn_blocking(move || otter_tui::run(event_rx, cmd_tx, shutdown))
-        .await??;
+    tokio::task::spawn_blocking(move || otter_tui::run(event_rx, cmd_tx, shutdown)).await??;
 
     Ok(())
 }
@@ -98,7 +97,11 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
 pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
     match send_command_once(DaemonCommand::Status).await {
         Ok(DaemonResponse::StatusResponse { workflows }) => {
-            let mode = if service_enabled { "systemd (auto-start)" } else { "session only" };
+            let mode = if service_enabled {
+                "systemd (auto-start)"
+            } else {
+                "session only"
+            };
             println!("Service: running ({mode})\n");
             print_workflows(&workflows);
         }

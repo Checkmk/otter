@@ -21,9 +21,8 @@ pub async fn resolve_workspace(
     match config {
         None | Some(WorkspaceConfig::Scratch) => Ok(None),
         Some(WorkspaceConfig::Fixed { path }) => {
-            let resolved = std::fs::canonicalize(path).map_err(|e| {
-                anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e)
-            })?;
+            let resolved = std::fs::canonicalize(path)
+                .map_err(|e| anyhow::anyhow!("cannot resolve workspace path '{}': {}", path, e))?;
             if !resolved.is_dir() {
                 return Err(anyhow::anyhow!(
                     "workspace path '{}' is not a directory",
@@ -34,22 +33,23 @@ pub async fn resolve_workspace(
         }
         Some(WorkspaceConfig::Script { command, secrets }) => {
             if command.is_empty() {
-                return Err(anyhow::anyhow!("workspace script command must not be empty"));
+                return Err(anyhow::anyhow!(
+                    "workspace script command must not be empty"
+                ));
             }
             let resolved_secrets = secret_store
                 .resolve(secrets.as_deref().unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!("secret resolution for workspace script failed: {}", e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("secret resolution for workspace script failed: {}", e)
+                })?;
             let mut cmd = tokio::process::Command::new(&command[0]);
             cmd.args(&command[1..])
                 .arg(workflow_name)
                 .arg(run_id.to_string());
             inject_isolated_env(&mut cmd, &resolved_secrets, true);
-            let output = cmd
-                .output()
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to run workspace script '{}': {}", command[0], e)
-                })?;
+            let output = cmd.output().await.map_err(|e| {
+                anyhow::anyhow!("failed to run workspace script '{}': {}", command[0], e)
+            })?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow::anyhow!(
@@ -93,18 +93,24 @@ mod tests {
     #[tokio::test]
     async fn none_returns_no_workspace() {
         // GIVEN / WHEN / THEN
-        assert!(resolve_workspace(None, "wf", Uuid::new_v4(), &no_secrets()).await.unwrap().is_none());
+        assert!(resolve_workspace(None, "wf", Uuid::new_v4(), &no_secrets())
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn scratch_returns_no_workspace() {
         // GIVEN / WHEN / THEN
-        assert!(
-            resolve_workspace(Some(&WorkspaceConfig::Scratch), "wf", Uuid::new_v4(), &no_secrets())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(resolve_workspace(
+            Some(&WorkspaceConfig::Scratch),
+            "wf",
+            Uuid::new_v4(),
+            &no_secrets()
+        )
+        .await
+        .unwrap()
+        .is_none());
     }
 
     #[tokio::test]
@@ -116,7 +122,9 @@ mod tests {
         };
 
         // WHEN
-        let result = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.unwrap();
+        let result = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+            .await
+            .unwrap();
 
         // THEN
         assert_eq!(result.unwrap(), dir.path().canonicalize().unwrap());
@@ -130,7 +138,11 @@ mod tests {
         };
 
         // WHEN / THEN
-        assert!(resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.is_err());
+        assert!(
+            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -142,7 +154,11 @@ mod tests {
         };
 
         // WHEN / THEN
-        assert!(resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.is_err());
+        assert!(
+            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -160,7 +176,9 @@ mod tests {
         };
 
         // WHEN
-        let result = resolve_workspace(Some(&config), "my-wf", Uuid::new_v4(), &no_secrets()).await.unwrap();
+        let result = resolve_workspace(Some(&config), "my-wf", Uuid::new_v4(), &no_secrets())
+            .await
+            .unwrap();
 
         // THEN
         assert_eq!(result.unwrap(), dir.path().canonicalize().unwrap());
@@ -189,7 +207,9 @@ mod tests {
         let run_id = Uuid::new_v4();
 
         // WHEN
-        resolve_workspace(Some(&config), "my-workflow", run_id, &no_secrets()).await.unwrap();
+        resolve_workspace(Some(&config), "my-workflow", run_id, &no_secrets())
+            .await
+            .unwrap();
 
         // THEN
         let captured = std::fs::read_to_string(&args_file).unwrap();
@@ -205,7 +225,11 @@ mod tests {
         };
 
         // WHEN / THEN
-        assert!(resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.is_err());
+        assert!(
+            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -217,7 +241,11 @@ mod tests {
         };
 
         // WHEN / THEN
-        assert!(resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.is_err());
+        assert!(
+            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -235,7 +263,9 @@ mod tests {
         };
 
         // WHEN
-        let result = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.unwrap();
+        let result = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+            .await
+            .unwrap();
 
         // THEN
         assert!(result.is_some());
@@ -263,15 +293,27 @@ mod tests {
         struct OneSecret;
         impl SecretStore for OneSecret {
             fn get(&self, key: &str) -> Option<String> {
-                if key == "MY_SECRET" { Some("injected-value".to_string()) } else { None }
+                if key == "MY_SECRET" {
+                    Some("injected-value".to_string())
+                } else {
+                    None
+                }
             }
-            fn list(&self) -> Vec<String> { vec!["MY_SECRET".to_string()] }
-            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> { Ok(()) }
-            fn delete(&self, _: &str) -> anyhow::Result<()> { Ok(()) }
+            fn list(&self) -> Vec<String> {
+                vec!["MY_SECRET".to_string()]
+            }
+            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
 
         // WHEN
-        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &OneSecret).await.unwrap();
+        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &OneSecret)
+            .await
+            .unwrap();
 
         // THEN — secret was injected
         let val = std::fs::read_to_string(&secret_file).unwrap();
@@ -300,10 +342,16 @@ mod tests {
         };
 
         // WHEN
-        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets()).await.unwrap();
+        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), &no_secrets())
+            .await
+            .unwrap();
 
         // THEN — sentinel must not appear (env is isolated)
         let val = std::fs::read_to_string(&env_file).unwrap();
-        assert_eq!(val.trim(), "", "daemon env must not leak into isolated workspace script");
+        assert_eq!(
+            val.trim(),
+            "",
+            "daemon env must not leak into isolated workspace script"
+        );
     }
 }

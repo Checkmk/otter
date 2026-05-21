@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 use otter_secrets::SecretStore;
 
+use super::TriggerSource;
 use crate::process::{inject_isolated_env, PrependScriptsDir};
 use crate::types::{PendingContext, TriggerError, TriggerEvent};
-use super::TriggerSource;
 
 #[derive(Serialize, Deserialize)]
 struct SeenHashes {
@@ -22,7 +22,9 @@ struct SeenHashes {
 
 /// Returns the path to the consumed-triggers file for the given workflow.
 pub fn consumed_triggers_path(data_dir: &Path, workflow_name: &str) -> PathBuf {
-    data_dir.join("triggers").join(format!("{}-seen.json", workflow_name))
+    data_dir
+        .join("triggers")
+        .join(format!("{}-seen.json", workflow_name))
 }
 
 /// Loads consumed trigger IDs from `path`, returning a sorted Vec. Returns empty Vec if the file doesn't exist.
@@ -91,7 +93,9 @@ impl PollingTrigger {
     }
 
     fn load_seen(&self) -> anyhow::Result<HashSet<String>> {
-        Ok(load_consumed_triggers(&self.seen_path)?.into_iter().collect())
+        Ok(load_consumed_triggers(&self.seen_path)?
+            .into_iter()
+            .collect())
     }
 
     fn save_seen(&self, seen: &HashSet<String>) -> anyhow::Result<()> {
@@ -106,8 +110,12 @@ impl TriggerSource for PollingTrigger {
     }
 
     async fn subscribe(&self, tx: mpsc::Sender<TriggerEvent>) -> Result<(), TriggerError> {
-        info!("polling trigger started: poll_command={:?}, interval={:?}, seen_path={}",
-              self.poll_command, self.interval, self.seen_path.display());
+        info!(
+            "polling trigger started: poll_command={:?}, interval={:?}, seen_path={}",
+            self.poll_command,
+            self.interval,
+            self.seen_path.display()
+        );
         loop {
             if let Err(e) = self.poll_once(&tx).await {
                 error!("polling error: {}", e);
@@ -137,10 +145,16 @@ impl TriggerSource for PollingTrigger {
                         debug!("hash {} marked as seen after successful run", payload);
                     }
                 }
-                Err(e) => warn!("failed to load seen-hashes when completing run for {}: {}", payload, e),
+                Err(e) => warn!(
+                    "failed to load seen-hashes when completing run for {}: {}",
+                    payload, e
+                ),
             }
         } else {
-            info!("run failed for hash {}; hash not marked seen and will be retried on next poll", payload);
+            info!(
+                "run failed for hash {}; hash not marked seen and will be retried on next poll",
+                payload
+            );
         }
     }
 }
@@ -148,17 +162,21 @@ impl TriggerSource for PollingTrigger {
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
         debug!("polling: running {:?}", self.poll_command);
-        let resolved = self.secret_store
+        let resolved = self
+            .secret_store
             .resolve(&self.poll_secrets)
             .map_err(|e| anyhow::anyhow!("secret resolution for poll command failed: {}", e))?;
         let mut cmd = Command::new(&self.poll_command[0]);
         cmd.args(&self.poll_command[1..]);
         inject_isolated_env(&mut cmd, &resolved, true);
         cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to run poll command '{}': {}", self.poll_command[0], e))?;
+        let output = cmd.output().await.map_err(|e| {
+            anyhow::anyhow!(
+                "failed to run poll command '{}': {}",
+                self.poll_command[0],
+                e
+            )
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -174,14 +192,19 @@ impl PollingTrigger {
         debug!("poll command output: {}", stdout);
 
         let hashes: Vec<String> = serde_json::from_str(&stdout).map_err(|e| {
-            anyhow::anyhow!("failed to parse poll output as JSON: {} (output was: {})", e, stdout)
+            anyhow::anyhow!(
+                "failed to parse poll output as JSON: {} (output was: {})",
+                e,
+                stdout
+            )
         })?;
 
         let seen = self.load_seen()?;
         let total = hashes.len();
         let unseen: Vec<String> = {
             let in_flight = self.in_flight.lock().unwrap();
-            hashes.into_iter()
+            hashes
+                .into_iter()
                 .filter(|h| !seen.contains(h) && !in_flight.contains(h))
                 .collect()
         };
@@ -218,10 +241,10 @@ impl PollingTrigger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::write_executable_script;
+    use otter_secrets::NoOpSecretStore;
     use std::fs;
     use tempfile::TempDir;
-    use otter_secrets::NoOpSecretStore;
-    use crate::test_helpers::write_executable_script;
 
     fn no_secrets_store() -> Arc<dyn SecretStore> {
         Arc::new(NoOpSecretStore)
@@ -235,7 +258,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\", \"hash2\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -272,7 +296,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
         let data = SeenHashes {
@@ -308,7 +333,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
 
@@ -329,7 +355,10 @@ mod tests {
         trigger.poll_once(&tx).await.unwrap();
 
         // THEN - seen file is NOT written yet
-        assert!(!seen_path.exists(), "seen file must not be written before run completes");
+        assert!(
+            !seen_path.exists(),
+            "seen file must not be written before run completes"
+        );
 
         // WHEN - run completes successfully
         trigger.on_run_completed("hash1", true).await;
@@ -349,12 +378,14 @@ mod tests {
             temp_dir.path(),
             "mock-poll.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
         let ctx_path = write_executable_script(
             temp_dir.path(),
             "mock-context.sh",
             "#!/bin/bash\ntouch \"$2/context.txt\"",
-        ).unwrap();
+        )
+        .unwrap();
 
         let ctx_cmd = vec![ctx_path.to_string_lossy().to_string()];
         let trigger = PollingTrigger::new(
@@ -375,7 +406,9 @@ mod tests {
 
         // THEN - event carries pending_context; no context files are created yet
         let event = rx.recv().await.expect("expected event");
-        let pending = event.pending_context.expect("expected pending_context to be set");
+        let pending = event
+            .pending_context
+            .expect("expected pending_context to be set");
         assert_eq!(pending.command, ctx_cmd);
         assert_eq!(pending.hash, "hash1");
 
@@ -385,7 +418,10 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
             .collect();
-        assert!(dirs.is_empty(), "no directories should be created at poll time");
+        assert!(
+            dirs.is_empty(),
+            "no directories should be created at poll time"
+        );
     }
 
     #[tokio::test]
@@ -396,7 +432,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
@@ -420,7 +457,10 @@ mod tests {
         assert_eq!(event.payload, "hash1");
 
         // AND - seen-hash file NOT yet written (run hasn't completed)
-        assert!(!seen_path.exists(), "seen file must not be written before run completes");
+        assert!(
+            !seen_path.exists(),
+            "seen file must not be written before run completes"
+        );
 
         // WHEN - run completes successfully
         trigger.on_run_completed("hash1", true).await;
@@ -439,7 +479,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
@@ -460,7 +501,10 @@ mod tests {
         trigger.on_run_completed("hash1", false).await;
 
         // THEN - seen file is not written
-        assert!(!seen_path.exists(), "failed run must not write hash to seen file");
+        assert!(
+            !seen_path.exists(),
+            "failed run must not write hash to seen file"
+        );
     }
 
     #[tokio::test]
@@ -471,7 +515,8 @@ mod tests {
             temp_dir.path(),
             "mock-poller.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -495,7 +540,10 @@ mod tests {
         trigger.poll_once(&tx).await.unwrap();
 
         // THEN - no second event fired
-        assert!(rx.try_recv().is_err(), "hash must not be fired again while in-flight");
+        assert!(
+            rx.try_recv().is_err(),
+            "hash must not be fired again while in-flight"
+        );
     }
 
     #[tokio::test]
@@ -506,18 +554,20 @@ mod tests {
             temp_dir.path(),
             "mock-poll.sh",
             "#!/bin/bash\ntimestamp=$(date +%s%N)\necho \"[\\\"event-${timestamp}\\\"]\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let ctx_path = write_executable_script(
             temp_dir.path(),
             "mock-context.sh",
             "#!/bin/bash\nmkdir -p \"$2\"\necho \"event=$1\" > \"$2/metadata.txt\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(vec![ctx_path.to_string_lossy().to_string()]),
-            Duration::from_millis(100),  // 100ms interval
+            Duration::from_millis(100), // 100ms interval
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
@@ -565,7 +615,8 @@ mod tests {
             temp_dir.path(),
             "mock-poll.sh",
             "#!/bin/bash\necho '[\"event1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -609,7 +660,8 @@ mod tests {
             temp_dir.path(),
             "mock-poll.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
@@ -652,11 +704,21 @@ mod tests {
         struct OneSecret;
         impl SecretStore for OneSecret {
             fn get(&self, key: &str) -> Option<String> {
-                if key == "POLL_SECRET" { Some("injected".to_string()) } else { None }
+                if key == "POLL_SECRET" {
+                    Some("injected".to_string())
+                } else {
+                    None
+                }
             }
-            fn list(&self) -> Vec<String> { vec!["POLL_SECRET".to_string()] }
-            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> { Ok(()) }
-            fn delete(&self, _: &str) -> anyhow::Result<()> { Ok(()) }
+            fn list(&self) -> Vec<String> {
+                vec!["POLL_SECRET".to_string()]
+            }
+            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
 
         let trigger = PollingTrigger::new(
@@ -687,10 +749,18 @@ mod tests {
         // GIVEN
         struct DummyStore;
         impl SecretStore for DummyStore {
-            fn get(&self, _: &str) -> Option<String> { Some("dummy".to_string()) }
-            fn list(&self) -> Vec<String> { vec![] }
-            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> { Ok(()) }
-            fn delete(&self, _: &str) -> anyhow::Result<()> { Ok(()) }
+            fn get(&self, _: &str) -> Option<String> {
+                Some("dummy".to_string())
+            }
+            fn list(&self) -> Vec<String> {
+                vec![]
+            }
+            fn set(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
 
         let temp_dir = TempDir::new().unwrap();
@@ -698,7 +768,8 @@ mod tests {
             temp_dir.path(),
             "mock-poll.sh",
             "#!/bin/bash\necho '[\"hash1\"]'",
-        ).unwrap();
+        )
+        .unwrap();
         let ctx_cmd = vec!["ctx.sh".to_string()];
         let trigger = PollingTrigger::new(
             "test".to_string(),

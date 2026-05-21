@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use otter_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowStatus, WorkflowType, WorkflowRun, WorkflowState};
-use uuid::Uuid;
+use otter_core::types::{
+    CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowRun,
+    WorkflowState, WorkflowStatus, WorkflowType,
+};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
@@ -47,8 +50,8 @@ pub struct WorkflowEntry {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CursorTarget {
-    Workflow(usize),          // index into workflows vec
-    Run(usize, usize),        // workflow_idx, run_idx
+    Workflow(usize),   // index into workflows vec
+    Run(usize, usize), // workflow_idx, run_idx
 }
 
 pub struct App {
@@ -126,7 +129,12 @@ impl App {
         match event {
             DaemonEvent::RunUpdated(run) => {
                 // Find the workflow by name and upsert the run
-                if let Some((wi, entry)) = self.workflows.iter_mut().enumerate().find(|(_, e)| e.name == run.workflow_name) {
+                if let Some((wi, entry)) = self
+                    .workflows
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, e)| e.name == run.workflow_name)
+                {
                     if let Some(existing) = entry.runs.iter_mut().find(|r| r.id == run.id) {
                         *existing = run;
                     } else {
@@ -155,7 +163,9 @@ impl App {
                 // Inject checkpoint message as a synthetic log entry only on first presentation;
                 // feedback loops re-emit CheckpointPending for the same step, so skip if already pending.
                 if !self.pending_checkpoints.contains_key(&run_id) {
-                    let iteration = self.logs.get(&run_id)
+                    let iteration = self
+                        .logs
+                        .get(&run_id)
                         .and_then(|l| l.last())
                         .map(|e| e.iteration)
                         .unwrap_or(0);
@@ -173,14 +183,20 @@ impl App {
                     });
                 }
 
-                self.pending_checkpoints.insert(run_id, PendingCheckpoint {
+                self.pending_checkpoints.insert(
                     run_id,
-                    feedback_available,
-                    processing: false,
-                });
+                    PendingCheckpoint {
+                        run_id,
+                        feedback_available,
+                        processing: false,
+                    },
+                );
             }
             DaemonEvent::RunDeleted { run_id } => {
-                let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
+                let old_pos = self
+                    .build_flat_list()
+                    .iter()
+                    .position(|t| *t == self.cursor);
                 for entry in &mut self.workflows {
                     entry.runs.retain(|r| r.id != run_id);
                 }
@@ -189,8 +205,15 @@ impl App {
                 self.pending_checkpoints.remove(&run_id);
                 self.ensure_cursor_valid(old_pos);
             }
-            DaemonEvent::StepProgress { run_id, step_index, chunk } => {
-                self.progress.entry(run_id).or_default().push((step_index, chunk));
+            DaemonEvent::StepProgress {
+                run_id,
+                step_index,
+                chunk,
+            } => {
+                self.progress
+                    .entry(run_id)
+                    .or_default()
+                    .push((step_index, chunk));
             }
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
                 self.consumed_triggers.insert(workflow, triggers);
@@ -206,11 +229,15 @@ impl App {
     }
 
     fn apply_workflows_snapshot(&mut self, snapshot: Vec<WorkflowStatus>) {
-        let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
+        let old_pos = self
+            .build_flat_list()
+            .iter()
+            .position(|t| *t == self.cursor);
         let snapshot_names: std::collections::HashSet<&str> =
             snapshot.iter().map(|s| s.name.as_str()).collect();
 
-        self.workflows.retain(|e| snapshot_names.contains(e.name.as_str()));
+        self.workflows
+            .retain(|e| snapshot_names.contains(e.name.as_str()));
 
         for incoming in snapshot {
             match self.workflows.iter_mut().find(|e| e.name == incoming.name) {
@@ -282,7 +309,9 @@ impl App {
                 let name = entry.name.clone();
                 if entry.autostart {
                     entry.autostart = false;
-                    let _ = self.cmd_tx.try_send(DaemonCommand::DisableWorkflow { name });
+                    let _ = self
+                        .cmd_tx
+                        .try_send(DaemonCommand::DisableWorkflow { name });
                 } else {
                     entry.autostart = true;
                     self.pending_workflow_start = Some(name.clone());
@@ -308,16 +337,16 @@ impl App {
                     cp.processing = true;
                 }
             }
-            let _ = self.cmd_tx.try_send(DaemonCommand::CheckpointRespond { run_id, action });
+            let _ = self
+                .cmd_tx
+                .try_send(DaemonCommand::CheckpointRespond { run_id, action });
         }
     }
 
     pub fn selected_run_id(&self) -> Option<Uuid> {
         match self.cursor {
             CursorTarget::Workflow(_) => None,
-            CursorTarget::Run(wi, ri) => {
-                self.workflows.get(wi)?.runs.get(ri).map(|r| r.id)
-            }
+            CursorTarget::Run(wi, ri) => self.workflows.get(wi)?.runs.get(ri).map(|r| r.id),
         }
     }
 
@@ -416,7 +445,9 @@ impl App {
             self.right_panel_content = RightPanelContent::ConsumedTriggers;
             self.focus = Focus::Right;
             self.right_cursor = 0;
-            let _ = self.cmd_tx.try_send(DaemonCommand::ListConsumedTriggers { workflow: name });
+            let _ = self
+                .cmd_tx
+                .try_send(DaemonCommand::ListConsumedTriggers { workflow: name });
         }
     }
 
@@ -437,7 +468,9 @@ impl App {
             RightPanelContent::ConsumedTriggers => self.move_right_cursor_up(),
             RightPanelContent::Contextual => match self.cursor {
                 // TOML: right_scroll is absolute from top — ↑ means smaller offset (toward top)
-                CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(1),
+                CursorTarget::Workflow(_) => {
+                    self.right_scroll = self.right_scroll.saturating_sub(1)
+                }
                 // Logs: right_scroll is lines from bottom — ↑ means more lines from bottom (toward top)
                 CursorTarget::Run(_, _) => self.right_scroll += 1,
             },
@@ -458,7 +491,9 @@ impl App {
 
     pub fn scroll_right_page_up(&mut self) {
         match self.cursor {
-            CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height),
+            CursorTarget::Workflow(_) => {
+                self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height)
+            }
             CursorTarget::Run(_, _) => self.right_scroll += self.right_panel_height,
         }
     }
@@ -466,7 +501,9 @@ impl App {
     pub fn scroll_right_page_down(&mut self) {
         match self.cursor {
             CursorTarget::Workflow(_) => self.right_scroll += self.right_panel_height,
-            CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height),
+            CursorTarget::Run(_, _) => {
+                self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height)
+            }
         }
     }
 
@@ -508,7 +545,10 @@ impl App {
             Some(e) => &e.name,
             None => return &[],
         };
-        self.consumed_triggers.get(name).map(|v| v.as_slice()).unwrap_or(&[])
+        self.consumed_triggers
+            .get(name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn move_right_cursor_up(&mut self) {
@@ -545,7 +585,9 @@ impl App {
         } else {
             self.right_cursor = 0;
         }
-        let _ = self.cmd_tx.try_send(DaemonCommand::DeleteConsumedTrigger { workflow, trigger });
+        let _ = self
+            .cmd_tx
+            .try_send(DaemonCommand::DeleteConsumedTrigger { workflow, trigger });
     }
 
     /// Delete the currently selected run (only if cursor is on a run)
@@ -561,7 +603,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::types::{WorkflowType, WorkflowState, DaemonEvent};
+    use otter_core::types::{DaemonEvent, WorkflowState, WorkflowType};
     use tokio::sync::mpsc;
 
     fn make_test_app() -> App {
@@ -1068,7 +1110,10 @@ mod tests {
         });
 
         app.cursor = CursorTarget::Workflow(0);
-        assert_eq!(app.selected_workflow_toml(), Some("name = \"wf\"\ntype = \"looping\"\n"));
+        assert_eq!(
+            app.selected_workflow_toml(),
+            Some("name = \"wf\"\ntype = \"looping\"\n")
+        );
     }
 
     #[test]
@@ -1212,7 +1257,10 @@ mod tests {
         assert_eq!(app.workflows[0].runs[0].id, run_id);
         assert!(app.workflows[0].expanded);
         assert_eq!(app.workflows[0].state, WorkflowState::Running);
-        assert_eq!(app.workflows[0].toml_content.as_deref(), Some("name = \"wf\"\n"));
+        assert_eq!(
+            app.workflows[0].toml_content.as_deref(),
+            Some("name = \"wf\"\n")
+        );
         assert!(app.workflows[0].autostart);
     }
 
@@ -1242,7 +1290,9 @@ mod tests {
         });
 
         // WHEN a snapshot arrives that only contains wf-b
-        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf-b", None, false)]));
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap(
+            "wf-b", None, false,
+        )]));
 
         // THEN wf-a is gone, wf-b remains
         assert_eq!(app.workflows.len(), 1);
@@ -1255,7 +1305,9 @@ mod tests {
         let mut app = make_test_app();
 
         // WHEN a snapshot arrives with a new workflow
-        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf-new", None, false)]));
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap(
+            "wf-new", None, false,
+        )]));
 
         // THEN the workflow is added with empty runs
         assert_eq!(app.workflows.len(), 1);

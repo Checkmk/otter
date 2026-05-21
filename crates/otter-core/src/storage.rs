@@ -23,11 +23,13 @@ impl InMemoryStorage {
     pub fn runs(&self) -> Vec<WorkflowRun> {
         let runs = self.runs.lock().unwrap();
         let workflows = self.workflows.lock().unwrap();
-        runs.iter().map(|r| {
-            let mut run = r.clone();
-            run.orphaned = !workflows.contains(&run.workflow_name);
-            run
-        }).collect()
+        runs.iter()
+            .map(|r| {
+                let mut run = r.clone();
+                run.orphaned = !workflows.contains(&run.workflow_name);
+                run
+            })
+            .collect()
     }
 
     pub fn logs(&self) -> Vec<LogEntry> {
@@ -130,7 +132,10 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn register_workflow(&self, workflow_name: &str) -> anyhow::Result<()> {
-        self.workflows.lock().unwrap().insert(workflow_name.to_string());
+        self.workflows
+            .lock()
+            .unwrap()
+            .insert(workflow_name.to_string());
         Ok(())
     }
 

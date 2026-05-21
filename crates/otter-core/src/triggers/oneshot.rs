@@ -56,7 +56,10 @@ mod tests {
         // THEN
         let event = rx.recv().await.expect("expected one event");
         assert_eq!(event.source, "oneshot");
-        assert!(rx.recv().await.is_none(), "channel should be empty after one event");
+        assert!(
+            rx.recv().await.is_none(),
+            "channel should be empty after one event"
+        );
     }
 
     #[tokio::test]

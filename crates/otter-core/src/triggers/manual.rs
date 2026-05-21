@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-use crate::types::{TriggerError, TriggerEvent};
 use super::TriggerSource;
+use crate::types::{TriggerError, TriggerEvent};
 
 pub struct ManualTrigger {
     name: String,

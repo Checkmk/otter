@@ -118,7 +118,10 @@ impl KeyProvider for KeyringKeyProvider {
     fn encrypt(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
         let identity = self.get_or_create_identity()?;
         let recipient = identity.to_public();
-        encrypt_age(plaintext, std::iter::once(Box::new(recipient) as Box<dyn age::Recipient + Send>))
+        encrypt_age(
+            plaintext,
+            std::iter::once(Box::new(recipient) as Box<dyn age::Recipient + Send>),
+        )
     }
 
     fn decrypt(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -187,7 +190,9 @@ impl EncryptedSecretStore {
 
     /// Unlock the store (decrypt from disk), populating the in-memory cache.
     /// Returns the locked guard so callers can read/modify the map atomically.
-    fn unlock(&self) -> Result<std::sync::MutexGuard<'_, Option<HashMap<String, String>>>, SecretError> {
+    fn unlock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<HashMap<String, String>>>, SecretError> {
         let mut guard = self.cache.lock().expect("cache lock poisoned");
         if guard.is_some() {
             return Ok(guard);
@@ -202,10 +207,9 @@ impl EncryptedSecretStore {
             .key_provider
             .decrypt(&ciphertext)
             .map_err(|e| SecretError::Locked(e.to_string()))?;
-        let file: SecretsFile = toml::from_str(
-            std::str::from_utf8(&plaintext)
-                .map_err(|e| SecretError::Other(anyhow::anyhow!("invalid UTF-8 in secrets file: {e}")))?,
-        )
+        let file: SecretsFile = toml::from_str(std::str::from_utf8(&plaintext).map_err(|e| {
+            SecretError::Other(anyhow::anyhow!("invalid UTF-8 in secrets file: {e}"))
+        })?)
         .map_err(|e| SecretError::Other(anyhow::anyhow!("secrets TOML parse error: {e}")))?;
         *guard = Some(file.secrets);
         Ok(guard)
@@ -213,7 +217,9 @@ impl EncryptedSecretStore {
 
     /// Serialize the current cache and re-encrypt to disk using an atomic rename.
     fn flush(&self, map: &HashMap<String, String>) -> anyhow::Result<()> {
-        let file = SecretsFile { secrets: map.clone() };
+        let file = SecretsFile {
+            secrets: map.clone(),
+        };
         let toml_bytes = toml::to_string(&file)?.into_bytes();
         let ciphertext = self.key_provider.encrypt(&toml_bytes)?;
         let parent = self.path.parent().unwrap_or(std::path::Path::new("."));
@@ -272,7 +278,9 @@ impl SecretStore for EncryptedSecretStore {
     fn resolve(&self, names: &[String]) -> Result<Vec<(String, String)>, SecretError> {
         // Unlock once, then resolve all names from the cache.
         let guard = self.unlock()?;
-        let map = guard.as_ref().ok_or_else(|| SecretError::Locked("empty cache".into()))?;
+        let map = guard
+            .as_ref()
+            .ok_or_else(|| SecretError::Locked("empty cache".into()))?;
         names
             .iter()
             .map(|name| {
@@ -435,13 +443,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Write a dummy file so the store tries to decrypt it.
         std::fs::write(dir.path().join("secrets.age"), b"not real ciphertext").unwrap();
-        let store = EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
+        let store =
+            EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
 
         // WHEN
         let err = store.resolve(&["K".to_string()]).unwrap_err();
 
         // THEN
-        assert!(matches!(err, SecretError::Locked(_)), "expected Locked, got {err}");
+        assert!(
+            matches!(err, SecretError::Locked(_)),
+            "expected Locked, got {err}"
+        );
     }
 
     #[test]
@@ -459,7 +471,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("secrets.age"), b"not real ciphertext").unwrap();
-        let store = EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
+        let store =
+            EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
 
         // WHEN / THEN — no panic
         assert!(store.get("K").is_none());
@@ -480,7 +493,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("secrets.age"), b"not real ciphertext").unwrap();
-        let store = EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
+        let store =
+            EncryptedSecretStore::new(dir.path().join("secrets.age"), Arc::new(BadKeyProvider));
 
         // WHEN / THEN — no panic
         assert!(store.list().is_empty());
@@ -494,7 +508,9 @@ mod tests {
 
     impl EphemeralX25519KeyProvider {
         fn generate() -> Self {
-            Self { identity: age::x25519::Identity::generate() }
+            Self {
+                identity: age::x25519::Identity::generate(),
+            }
         }
     }
 
@@ -502,7 +518,9 @@ mod tests {
         fn encrypt(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
             encrypt_age(
                 plaintext,
-                std::iter::once(Box::new(self.identity.to_public()) as Box<dyn age::Recipient + Send>),
+                std::iter::once(
+                    Box::new(self.identity.to_public()) as Box<dyn age::Recipient + Send>
+                ),
             )
         }
         fn decrypt(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -551,7 +569,9 @@ mod tests {
 
         // THEN — the raw file must not contain the plaintext secret
         let raw = std::fs::read(dir.path().join("secrets.age")).unwrap();
-        assert!(!raw.windows(b"super-secret-value".len()).any(|w| w == b"super-secret-value"));
+        assert!(!raw
+            .windows(b"super-secret-value".len())
+            .any(|w| w == b"super-secret-value"));
     }
 
     #[test]
@@ -562,7 +582,9 @@ mod tests {
 
         let store1 = EncryptedSecretStore::new(
             dir.path().join("secrets.age"),
-            Arc::new(EphemeralX25519KeyProvider { identity: identity.clone() }),
+            Arc::new(EphemeralX25519KeyProvider {
+                identity: identity.clone(),
+            }),
         );
         store1.set("DB_PASS", "correct-horse").unwrap();
 

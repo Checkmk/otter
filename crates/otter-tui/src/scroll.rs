@@ -1,4 +1,3 @@
-
 use ratatui::text::Span;
 
 #[derive(Copy, Clone)]
@@ -22,7 +21,8 @@ impl Default for ScrollConfig {
 /// Truncated sides get a "…" marker that inherits the style of the nearest span.
 pub fn scroll_spans(spans: Vec<Span<'static>>, width: usize, tick: u64) -> Vec<Span<'static>> {
     let text_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let (offset, has_left, has_right, content_width) = scroll_window_with_config(text_len, width, tick, ScrollConfig::default());
+    let (offset, has_left, has_right, content_width) =
+        scroll_window_with_config(text_len, width, tick, ScrollConfig::default());
 
     if !has_left && !has_right {
         return spans;
@@ -34,7 +34,11 @@ pub fn scroll_spans(spans: Vec<Span<'static>>, width: usize, tick: u64) -> Vec<S
     let mut char_pos: usize = 0;
 
     if has_left {
-        let style = spans.iter().find(|s| !s.content.is_empty()).map(|s| s.style).unwrap_or_default();
+        let style = spans
+            .iter()
+            .find(|s| !s.content.is_empty())
+            .map(|s| s.style)
+            .unwrap_or_default();
         result.push(Span::styled("…", style));
     }
 
@@ -49,7 +53,12 @@ pub fn scroll_spans(spans: Vec<Span<'static>>, width: usize, tick: u64) -> Vec<S
 
         let slice_start = start.saturating_sub(char_pos);
         let slice_end = (end - char_pos).min(span_len);
-        let sliced: String = span.content.chars().skip(slice_start).take(slice_end - slice_start).collect();
+        let sliced: String = span
+            .content
+            .chars()
+            .skip(slice_start)
+            .take(slice_end - slice_start)
+            .collect();
         if !sliced.is_empty() {
             result.push(Span::styled(sliced, span.style));
         }
@@ -76,15 +85,19 @@ fn scroll_window_with_config(
     }
 
     let scroll_range = text_len - width + 1;
-    let cycle_length = (config.pause_duration + scroll_range as u64 * config.scroll_speed
-        + config.pause_duration + scroll_range as u64 * config.scroll_speed) as u64;
+    let cycle_length = (config.pause_duration
+        + scroll_range as u64 * config.scroll_speed
+        + config.pause_duration
+        + scroll_range as u64 * config.scroll_speed) as u64;
     let phase = tick % cycle_length;
 
     let offset = if phase < config.pause_duration {
         0
     } else if phase < config.pause_duration + scroll_range as u64 * config.scroll_speed {
         ((phase - config.pause_duration) / config.scroll_speed) as usize
-    } else if phase < config.pause_duration + scroll_range as u64 * config.scroll_speed + config.pause_duration {
+    } else if phase
+        < config.pause_duration + scroll_range as u64 * config.scroll_speed + config.pause_duration
+    {
         scroll_range
     } else {
         let progress = (phase
@@ -140,10 +153,14 @@ mod tests {
 
     #[test]
     fn window_pauses_at_start() {
-        let config = ScrollConfig { scroll_speed: 3, pause_duration: 30 };
+        let config = ScrollConfig {
+            scroll_speed: 3,
+            pause_duration: 30,
+        };
         let text_len = 23; // "very_long_workflow_name"
         for tick in 0..30 {
-            let (offset, has_left, has_right, _) = scroll_window_with_config(text_len, 10, tick, config);
+            let (offset, has_left, has_right, _) =
+                scroll_window_with_config(text_len, 10, tick, config);
             assert_eq!(offset, 0, "tick {tick}");
             assert!(!has_left, "tick {tick}");
             assert!(has_right, "tick {tick}");
@@ -152,14 +169,18 @@ mod tests {
 
     #[test]
     fn window_scrolls_left() {
-        let config = ScrollConfig { scroll_speed: 3, pause_duration: 30 };
+        let config = ScrollConfig {
+            scroll_speed: 3,
+            pause_duration: 30,
+        };
         let text_len = 23;
         let width = 10;
 
         let (offset, ..) = scroll_window_with_config(text_len, width, 30, config);
         assert_eq!(offset, 0);
 
-        let (offset, has_left, has_right, _) = scroll_window_with_config(text_len, width, 33, config);
+        let (offset, has_left, has_right, _) =
+            scroll_window_with_config(text_len, width, 33, config);
         assert_eq!(offset, 1);
         assert!(has_left);
         assert!(has_right);
@@ -170,14 +191,18 @@ mod tests {
 
     #[test]
     fn window_pauses_at_end() {
-        let config = ScrollConfig { scroll_speed: 3, pause_duration: 30 };
+        let config = ScrollConfig {
+            scroll_speed: 3,
+            pause_duration: 30,
+        };
         let text_len = 23;
         let width = 10;
         let scroll_range = text_len - width + 1;
         let phase_end = 30 + scroll_range as u64 * 3;
 
         for tick in phase_end..(phase_end + 30) {
-            let (offset, has_left, has_right, _) = scroll_window_with_config(text_len, width, tick, config);
+            let (offset, has_left, has_right, _) =
+                scroll_window_with_config(text_len, width, tick, config);
             assert_eq!(offset, scroll_range, "tick {tick}");
             assert!(has_left, "tick {tick}");
             assert!(!has_right, "tick {tick}");
@@ -186,7 +211,10 @@ mod tests {
 
     #[test]
     fn window_scrolls_right() {
-        let config = ScrollConfig { scroll_speed: 3, pause_duration: 30 };
+        let config = ScrollConfig {
+            scroll_speed: 3,
+            pause_duration: 30,
+        };
         let text_len = 23;
         let width = 10;
         let scroll_range = text_len - width + 1;
@@ -195,7 +223,8 @@ mod tests {
         let (offset, ..) = scroll_window_with_config(text_len, width, phase_right, config);
         assert_eq!(offset, scroll_range);
 
-        let (offset, has_left, has_right, _) = scroll_window_with_config(text_len, width, phase_right + 3, config);
+        let (offset, has_left, has_right, _) =
+            scroll_window_with_config(text_len, width, phase_right + 3, config);
         assert_eq!(offset, scroll_range - 1);
         assert!(has_left);
         assert!(has_right);
@@ -203,7 +232,10 @@ mod tests {
 
     #[test]
     fn window_cycles() {
-        let config = ScrollConfig { scroll_speed: 3, pause_duration: 30 };
+        let config = ScrollConfig {
+            scroll_speed: 3,
+            pause_duration: 30,
+        };
         let text_len = 23;
         let width = 10;
         let scroll_range = text_len - width + 1;

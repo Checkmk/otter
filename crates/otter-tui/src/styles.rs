@@ -108,19 +108,13 @@ fn spinner_frame_with_speed(tick: u64, speed: u64) -> &'static str {
 }
 
 pub fn base_style() -> Style {
-    Style::default()
-        .fg(c_foreground())
-        .bg(c_background())
+    Style::default().fg(c_foreground()).bg(c_background())
 }
 
 pub fn panel(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(
-            Style::default()
-                .fg(c_border())
-                .bg(c_background()),
-        )
+        .border_style(Style::default().fg(c_border()).bg(c_background()))
         .title_style(
             Style::default()
                 .fg(c_foreground())

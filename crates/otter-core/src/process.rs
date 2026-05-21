@@ -29,7 +29,10 @@ static LOGIN_PATH: OnceLock<String> = OnceLock::new();
 pub fn init_login_path() {
     let result = capture_login_path();
     match &result {
-        Ok(path) => tracing::info!("captured login shell PATH ({} entries)", path.matches(':').count() + 1),
+        Ok(path) => tracing::info!(
+            "captured login shell PATH ({} entries)",
+            path.matches(':').count() + 1
+        ),
         Err(e) => tracing::warn!("failed to capture login shell PATH, using service PATH: {e}"),
     }
     let path = result.unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
@@ -64,11 +67,10 @@ fn capture_login_path() -> Result<String, String> {
 }
 
 fn login_path() -> &'static str {
-    LOGIN_PATH
-        .get_or_init(|| {
-            tracing::warn!("login PATH not initialized, using service PATH");
-            std::env::var("PATH").unwrap_or_default()
-        })
+    LOGIN_PATH.get_or_init(|| {
+        tracing::warn!("login PATH not initialized, using service PATH");
+        std::env::var("PATH").unwrap_or_default()
+    })
 }
 
 impl PrependScriptsDir for tokio::process::Command {
@@ -110,14 +112,15 @@ const SAFE_ENV_VARS: &[&str] = &[
 ];
 
 /// Variables that grant access to privileged host resources.
-const UNSAFE_ENV_VARS: &[&str] = &[
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-];
+const UNSAFE_ENV_VARS: &[&str] = &["SSH_AUTH_SOCK", "SSH_AGENT_PID"];
 
 /// Reset the command environment to an isolated baseline. Set `include_unsafe`
 /// gives access to some host resource access (e.g. SSH agent for git).
-pub fn inject_isolated_env(cmd: &mut tokio::process::Command, resolved: &[(String, String)], include_unsafe: bool) {
+pub fn inject_isolated_env(
+    cmd: &mut tokio::process::Command,
+    resolved: &[(String, String)],
+    include_unsafe: bool,
+) {
     cmd.env_clear();
     for &key in SAFE_ENV_VARS {
         if key == "PATH" {
