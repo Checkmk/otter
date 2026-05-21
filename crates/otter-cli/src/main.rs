@@ -492,7 +492,7 @@ fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
             store.set(&name, &value)?;
             println!("Secret '{}' saved.", name);
         }
-        SecretCommands::Get { name } => match store.resolve(&[name.clone()]) {
+        SecretCommands::Get { name } => match store.resolve(std::slice::from_ref(&name)) {
             Ok(pairs) => println!("{}", pairs[0].1),
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -549,7 +549,7 @@ fn handle_log_command() -> anyhow::Result<()> {
             .arg(&log_path)
             .exec();
         // exec() only returns on error
-        return Err(err.into());
+        Err(err.into())
     }
 
     #[cfg(windows)]

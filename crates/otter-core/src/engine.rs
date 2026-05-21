@@ -485,11 +485,12 @@ impl Engine {
     }
 
     /// Runs all steps once. Returns `Ok(true)` if execution should stop (failed or shutdown).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_steps(
         &self,
         workflow: &WorkflowDef,
         run: &mut WorkflowRun,
-        scratch_dir: &std::path::PathBuf,
+        scratch_dir: &std::path::Path,
         workspace_dir: Option<&std::path::Path>,
         session_manager: &Arc<AgentSessionManager>,
         shutdown: &Arc<AtomicBool>,
@@ -548,7 +549,7 @@ impl Engine {
                 workflow_name: workflow.name.clone(),
                 iteration: run.iteration,
                 step_index: i,
-                scratch_dir: scratch_dir.clone(),
+                scratch_dir: scratch_dir.to_path_buf(),
                 workspace_dir: workspace_dir.map(|p| p.to_owned()),
                 scripts_dir: self.scripts_dir.clone(),
                 checkpoint_tx: ui_tx.clone(),
@@ -675,7 +676,7 @@ impl Engine {
         workflow: &WorkflowDef,
         run: &WorkflowRun,
         outcome: &RunOutcome,
-        scratch_dir: &std::path::PathBuf,
+        scratch_dir: &std::path::Path,
         workspace_dir: Option<&std::path::Path>,
         ui_tx: &Option<mpsc::Sender<EngineEvent>>,
     ) {
@@ -708,7 +709,7 @@ impl Engine {
                 workflow_name: workflow.name.clone(),
                 iteration: run.iteration,
                 step_index,
-                scratch_dir: scratch_dir.clone(),
+                scratch_dir: scratch_dir.to_path_buf(),
                 workspace_dir: workspace_dir.map(|p| p.to_owned()),
                 scripts_dir: self.scripts_dir.clone(),
                 checkpoint_tx: None,

@@ -119,7 +119,7 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
 }
 
 fn print_workflows(workflows: &[WorkflowStatus]) {
-    println!("{:<30} {:<12} {}", "NAME", "KIND", "STATE");
+    println!("{:<30} {:<12} STATE", "NAME", "KIND");
     println!("{}", "-".repeat(54));
     for wf in workflows {
         println!(

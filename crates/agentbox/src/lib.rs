@@ -145,8 +145,7 @@ pub async fn build_image(tag: Option<&str>) -> Result<(), AgentboxError> {
             // Fall back to last non-empty line if no error lines found
             stderr
                 .lines()
-                .filter(|l| !l.trim().is_empty())
-                .last()
+                .rfind(|l| !l.trim().is_empty())
                 .unwrap_or("unknown error")
                 .to_string()
         } else {

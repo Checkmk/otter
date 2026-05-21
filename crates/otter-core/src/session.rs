@@ -24,6 +24,12 @@ pub struct AgentSessionManager {
     runner_override: Option<Arc<dyn AgentRunner>>,
 }
 
+impl Default for AgentSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentSessionManager {
     pub fn new() -> Self {
         Self {
@@ -50,6 +56,7 @@ impl AgentSessionManager {
     /// - `command`: escape-hatch command array (`CustomRunner`); mutually exclusive with `config.provider`.
     ///
     /// For existing sessions `config` and `command` are ignored.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_step(
         &self,
         session_name: Option<&str>,
@@ -161,7 +168,7 @@ impl AgentSessionManager {
 
     pub fn has_active_session(&self) -> bool {
         let key = self.last_key.lock().unwrap().clone();
-        key.map_or(false, |k| self.sessions.lock().unwrap().contains_key(&k))
+        key.is_some_and(|k| self.sessions.lock().unwrap().contains_key(&k))
     }
 
     pub async fn cleanup(&self) {

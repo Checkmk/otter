@@ -60,14 +60,14 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             app.delete_selected_run();
         }
         KeyCode::Char('c') if has_checkpoint => app.respond_checkpoint(CheckpointAction::Continue),
-        KeyCode::Char('f') if has_checkpoint => {
-            if app
-                .active_checkpoint()
-                .map_or(false, |cp| cp.feedback_available)
-            {
-                app.mode = Mode::FeedbackInput;
-                app.feedback_input.clear();
-            }
+        KeyCode::Char('f')
+            if has_checkpoint
+                && app
+                    .active_checkpoint()
+                    .is_some_and(|cp| cp.feedback_available) =>
+        {
+            app.mode = Mode::FeedbackInput;
+            app.feedback_input.clear();
         }
         // Enter: context-sensitive — run row stops active run, workflow row starts/stops workflow
         KeyCode::Enter if !has_checkpoint => match app.cursor {

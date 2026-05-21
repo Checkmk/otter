@@ -135,7 +135,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
             format!(" {state_icon}")
         };
         items.push(make_item(
-            &expand_char,
+            expand_char,
             &name_content,
             prefixed_icon,
             state_color,

@@ -69,6 +69,7 @@ pub struct PollingTrigger {
 }
 
 impl PollingTrigger {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         poll_command: Vec<String>,

@@ -37,7 +37,7 @@ async fn execute_via_channel(
         let feedback_available = ctx
             .session_manager
             .as_ref()
-            .map_or(false, |m| m.has_active_session());
+            .is_some_and(|m| m.has_active_session());
 
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let _ = tx

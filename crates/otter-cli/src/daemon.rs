@@ -102,14 +102,12 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     #[cfg(not(target_os = "windows"))]
     // When socket-activated, systemd already owns the socket — skip the stale-check.
-    if !is_socket_activated() {
-        if socket_path.exists() {
-            if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
-                anyhow::bail!("service is already running");
-            }
-            // Socket exists but no listener — stale; remove it.
-            let _ = std::fs::remove_file(&socket_path);
+    if !is_socket_activated() && socket_path.exists() {
+        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+            anyhow::bail!("service is already running");
         }
+        // Socket exists but no listener — stale; remove it.
+        let _ = std::fs::remove_file(&socket_path);
     }
 
     let workflows_dir = config_dir.join("workflows");
@@ -304,6 +302,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection<S>(
     stream: S,
     manager: Arc<Mutex<WorkflowManager>>,
@@ -448,9 +447,7 @@ async fn handle_connection<S>(
             }
             // Delete from storage and scratch directory
             let storage_result = storage.delete_run(run_id);
-            let scratch_dir = std::path::PathBuf::from(dirs_data_dir())
-                .join("runs")
-                .join(run_id.to_string());
+            let scratch_dir = dirs_data_dir().join("runs").join(run_id.to_string());
             let dir_result = if scratch_dir.exists() {
                 std::fs::remove_dir_all(&scratch_dir)
             } else {
@@ -554,7 +551,7 @@ async fn run_finally_after_kill(
         }
     });
 
-    let scratch_base = PathBuf::from(dirs_data_dir()).join("runs");
+    let scratch_base = dirs_data_dir().join("runs");
     let notifier = Arc::new(DesktopNotifier);
     let engine = Engine::new_with_scripts_dir(storage, scratch_base, notifier, scripts_dir);
     engine

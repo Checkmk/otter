@@ -49,7 +49,7 @@ impl InputField {
         };
 
         let mut lines = Vec::new();
-        let cursor_visible = (tick / config.cursor_blink_speed) % 2 == 0;
+        let cursor_visible = (tick / config.cursor_blink_speed).is_multiple_of(2);
 
         for (idx, line_text) in wrapped.iter().enumerate() {
             let mut spans: Vec<Span> = if idx == 0 {

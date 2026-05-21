@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(cargo check:*)",
+      "Bach(cargo clippy:*)",
       "Bash(cargo test:*)",
       "Bash(cargo build:*)",
       "Bash(git log *)",

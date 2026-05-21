@@ -85,10 +85,10 @@ fn scroll_window_with_config(
     }
 
     let scroll_range = text_len - width + 1;
-    let cycle_length = (config.pause_duration
+    let cycle_length = config.pause_duration
         + scroll_range as u64 * config.scroll_speed
         + config.pause_duration
-        + scroll_range as u64 * config.scroll_speed) as u64;
+        + scroll_range as u64 * config.scroll_speed;
     let phase = tick % cycle_length;
 
     let offset = if phase < config.pause_duration {

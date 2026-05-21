@@ -7,14 +7,12 @@ pub fn wrap_into_chunks(s: &str, width: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut remaining = s;
     loop {
-        let mut char_count = 0;
         let mut byte_end = remaining.len();
-        for (byte_idx, _) in remaining.char_indices() {
+        for (char_count, (byte_idx, _)) in remaining.char_indices().enumerate() {
             if char_count == width {
                 byte_end = byte_idx;
                 break;
             }
-            char_count += 1;
         }
         chunks.push(remaining[..byte_end].to_string());
         remaining = &remaining[byte_end..];

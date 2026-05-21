@@ -140,7 +140,7 @@ impl App {
                     } else {
                         entry.runs.push(run);
                         // Sort by started_at descending (newest first)
-                        entry.runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                        entry.runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
                         // Automatically expand and focus the new run if we just started it
                         if self.pending_workflow_start.as_ref() == Some(&entry.name) {
                             entry.expanded = true;
@@ -272,7 +272,7 @@ impl App {
             self.cursor = CursorTarget::Workflow(0);
             return;
         }
-        if !flat.iter().any(|t| *t == self.cursor) {
+        if !flat.contains(&self.cursor) {
             let target = preferred_pos
                 .map(|p| p.saturating_sub(1).min(flat.len() - 1))
                 .unwrap_or(flat.len() - 1);
