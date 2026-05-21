@@ -65,6 +65,37 @@ impl SystemdServiceManager {
     }
 }
 
+/// Ensure linger is enabled for the current user so the service keeps running after logout.
+/// On modern systemd, `loginctl enable-linger` (no username) targets the calling user and
+/// is allowed via polkit without escalation; on stricter setups it may prompt or fail.
+/// Failures are non-fatal — we surface a hint and let `enable()` succeed regardless.
+fn enable_linger() {
+    if linger_enabled() {
+        return;
+    }
+    let status = Command::new("loginctl").arg("enable-linger").status();
+    match status {
+        Ok(s) if s.success() => {}
+        _ => {
+            let user = std::env::var("USER").unwrap_or_else(|_| "<user>".into());
+            eprintln!(
+                "warning: could not enable linger for this user. The service will stop at logout.\n\
+                 To keep it running across logouts, run:  sudo loginctl enable-linger {user}"
+            );
+        }
+    }
+}
+
+fn linger_enabled() -> bool {
+    Command::new("loginctl")
+        .args(["show-user", "--property=Linger", "--value"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "yes")
+        .unwrap_or(false)
+}
+
 impl ServiceManager for SystemdServiceManager {
     fn enable(&self) -> anyhow::Result<()> {
         // Clean up legacy socket unit from socket-activated versions before reloading.
@@ -76,6 +107,7 @@ impl ServiceManager for SystemdServiceManager {
         self.write_unit_files()?;
         self.systemctl(&["daemon-reload"])?;
         self.systemctl(&["enable", "--now", "otter.service"])?;
+        enable_linger();
         println!("otter service enabled. The service will start on login.");
         Ok(())
     }
