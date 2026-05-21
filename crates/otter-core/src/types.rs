@@ -306,9 +306,7 @@ pub enum CheckpointResponse {
 pub enum EngineEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef> },
     WorkflowStateChanged { name: String, state: WorkflowState },
-    WorkflowRemoved { name: String },
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,
@@ -381,6 +379,10 @@ pub struct WorkflowStatus {
     pub kind: WorkflowType,
     pub state: WorkflowState,
     pub trigger: Option<TriggerDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toml_content: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,9 +397,7 @@ pub enum CheckpointAction {
 pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
-    WorkflowRegistered { name: String, kind: WorkflowType, trigger: Option<TriggerDef>, toml_content: Option<String>, enabled: bool },
-    WorkflowStateChanged { name: String, state: WorkflowState },
-    WorkflowRemoved { name: String },
+    WorkflowsSnapshot(Vec<WorkflowStatus>),
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,

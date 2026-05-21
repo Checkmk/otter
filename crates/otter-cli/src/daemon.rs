@@ -112,9 +112,6 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let workflows_dir = config_dir.join("workflows");
     let workflows = load_workflows_from_dir(&workflows_dir)?;
 
-    let toml_map: Arc<tokio::sync::Mutex<HashMap<String, String>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
     let storage: Arc<dyn StorageBackend> = Arc::new(
         SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?,
     );
@@ -134,7 +131,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         secret_store,
     )));
 
-    reload_workflows(workflows, &manager, &toml_map).await;
+    reload_workflows(workflows, &manager).await;
 
     // Auto-start workflows that have been enabled via `otter workflow enable`
     let enabled = read_enabled(&config_dir).unwrap_or_default();
@@ -166,7 +163,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let pending_cp_fanout = pending_checkpoints.clone();
     let recent_runs_fanout = recent_runs.clone();
     let subscribers_fanout = subscribers.clone();
-    let toml_map_fanout = toml_map.clone();
+    let manager_fanout = manager.clone();
     let config_dir_fanout = config_dir.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
@@ -176,17 +173,10 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     recent_runs_fanout.lock().unwrap().insert(r.id, r.clone());
                     DaemonEvent::RunUpdated(r)
                 }
-                EngineEvent::WorkflowRegistered { name, kind, trigger } => {
-                    let toml_content = toml_map_fanout.lock().await.get(&name).cloned();
-                    let enabled = read_enabled(&config_dir_fanout).unwrap_or_default().contains(&name);
-                    DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content, enabled }
-                }
-                EngineEvent::WorkflowStateChanged { name, state } => {
-                    DaemonEvent::WorkflowStateChanged { name, state }
-                }
-                EngineEvent::WorkflowRemoved { name } => {
-                    toml_map_fanout.lock().await.remove(&name);
-                    DaemonEvent::WorkflowRemoved { name }
+                EngineEvent::WorkflowStateChanged { .. } => {
+                    DaemonEvent::WorkflowsSnapshot(
+                        build_workflow_snapshot(&manager_fanout, &config_dir_fanout).await,
+                    )
                 }
                 EngineEvent::CheckpointPending {
                     run_id,
@@ -215,8 +205,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     DaemonEvent::StepProgress { run_id, step_index, chunk }
                 }
             };
-            let mut subs = subscribers_fanout.lock().unwrap();
-            subs.retain(|tx| tx.try_send(daemon_ev.clone()).is_ok());
+            broadcast_event(&subscribers_fanout, daemon_ev);
         }
     });
 
@@ -249,9 +238,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let runs = recent_runs.clone();
                     let subs = subscribers.clone();
                     let st = storage.clone();
-                    let tm = toml_map.clone();
                     let wd = workflows_dir.clone();
-                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, tm, wd));
+                    let cd = config_dir.clone();
+                    tokio::spawn(handle_connection(stream, mgr, pending, runs, subs, st, wd, cd));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -293,9 +282,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     let runs = recent_runs.clone();
                     let subs = subscribers.clone();
                     let st = storage.clone();
-                    let tm = toml_map.clone();
                     let wd = workflows_dir.clone();
-                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, tm, wd));
+                    let cd = config_dir.clone();
+                    tokio::spawn(handle_connection(server, mgr, pending, runs, subs, st, wd, cd));
                 }
                 Ok(Err(e)) => {
                     tracing::error!("accept error: {}", e);
@@ -318,8 +307,8 @@ async fn handle_connection<S>(
     recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
     storage: Arc<dyn StorageBackend>,
-    toml_map: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
     workflows_dir: PathBuf,
+    config_dir: PathBuf,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -342,26 +331,11 @@ async fn handle_connection<S>(
     match cmd {
         DaemonCommand::Subscribe => {
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
-            // Replay current workflow state before streaming live events
-            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
-            let enabled_set = read_enabled(config_dir).unwrap_or_default();
-            let current = manager.lock().await.status();
-            for wf in current {
-                let _ = write_json(&mut writer, &DaemonEvent::WorkflowRegistered {
-                    toml_content: toml_map.lock().await.get(&wf.name).cloned(),
-                    name: wf.name.clone(),
-                    kind: wf.kind,
-                    trigger: wf.trigger.clone(),
-                    enabled: enabled_set.contains(&wf.name),
-                }).await;
-                let _ = write_json(&mut writer, &DaemonEvent::WorkflowStateChanged {
-                    name: wf.name,
-                    state: wf.state,
-                }).await;
-            }
+            // Send a single snapshot of all workflows before streaming live events.
+            let snapshot = build_workflow_snapshot(&manager, &config_dir).await;
+            let _ = write_json(&mut writer, &DaemonEvent::WorkflowsSnapshot(snapshot.clone())).await;
             // Replay all historical runs from storage for each workflow
-            let current = manager.lock().await.status();
-            for wf in current {
+            for wf in &snapshot {
                 if let Ok(runs) = storage.load_workflow_runs(&wf.name) {
                     for run in runs {
                         let run_id = run.id;
@@ -409,7 +383,7 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::Status => {
-            let workflows = manager.lock().await.status();
+            let workflows = build_workflow_snapshot(&manager, &config_dir).await;
             let _ = write_json(&mut writer, &DaemonResponse::StatusResponse { workflows }).await;
         }
         DaemonCommand::CheckpointRespond { run_id, action } => {
@@ -489,7 +463,8 @@ async fn handle_connection<S>(
         DaemonCommand::ReloadWorkflows => {
             let resp = match load_workflows_from_dir(&workflows_dir) {
                 Ok(new_workflows) => {
-                    reload_workflows(new_workflows, &manager, &toml_map).await;
+                    reload_workflows(new_workflows, &manager).await;
+                    broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
                     DaemonResponse::Ok
                 }
                 Err(e) => DaemonResponse::Error { message: e.to_string() },
@@ -497,18 +472,18 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::EnableWorkflow { name } => {
-            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
-            let mut set = read_enabled(config_dir).unwrap_or_default();
+            let mut set = read_enabled(&config_dir).unwrap_or_default();
             set.insert(name.clone());
-            let _ = write_enabled(config_dir, &set);
+            let _ = write_enabled(&config_dir, &set);
             let result = manager.lock().await.start(&name).await;
+            broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::DisableWorkflow { name } => {
-            let config_dir = workflows_dir.parent().unwrap_or(&workflows_dir);
-            let mut set = read_enabled(config_dir).unwrap_or_default();
+            let mut set = read_enabled(&config_dir).unwrap_or_default();
             set.remove(&name);
-            let _ = write_enabled(config_dir, &set);
+            let _ = write_enabled(&config_dir, &set);
+            broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
             let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
         }
     }
@@ -596,19 +571,37 @@ async fn kill_active_run(
 async fn reload_workflows(
     workflows: Vec<(WorkflowDef, String, Option<PathBuf>)>,
     manager: &Mutex<WorkflowManager>,
-    toml_map: &Mutex<HashMap<String, String>>,
 ) {
-    {
-        let mut map = toml_map.lock().await;
-        for (def, raw, _) in &workflows {
-            map.insert(def.name.clone(), raw.clone());
-        }
+    manager.lock().await.reload(workflows);
+}
+
+async fn build_workflow_snapshot(
+    manager: &Mutex<WorkflowManager>,
+    config_dir: &Path,
+) -> Vec<otter_core::types::WorkflowStatus> {
+    let enabled = read_enabled(config_dir).unwrap_or_default();
+    let mut statuses = manager.lock().await.status();
+    for s in &mut statuses {
+        s.enabled = enabled.contains(&s.name);
     }
-    let mapped: Vec<_> = workflows
-        .into_iter()
-        .map(|(def, _, scripts_dir)| (def, scripts_dir))
-        .collect();
-    manager.lock().await.reload(mapped);
+    statuses
+}
+
+async fn broadcast_workflows_snapshot(
+    manager: &Mutex<WorkflowManager>,
+    config_dir: &Path,
+    subscribers: &std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>,
+) {
+    let snap = build_workflow_snapshot(manager, config_dir).await;
+    broadcast_event(subscribers, DaemonEvent::WorkflowsSnapshot(snap));
+}
+
+fn broadcast_event(
+    subscribers: &std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>,
+    event: DaemonEvent,
+) {
+    let mut subs = subscribers.lock().unwrap();
+    subs.retain(|tx| tx.try_send(event.clone()).is_ok());
 }
 
 /// Returns `(def, raw_toml, scripts_dir)` tuples.

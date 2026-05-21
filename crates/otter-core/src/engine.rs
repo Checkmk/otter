@@ -124,12 +124,6 @@ impl Engine {
         shutdown: Arc<AtomicBool>,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) -> anyhow::Result<()> {
-        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered {
-            name: workflow.name.clone(),
-            kind: workflow.workflow_type.clone(),
-            trigger: None,
-        });
-
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!("Shutdown requested, stopping after current iteration");
@@ -260,11 +254,6 @@ impl Engine {
 
         let mut queued: VecDeque<TriggerEvent> = VecDeque::new();
 
-        Self::emit(&ui_tx, EngineEvent::WorkflowRegistered {
-            name: workflow.name.clone(),
-            kind: workflow.workflow_type.clone(),
-            trigger: Some(trigger_def.clone()),
-        });
         info!(
             workflow = %workflow.name,
             "Waiting for trigger events"

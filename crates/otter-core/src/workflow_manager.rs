@@ -17,6 +17,7 @@ use otter_secrets::{NoOpSecretStore, SecretStore};
 
 struct WorkflowHandle {
     def: WorkflowDef,
+    toml_content: String,
     state: Arc<Mutex<WorkflowState>>,
     shutdown: Arc<AtomicBool>,
     task: Option<JoinHandle<()>>,
@@ -67,17 +68,21 @@ impl WorkflowManager {
     }
 
     /// Register a workflow definition. The workflow starts in Dormant state.
-    pub fn register(&mut self, def: WorkflowDef) {
-        self.register_with_scripts_dir(def, None);
+    pub fn register(&mut self, def: WorkflowDef, toml_content: String) {
+        self.register_with_scripts_dir(def, toml_content, None);
     }
 
     /// Register a workflow definition with an optional scripts directory.
-    pub fn register_with_scripts_dir(&mut self, def: WorkflowDef, scripts_dir: Option<PathBuf>) {
+    pub fn register_with_scripts_dir(
+        &mut self,
+        def: WorkflowDef,
+        toml_content: String,
+        scripts_dir: Option<PathBuf>,
+    ) {
         let name = def.name.clone();
-        let kind = def.workflow_type.clone();
-        let trigger = def.trigger.clone();
         let handle = WorkflowHandle {
             def,
+            toml_content,
             state: Arc::new(Mutex::new(WorkflowState::Dormant)),
             shutdown: Arc::new(AtomicBool::new(false)),
             task: None,
@@ -85,9 +90,6 @@ impl WorkflowManager {
         };
         self.handles.insert(name.clone(), handle);
         let _ = self.storage.register_workflow(&name);
-        let _ = self
-            .event_tx
-            .try_send(EngineEvent::WorkflowRegistered { name: name.clone(), kind, trigger });
         let _ = self.event_tx.try_send(EngineEvent::WorkflowStateChanged {
             name,
             state: WorkflowState::Dormant,
@@ -109,16 +111,15 @@ impl WorkflowManager {
 
         let _ = self.storage.deregister_workflow(name);
         self.handles.remove(name);
-        let _ = self.event_tx.try_send(EngineEvent::WorkflowRemoved { name: name.to_string() });
         Ok(())
     }
 
     /// Reconcile the registered workflows against a freshly loaded set.
-    pub fn reload(&mut self, new_workflows: Vec<(WorkflowDef, Option<PathBuf>)>) {
+    pub fn reload(&mut self, new_workflows: Vec<(WorkflowDef, String, Option<PathBuf>)>) {
         let new_names: std::collections::HashSet<String> =
-            new_workflows.iter().map(|(d, _)| d.name.clone()).collect();
+            new_workflows.iter().map(|(d, _, _)| d.name.clone()).collect();
 
-        for (def, scripts_dir) in new_workflows {
+        for (def, toml_content, scripts_dir) in new_workflows {
             let name = def.name.clone();
             let is_dormant = self
                 .handles
@@ -127,11 +128,12 @@ impl WorkflowManager {
                 .unwrap_or(false);
 
             if !self.handles.contains_key(&name) {
-                self.register_with_scripts_dir(def, scripts_dir);
+                self.register_with_scripts_dir(def, toml_content, scripts_dir);
             } else if is_dormant {
-                // Unregister old handle (emits WorkflowRemoved), then re-register with updated def
-                let _ = self.unregister(&name);
-                self.register_with_scripts_dir(def, scripts_dir);
+                // Replace the dormant handle in place with the updated def + toml.
+                let _ = self.storage.deregister_workflow(&name);
+                self.handles.remove(&name);
+                self.register_with_scripts_dir(def, toml_content, scripts_dir);
             }
             // else: Running — leave as-is
         }
@@ -266,6 +268,7 @@ impl WorkflowManager {
     }
 
     /// Return the current status of all registered workflows, sorted by name.
+    /// `enabled` is left as `false`; callers that care (e.g. the daemon) fill it in.
     pub fn status(&self) -> Vec<WorkflowStatus> {
         let mut statuses: Vec<WorkflowStatus> = self
             .handles
@@ -275,6 +278,8 @@ impl WorkflowManager {
                 kind: h.def.workflow_type.clone(),
                 state: h.state.lock().unwrap().clone(),
                 trigger: h.def.trigger.clone(),
+                toml_content: Some(h.toml_content.clone()),
+                enabled: false,
             })
             .collect();
         statuses.sort_by(|a, b| a.name.cmp(&b.name));

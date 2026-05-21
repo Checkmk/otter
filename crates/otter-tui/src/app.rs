@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use otter_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowType, WorkflowRun, WorkflowState};
+use otter_core::types::{CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowStatus, WorkflowType, WorkflowRun, WorkflowState};
 use uuid::Uuid;
 use tokio::sync::mpsc;
 
@@ -71,8 +71,6 @@ pub struct App {
     pub right_panel_height: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
     pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
-    /// Runs saved when a workflow is removed, so they can be restored if the workflow is re-registered
-    removed_workflow_runs: HashMap<String, Vec<WorkflowRun>>,
 }
 
 impl App {
@@ -96,7 +94,6 @@ impl App {
             right_panel_height: 0,
             consumed_triggers: HashMap::new(),
             progress: HashMap::new(),
-            removed_workflow_runs: HashMap::new(),
         }
     }
 
@@ -148,21 +145,7 @@ impl App {
             DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            DaemonEvent::WorkflowRegistered { name, kind, trigger, toml_content, enabled } => {
-                if !self.workflows.iter().any(|e| e.name == name) {
-                    let runs = self.removed_workflow_runs.remove(&name).unwrap_or_default();
-                    self.workflows.push(WorkflowEntry {
-                        name,
-                        kind,
-                        state: WorkflowState::Dormant,
-                        runs,
-                        expanded: false,
-                        trigger,
-                        toml_content,
-                        autostart: enabled,
-                    });
-                }
-            }
+            DaemonEvent::WorkflowsSnapshot(snapshot) => self.apply_workflows_snapshot(snapshot),
             DaemonEvent::CheckpointPending {
                 run_id,
                 step_index,
@@ -196,11 +179,6 @@ impl App {
                     processing: false,
                 });
             }
-            DaemonEvent::WorkflowStateChanged { name, state } => {
-                if let Some(entry) = self.workflows.iter_mut().find(|e| e.name == name) {
-                    entry.state = state;
-                }
-            }
             DaemonEvent::RunDeleted { run_id } => {
                 let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
                 for entry in &mut self.workflows {
@@ -214,16 +192,6 @@ impl App {
             DaemonEvent::StepProgress { run_id, step_index, chunk } => {
                 self.progress.entry(run_id).or_default().push((step_index, chunk));
             }
-            DaemonEvent::WorkflowRemoved { name } => {
-                let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
-                if let Some(pos) = self.workflows.iter().position(|e| e.name == name) {
-                    let entry = self.workflows.remove(pos);
-                    if !entry.runs.is_empty() {
-                        self.removed_workflow_runs.insert(name, entry.runs);
-                    }
-                }
-                self.ensure_cursor_valid(old_pos);
-            }
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
                 self.consumed_triggers.insert(workflow, triggers);
                 // Clamp right_cursor in case the list shrank
@@ -235,6 +203,40 @@ impl App {
                 }
             }
         }
+    }
+
+    fn apply_workflows_snapshot(&mut self, snapshot: Vec<WorkflowStatus>) {
+        let old_pos = self.build_flat_list().iter().position(|t| *t == self.cursor);
+        let snapshot_names: std::collections::HashSet<&str> =
+            snapshot.iter().map(|s| s.name.as_str()).collect();
+
+        self.workflows.retain(|e| snapshot_names.contains(e.name.as_str()));
+
+        for incoming in snapshot {
+            match self.workflows.iter_mut().find(|e| e.name == incoming.name) {
+                Some(entry) => {
+                    entry.kind = incoming.kind;
+                    entry.state = incoming.state;
+                    entry.trigger = incoming.trigger;
+                    entry.toml_content = incoming.toml_content;
+                    entry.autostart = incoming.enabled;
+                }
+                None => {
+                    self.workflows.push(WorkflowEntry {
+                        name: incoming.name,
+                        kind: incoming.kind,
+                        state: incoming.state,
+                        runs: Vec::new(),
+                        expanded: false,
+                        trigger: incoming.trigger,
+                        toml_content: incoming.toml_content,
+                        autostart: incoming.enabled,
+                    });
+                }
+            }
+        }
+
+        self.ensure_cursor_valid(old_pos);
     }
 
     fn ensure_cursor_valid(&mut self, preferred_pos: Option<usize>) {
@@ -1108,17 +1110,26 @@ mod tests {
         assert_eq!(app.selected_workflow_toml(), None);
     }
 
+    fn snap(name: &str, toml_content: Option<&str>, enabled: bool) -> WorkflowStatus {
+        WorkflowStatus {
+            name: name.to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            trigger: None,
+            toml_content: toml_content.map(str::to_string),
+            enabled,
+        }
+    }
+
     #[test]
-    fn handle_daemon_event_workflow_registered_stores_toml_content() {
+    fn workflows_snapshot_stores_toml_content() {
         let mut app = make_test_app();
 
-        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
-            name: "wf".to_string(),
-            kind: WorkflowType::Looping,
-            trigger: None,
-            toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
-            enabled: false,
-        });
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap(
+            "wf",
+            Some("name = \"wf\"\ntype = \"looping\"\n"),
+            false,
+        )]));
 
         assert_eq!(app.workflows.len(), 1);
         assert_eq!(
@@ -1169,8 +1180,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_removed_then_registered_preserves_runs() {
-        // GIVEN a workflow with runs
+    fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
+        // GIVEN a workflow with a run and expanded=true
         let mut app = make_test_app();
         let run = WorkflowRun::new("wf".to_string());
         let run_id = run.id;
@@ -1179,62 +1190,78 @@ mod tests {
             kind: WorkflowType::Looping,
             state: WorkflowState::Dormant,
             runs: vec![run],
-            expanded: false,
+            expanded: true,
             trigger: None,
             toml_content: None,
             autostart: false,
         });
 
-        // WHEN the workflow is removed (e.g. during re-install)
-        app.handle_daemon_event(DaemonEvent::WorkflowRemoved { name: "wf".to_string() });
-        assert!(app.workflows.is_empty());
-
-        // AND then re-registered
-        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
+        // WHEN a snapshot arrives that still contains wf (with a state change and toml)
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![WorkflowStatus {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
+            state: WorkflowState::Running,
             trigger: None,
-            toml_content: None,
-            enabled: false,
-        });
+            toml_content: Some("name = \"wf\"\n".to_string()),
+            enabled: true,
+        }]));
 
-        // THEN the runs are preserved
+        // THEN runs and expanded are preserved; state, toml, autostart updated
         assert_eq!(app.workflows.len(), 1);
         assert_eq!(app.workflows[0].runs.len(), 1);
         assert_eq!(app.workflows[0].runs[0].id, run_id);
+        assert!(app.workflows[0].expanded);
+        assert_eq!(app.workflows[0].state, WorkflowState::Running);
+        assert_eq!(app.workflows[0].toml_content.as_deref(), Some("name = \"wf\"\n"));
+        assert!(app.workflows[0].autostart);
     }
 
     #[test]
-    fn workflow_removed_permanently_does_not_leak_runs_into_new_workflow() {
-        // GIVEN two workflows, wf-a gets removed
+    fn snapshot_removes_workflows_not_in_payload() {
+        // GIVEN two workflows
         let mut app = make_test_app();
-        let run = WorkflowRun::new("wf-a".to_string());
         app.workflows.push(WorkflowEntry {
             name: "wf-a".to_string(),
             kind: WorkflowType::Looping,
             state: WorkflowState::Dormant,
-            runs: vec![run],
+            runs: vec![WorkflowRun::new("wf-a".to_string())],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+        });
+        app.workflows.push(WorkflowEntry {
+            name: "wf-b".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
             expanded: false,
             trigger: None,
             toml_content: None,
             autostart: false,
         });
 
-        // WHEN wf-a is removed permanently
-        app.handle_daemon_event(DaemonEvent::WorkflowRemoved { name: "wf-a".to_string() });
+        // WHEN a snapshot arrives that only contains wf-b
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf-b", None, false)]));
 
-        // AND a completely different workflow wf-b is registered
-        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
-            name: "wf-b".to_string(),
-            kind: WorkflowType::Looping,
-            trigger: None,
-            toml_content: None,
-            enabled: false,
-        });
-
-        // THEN wf-b starts with no runs (wf-a's runs are not leaked)
+        // THEN wf-a is gone, wf-b remains
+        assert_eq!(app.workflows.len(), 1);
         assert_eq!(app.workflows[0].name, "wf-b");
+    }
+
+    #[test]
+    fn snapshot_adds_new_workflows_with_empty_runs() {
+        // GIVEN an empty app
+        let mut app = make_test_app();
+
+        // WHEN a snapshot arrives with a new workflow
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf-new", None, false)]));
+
+        // THEN the workflow is added with empty runs
+        assert_eq!(app.workflows.len(), 1);
+        assert_eq!(app.workflows[0].name, "wf-new");
         assert!(app.workflows[0].runs.is_empty());
+        assert!(!app.workflows[0].expanded);
     }
 
     #[test]
@@ -1291,20 +1318,14 @@ mod tests {
     }
 
     #[test]
-    fn workflow_registered_event_stores_enabled_flag() {
+    fn snapshot_stores_enabled_flag() {
         // GIVEN an app with no workflows
         let mut app = make_test_app();
 
-        // WHEN a WorkflowRegistered event arrives with enabled=true
-        app.handle_daemon_event(DaemonEvent::WorkflowRegistered {
-            name: "wf".to_string(),
-            kind: WorkflowType::Looping,
-            trigger: None,
-            toml_content: None,
-            enabled: true,
-        });
+        // WHEN a snapshot arrives with enabled=true
+        app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf", None, true)]));
 
-        // THEN the entry has enabled=true
+        // THEN the entry has autostart=true
         assert!(app.workflows[0].autostart);
     }
 

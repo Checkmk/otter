@@ -100,7 +100,7 @@ fn register_makes_workflow_dormant() {
     let mut manager = make_manager(tx);
 
     // WHEN
-    manager.register(looping_workflow("hello"));
+    manager.register(looping_workflow("hello"), String::new());
 
     // THEN
     let status = manager.status();
@@ -110,21 +110,36 @@ fn register_makes_workflow_dormant() {
 }
 
 #[test]
-fn register_emits_registered_and_state_changed_events() {
+fn register_emits_state_changed_event() {
     // GIVEN
     let (tx, mut rx) = mpsc::channel(32);
     let mut manager = make_manager(tx);
 
     // WHEN
-    manager.register(looping_workflow("hello"));
+    manager.register(looping_workflow("hello"), String::new());
+
+    // THEN — exactly one event: the dormant state change.
+    // Lifecycle (register/remove) is no longer announced via EngineEvent —
+    // the daemon broadcasts a fresh WorkflowsSnapshot instead.
+    let ev = rx.try_recv().expect("WorkflowStateChanged");
+    assert!(
+        matches!(ev, EngineEvent::WorkflowStateChanged { ref name, state: WorkflowState::Dormant } if name == "hello")
+    );
+    assert!(rx.try_recv().is_err(), "no further events expected");
+}
+
+#[test]
+fn status_includes_toml_content() {
+    // GIVEN
+    let (tx, _rx) = mpsc::channel(32);
+    let mut manager = make_manager(tx);
+
+    // WHEN
+    manager.register(looping_workflow("hello"), "name = \"hello\"\n".to_string());
 
     // THEN
-    let ev1 = rx.try_recv().expect("WorkflowRegistered");
-    assert!(matches!(ev1, EngineEvent::WorkflowRegistered { ref name, .. } if name == "hello"));
-    let ev2 = rx.try_recv().expect("WorkflowStateChanged");
-    assert!(
-        matches!(ev2, EngineEvent::WorkflowStateChanged { ref name, state: WorkflowState::Dormant } if name == "hello")
-    );
+    let status = manager.status();
+    assert_eq!(status[0].toml_content.as_deref(), Some("name = \"hello\"\n"));
 }
 
 #[tokio::test]
@@ -132,7 +147,7 @@ async fn start_transitions_to_running_and_stop_returns_to_dormant() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("hello"));
+    manager.register(looping_workflow("hello"), String::new());
 
     // WHEN
     manager.start("hello").await.unwrap();
@@ -152,7 +167,7 @@ async fn start_fails_if_already_running() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("hello"));
+    manager.register(looping_workflow("hello"), String::new());
     manager.start("hello").await.unwrap();
 
     // WHEN / THEN
@@ -176,7 +191,7 @@ async fn triggered_workflow_completes_and_returns_to_dormant() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(triggered_workflow("job"));
+    manager.register(triggered_workflow("job"), String::new());
 
     // WHEN
     manager.start("job").await.unwrap();
@@ -192,8 +207,8 @@ async fn status_reports_all_workflows_sorted() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("beta"));
-    manager.register(looping_workflow("alpha"));
+    manager.register(looping_workflow("beta"), String::new());
+    manager.register(looping_workflow("alpha"), String::new());
 
     // WHEN
     let statuses = manager.status();
@@ -238,7 +253,7 @@ async fn polling_trigger_fires_immediately_when_manually_started() {
         "poller",
         vec![cmd_path.to_string_lossy().to_string()],
     );
-    manager.register(workflow);
+    manager.register(workflow, String::new());
 
     // WHEN — manually start the workflow
     let start_time = std::time::Instant::now();
@@ -308,7 +323,7 @@ async fn polling_trigger_executes_all_events_from_single_poll() {
         "multi-poller",
         vec![cmd_path.to_string_lossy().to_string()],
     );
-    manager.register(workflow);
+    manager.register(workflow, String::new());
 
     // WHEN — manually start the workflow
     manager.start("multi-poller").await.unwrap();
@@ -349,7 +364,7 @@ async fn manual_trigger_fires_immediately_on_start() {
         Arc::new(NoOpNotifier),
     );
 
-    manager.register(manual_workflow("manual-job"));
+    manager.register(manual_workflow("manual-job"), String::new());
 
     // WHEN — manually start the workflow
     manager.start("manual-job").await.unwrap();
@@ -372,7 +387,7 @@ async fn manual_trigger_fires_immediately_on_start() {
 }
 
 #[test]
-fn unregister_removes_dormant_workflow_and_emits_removed_event() {
+fn unregister_removes_dormant_workflow() {
     // GIVEN
     let (tx, mut rx) = mpsc::channel(32);
     let storage = Arc::new(InMemoryStorage::new());
@@ -382,19 +397,17 @@ fn unregister_removes_dormant_workflow_and_emits_removed_event() {
         tx,
         Arc::new(NoOpNotifier),
     );
-    manager.register(looping_workflow("wf"));
+    manager.register(looping_workflow("wf"), String::new());
     // drain registration events
     while rx.try_recv().is_ok() {}
 
     // WHEN
     manager.unregister("wf").unwrap();
 
-    // THEN — workflow is no longer listed
+    // THEN — workflow is no longer listed and no event was emitted
+    // (the daemon broadcasts a fresh WorkflowsSnapshot instead).
     assert!(manager.status().is_empty());
-
-    // AND — WorkflowRemoved event emitted
-    let ev = rx.try_recv().expect("WorkflowRemoved event");
-    assert!(matches!(ev, EngineEvent::WorkflowRemoved { ref name } if name == "wf"));
+    assert!(rx.try_recv().is_err(), "no event expected on unregister");
 }
 
 #[tokio::test]
@@ -402,7 +415,7 @@ async fn unregister_fails_if_workflow_is_running() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(32);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("wf"));
+    manager.register(looping_workflow("wf"), String::new());
     manager.start("wf").await.unwrap();
 
     // WHEN / THEN
@@ -424,7 +437,7 @@ fn unregister_marks_runs_orphaned() {
     );
     let run = crate::types::WorkflowRun::new("wf".to_string());
     storage.save_workflow_run(&run).unwrap();
-    manager.register(looping_workflow("wf"));
+    manager.register(looping_workflow("wf"), String::new());
 
     // WHEN
     manager.unregister("wf").unwrap();
@@ -442,7 +455,7 @@ fn reload_adds_new_workflow() {
     let mut manager = make_manager(tx);
 
     // WHEN
-    manager.reload(vec![(looping_workflow("new-wf"), None)]);
+    manager.reload(vec![(looping_workflow("new-wf"), String::new(), None)]);
 
     // THEN
     let status = manager.status();
@@ -455,11 +468,11 @@ fn reload_removes_dormant_workflow_not_in_new_list() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(32);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("old-wf"));
-    manager.register(looping_workflow("keep-wf"));
+    manager.register(looping_workflow("old-wf"), String::new());
+    manager.register(looping_workflow("keep-wf"), String::new());
 
     // WHEN — reload with only keep-wf
-    manager.reload(vec![(looping_workflow("keep-wf"), None)]);
+    manager.reload(vec![(looping_workflow("keep-wf"), String::new(), None)]);
 
     // THEN
     let names: Vec<_> = manager.status().into_iter().map(|s| s.name).collect();
@@ -471,11 +484,11 @@ async fn reload_leaves_running_workflow_unchanged() {
     // GIVEN
     let (tx, _rx) = mpsc::channel(64);
     let mut manager = make_manager(tx);
-    manager.register(looping_workflow("running-wf"));
+    manager.register(looping_workflow("running-wf"), String::new());
     manager.start("running-wf").await.unwrap();
 
     // WHEN — reload without running-wf
-    manager.reload(vec![]);
+    manager.reload(Vec::new());
 
     // THEN — running workflow is still registered (not removed)
     let status = manager.status();
@@ -493,7 +506,7 @@ fn register_with_scripts_dir_stores_scripts_dir() {
     let scripts_dir = std::path::PathBuf::from("/tmp/scripts");
 
     // WHEN
-    manager.register_with_scripts_dir(looping_workflow("wf"), Some(scripts_dir.clone()));
+    manager.register_with_scripts_dir(looping_workflow("wf"), String::new(), Some(scripts_dir.clone()));
 
     // THEN — workflow is registered (we can't inspect scripts_dir directly, but start should work)
     let status = manager.status();
@@ -534,7 +547,7 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
         }],
         finally: vec![],
     };
-    manager.register(wf);
+    manager.register(wf, String::new());
     manager.start("long-job").await.unwrap();
 
     // Wait for the engine to reach Running state
