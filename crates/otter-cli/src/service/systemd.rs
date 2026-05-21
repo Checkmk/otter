@@ -16,12 +16,14 @@ impl SystemdServiceManager {
         Self { unit_dir }
     }
 
-    fn socket_unit_path(&self) -> PathBuf {
-        self.unit_dir.join("otter.socket")
-    }
-
     fn service_unit_path(&self) -> PathBuf {
         self.unit_dir.join("otter.service")
+    }
+
+    /// Path to the legacy socket unit from earlier socket-activated versions.
+    /// Used so `enable()` can clean it up on upgrade.
+    fn legacy_socket_unit_path(&self) -> PathBuf {
+        self.unit_dir.join("otter.socket")
     }
 
     fn systemctl(&self, args: &[&str]) -> anyhow::Result<()> {
@@ -41,36 +43,20 @@ impl SystemdServiceManager {
 
         let binary = std::env::current_exe().context("resolve current binary path")?;
         let binary_str = binary.to_string_lossy();
-        let socket_str = crate::socket_path().display().to_string();
-
-        std::fs::write(
-            self.socket_unit_path(),
-            format!(
-                "[Unit]\n\
-                 Description=Otter daemon socket\n\
-                 \n\
-                 [Socket]\n\
-                 ListenStream={socket_str}\n\
-                 RemoveOnStop=yes\n\
-                 \n\
-                 [Install]\n\
-                 WantedBy=sockets.target\n"
-            ),
-        )
-        .context("write otter.socket unit")?;
 
         std::fs::write(
             self.service_unit_path(),
             format!(
                 "[Unit]\n\
                  Description=Otter workflow automation daemon\n\
-                 Requires=otter.socket\n\
-                 After=otter.socket\n\
                  \n\
                  [Service]\n\
                  Environment=SHELL=/bin/bash\n\
                  ExecStart={binary_str} _daemon\n\
-                 Restart=on-failure\n"
+                 Restart=on-failure\n\
+                 \n\
+                 [Install]\n\
+                 WantedBy=default.target\n"
             ),
         )
         .context("write otter.service unit")?;
@@ -81,19 +67,25 @@ impl SystemdServiceManager {
 
 impl ServiceManager for SystemdServiceManager {
     fn enable(&self) -> anyhow::Result<()> {
+        // Clean up legacy socket unit from socket-activated versions before reloading.
+        let legacy_socket = self.legacy_socket_unit_path();
+        if legacy_socket.exists() {
+            let _ = self.systemctl(&["disable", "--now", "otter.socket"]);
+            let _ = std::fs::remove_file(&legacy_socket);
+        }
         self.write_unit_files()?;
         self.systemctl(&["daemon-reload"])?;
-        self.systemctl(&["enable", "--now", "otter.socket"])?;
-        println!("otter service enabled. The service will start on boot.");
+        self.systemctl(&["enable", "--now", "otter.service"])?;
+        println!("otter service enabled. The service will start on login.");
         Ok(())
     }
 
     fn disable(&self) -> anyhow::Result<()> {
-        let _ = self.systemctl(&["stop", "otter.socket", "otter.service"]);
-        let _ = self.systemctl(&["disable", "otter.socket", "otter.service"]);
+        let _ = self.systemctl(&["stop", "otter.service"]);
+        let _ = self.systemctl(&["disable", "otter.service"]);
 
-        let _ = std::fs::remove_file(self.socket_unit_path());
         let _ = std::fs::remove_file(self.service_unit_path());
+        let _ = std::fs::remove_file(self.legacy_socket_unit_path());
 
         self.systemctl(&["daemon-reload"])?;
 
@@ -116,7 +108,7 @@ impl ServiceManager for SystemdServiceManager {
     }
 
     fn is_enabled(&self) -> bool {
-        self.socket_unit_path().exists()
+        self.service_unit_path().exists()
     }
 }
 
@@ -133,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn enable_writes_socket_and_service_units() {
+    fn enable_writes_service_unit() {
         // GIVEN a temp unit directory
         let tmp = tempdir().unwrap();
         let mgr = manager_in(tmp.path());
@@ -141,33 +133,30 @@ mod tests {
         // WHEN unit files are written
         mgr.write_unit_files().unwrap();
 
-        // THEN both unit files exist with expected content
-        let socket_content = fs::read_to_string(mgr.socket_unit_path()).unwrap();
-        assert!(socket_content.contains("ListenStream="));
-        assert!(socket_content.contains("RemoveOnStop=yes"));
-        assert!(socket_content.contains("WantedBy=sockets.target"));
-
+        // THEN the service unit exists with expected content
         let service_content = fs::read_to_string(mgr.service_unit_path()).unwrap();
         assert!(service_content.contains("_daemon"));
-        assert!(service_content.contains("Requires=otter.socket"));
+        assert!(service_content.contains("WantedBy=default.target"));
         assert!(service_content.contains("Restart=on-failure"));
         assert!(service_content.contains("Environment=SHELL=/bin/bash"));
+        // No socket unit is written
+        assert!(!mgr.legacy_socket_unit_path().exists());
     }
 
     #[test]
-    fn is_enabled_reflects_socket_unit_existence() {
+    fn is_enabled_reflects_service_unit_existence() {
         // GIVEN a temp unit directory with no files
         let tmp = tempdir().unwrap();
         let mgr = manager_in(tmp.path());
         assert!(!mgr.is_enabled());
 
-        // WHEN the socket unit is written
-        fs::write(mgr.socket_unit_path(), "[Socket]").unwrap();
+        // WHEN the service unit is written
+        fs::write(mgr.service_unit_path(), "[Service]").unwrap();
         // THEN is_enabled returns true
         assert!(mgr.is_enabled());
 
         // WHEN it is removed
-        fs::remove_file(mgr.socket_unit_path()).unwrap();
+        fs::remove_file(mgr.service_unit_path()).unwrap();
         // THEN is_enabled returns false again
         assert!(!mgr.is_enabled());
     }

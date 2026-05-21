@@ -48,32 +48,6 @@ fn build_daemon_key_provider() -> std::sync::Arc<dyn KeyProvider> {
     std::sync::Arc::new(kp)
 }
 
-/// Returns true when systemd has passed a pre-activated socket via LISTEN_FDS.
-#[cfg(not(target_os = "windows"))]
-fn is_socket_activated() -> bool {
-    std::env::var("LISTEN_FDS").as_deref() == Ok("1")
-}
-
-/// Returns the listener to accept connections on, plus a flag indicating whether
-/// it came from systemd socket activation (true) or was freshly bound (false).
-#[cfg(not(target_os = "windows"))]
-fn get_or_bind_listener(socket_path: &std::path::Path) -> anyhow::Result<(UnixListener, bool)> {
-    if is_socket_activated() {
-        use std::os::unix::io::FromRawFd;
-        // systemd passes the activated socket as FD 3 (SD_LISTEN_FDS_START).
-        // SAFETY: systemd guarantees FD 3 is a valid, bound, listening socket.
-        let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(3) };
-        std_listener
-            .set_nonblocking(true)
-            .context("set socket non-blocking")?;
-        let listener = UnixListener::from_std(std_listener).context("wrap activated socket")?;
-        info!("Using systemd socket-activated listener");
-        return Ok((listener, true));
-    }
-    let listener = UnixListener::bind(socket_path).context("bind unix socket")?;
-    Ok((listener, false))
-}
-
 pub async fn run_daemon() -> anyhow::Result<()> {
     let data_dir = dirs_data_dir();
     let config_dir = dirs_config_dir();
@@ -101,8 +75,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     std::fs::write(&pid_path, std::process::id().to_string()).context("write service pid file")?;
 
     #[cfg(not(target_os = "windows"))]
-    // When socket-activated, systemd already owns the socket — skip the stale-check.
-    if !is_socket_activated() && socket_path.exists() {
+    if socket_path.exists() {
         if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
             anyhow::bail!("service is already running");
         }
@@ -225,7 +198,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let (listener, socket_activated) = get_or_bind_listener(&socket_path)?;
+        let listener = UnixListener::bind(&socket_path).context("bind unix socket")?;
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -252,11 +225,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 Err(_) => {} // timeout — check shutdown flag and continue
             }
         }
-        // When socket-activated, systemd owns the socket (RemoveOnStop=yes in the unit).
-        // Only remove it ourselves when we bound it directly.
-        if !socket_activated {
-            let _ = std::fs::remove_file(&socket_path);
-        }
+        let _ = std::fs::remove_file(&socket_path);
         let _ = std::fs::remove_file(&pid_path);
     }
 
