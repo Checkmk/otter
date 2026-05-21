@@ -649,9 +649,6 @@ impl Engine {
         outcome: RunOutcome,
         ui_tx: Option<mpsc::Sender<EngineEvent>>,
     ) {
-        if workflow.finally.is_empty() {
-            return;
-        }
         let scratch_dir = self.scratch_base.join(run.id.to_string());
         let _ = std::fs::create_dir_all(&scratch_dir);
         self.execute_finally_steps(

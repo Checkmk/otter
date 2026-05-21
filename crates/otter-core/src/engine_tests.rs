@@ -1131,6 +1131,57 @@ async fn run_finally_executes_stopped_finally_steps() {
 }
 
 #[tokio::test]
+async fn run_finally_releases_pool_slot_when_finally_is_empty() {
+    use crate::types::PoolConfig;
+
+    // GIVEN — a workflow with a pooled git workspace and NO [[finally]] block,
+    // and a run whose workspace_dir points to an already-locked pool slot.
+    // (We don't need a real worktree: cleanup only removes the lock dir.)
+    let pool_dir = tempfile::tempdir().unwrap();
+    let slot_path = pool_dir.path().join("slot-0");
+    let lock_path = pool_dir.path().join("slot-0.lock");
+    std::fs::create_dir(&slot_path).unwrap();
+    std::fs::create_dir(&lock_path).unwrap();
+    let base_repo = tempfile::tempdir().unwrap();
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let engine = make_engine(storage.clone());
+    let mut wf = workflow(
+        "test-run-finally-cleanup-no-finally",
+        WorkflowType::Triggered,
+        vec![step_def(StepType::Shell)],
+    );
+    wf.workspace = Some(WorkspaceConfig {
+        source: WorkspaceSource::Git {
+            base_repo: base_repo.path().to_string_lossy().into_owned(),
+            ref_: None,
+        },
+        pool: Some(PoolConfig {
+            dir: pool_dir.path().to_string_lossy().into_owned(),
+            keep_directory_on: vec![],
+        }),
+    });
+    // finally is intentionally empty — this is the regression case.
+    assert!(wf.finally.is_empty());
+
+    let mut run = WorkflowRun::new(wf.name.clone());
+    run.status = RunStatus::Stopped;
+    run.workspace_dir = Some(slot_path.clone());
+    storage.save_workflow_run(&run).unwrap();
+
+    // WHEN — engine.run_finally is called (simulates run_finally_after_kill)
+    engine
+        .run_finally(&wf, &run, RunOutcome::Stopped, None)
+        .await;
+
+    // THEN — the slot lock was released even though no user finally steps ran
+    assert!(
+        !lock_path.exists(),
+        "pool slot lock must be released on stop even when [[finally]] is empty"
+    );
+}
+
+#[tokio::test]
 async fn run_finally_uses_stored_workspace_not_script() {
     // GIVEN a workflow with a script workspace that returns a DIFFERENT path each call,
     // and a run whose workspace_dir was already resolved to a specific path.

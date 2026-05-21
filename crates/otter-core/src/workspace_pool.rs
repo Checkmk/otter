@@ -38,9 +38,6 @@ const MAX_SLOTS: usize = 1024;
 /// Locking is per-slot via `mkdir <slot>.lock`. The slot's worktree is either
 /// created (`git worktree add`) on first use or reset (`checkout --detach`,
 /// `reset --hard`, `clean -fd`) on reuse.
-///
-/// On any error after the lock is acquired, the lock is released before
-/// returning so a transient failure doesn't permanently consume a slot.
 pub async fn acquire_pool_slot(
     pool_dir: &Path,
     base_repo: &Path,
@@ -53,18 +50,43 @@ pub async fn acquire_pool_slot(
     info!(slot = %slot_path.display(), "Acquired git pool slot");
 
     // From here on, release the lock on any failure so the slot is recoverable.
-    match prepare_slot(&slot_path, base_repo, git_ref).await {
-        Ok(()) => Ok(slot_path),
-        Err(e) => {
-            // Best-effort release; log but surface the original error.
-            if let Err(rel_err) = std::fs::remove_dir_all(&lock_path) {
-                warn!(
+    let guard = SlotLockGuard::new(lock_path);
+    prepare_slot(&slot_path, base_repo, git_ref).await?;
+    guard.defuse();
+    Ok(slot_path)
+}
+
+/// RAII guard that removes a lock dir on drop unless `defuse()` is called first.
+struct SlotLockGuard {
+    lock_path: Option<PathBuf>,
+}
+
+impl SlotLockGuard {
+    fn new(lock_path: PathBuf) -> Self {
+        Self {
+            lock_path: Some(lock_path),
+        }
+    }
+
+    /// Disarm the guard — the lock will not be released on drop.
+    fn defuse(mut self) {
+        self.lock_path.take();
+    }
+}
+
+impl Drop for SlotLockGuard {
+    fn drop(&mut self) {
+        if let Some(lock_path) = self.lock_path.take() {
+            match std::fs::remove_dir_all(&lock_path) {
+                Ok(()) => {
+                    info!(lock = %lock_path.display(), "Released git pool slot lock (drop-guard)")
+                }
+                Err(e) => warn!(
                     lock = %lock_path.display(),
-                    error = %rel_err,
-                    "Failed to release lock after prepare_slot failure"
-                );
+                    error = %e,
+                    "Failed to release lock on drop"
+                ),
             }
-            Err(e)
         }
     }
 }
@@ -322,6 +344,75 @@ mod tests {
             !slot2.join("junk.txt").exists(),
             "untracked files should be cleaned"
         );
+    }
+
+    #[test]
+    fn slot_lock_guard_releases_on_drop() {
+        // GIVEN — a lock dir exists
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("slot-0.lock");
+        std::fs::create_dir(&lock).unwrap();
+        // WHEN — a guard wraps it and is dropped without defuse
+        {
+            let _g = SlotLockGuard::new(lock.clone());
+        }
+        // THEN — the lock dir is gone
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn slot_lock_guard_defuse_keeps_lock() {
+        // GIVEN — a lock dir exists and is wrapped in a guard
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("slot-0.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let g = SlotLockGuard::new(lock.clone());
+        // WHEN — the guard is defused
+        g.defuse();
+        // THEN — the lock dir is untouched
+        assert!(lock.is_dir());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_acquire_releases_lock() {
+        // GIVEN — a base repo and an empty pool
+        let (_repo_guard, repo) = init_repo();
+        let pool = tempfile::tempdir().unwrap();
+        let lock_dir = pool.path().join("slot-0.lock");
+
+        // WHEN — acquire is cancelled (future dropped) right after the lock is
+        // taken but before prepare_slot finishes
+        {
+            let acquire_fut = acquire_pool_slot(pool.path(), &repo, "HEAD");
+            tokio::pin!(acquire_fut);
+            tokio::select! {
+                biased;
+                _ = &mut acquire_fut => {
+                    // If prepare_slot is fast enough to win the race, the lock
+                    // remains held on success — release it so the assertion below
+                    // still exercises drop-on-cancel behavior on retries.
+                    release_pool_slot(&pool.path().join("slot-0")).await.unwrap();
+                }
+                _ = async {
+                    while !lock_dir.exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                } => {
+                    // Lock is now held; drop acquire_fut by leaving this select.
+                }
+            }
+            // acquire_fut drops at end of this scope → SlotLockGuard::drop runs.
+        }
+
+        // THEN — the lock dir is gone (released either by drop-guard or by the
+        // explicit release_pool_slot above)
+        assert!(
+            !lock_dir.exists(),
+            "cancelled acquire must release the slot lock"
+        );
+        // And a fresh acquire reuses slot-0 rather than growing the pool.
+        let next = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
+        assert_eq!(next, pool.path().join("slot-0"));
     }
 
     #[tokio::test]
