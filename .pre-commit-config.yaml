@@ -1,0 +1,24 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.2.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+-   repo: local
+    hooks:
+    -   id: fmt
+        name: Format repository
+        entry: cargo fmt --all
+        language: system
+        pass_filenames: false
+    -   id: lint
+        name: Lint repository
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+    -   id: test
+        name: Test repository
+        entry: cargo test --all
+        language: system
+        pass_filenames: false
