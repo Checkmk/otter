@@ -1,0 +1,48 @@
+# Otter light theme — Solarized Light — schema v1
+#
+# This file is a schema reference; otter seeds it on first launch and never
+# overwrites it. Edits made here are IGNORED when mode = "light" (otter uses
+# the bundled palette so updates take effect across upgrades).
+#
+# To customize, copy this file to a new name and select it in
+# ~/.config/otter/config.toml:
+#
+#     cp ~/.config/otter/themes/light.toml ~/.config/otter/themes/my-theme.toml
+#     # then in config.toml:
+#     [theme]
+#     mode = "my-theme"
+#
+# All color fields are optional in a custom theme. Any field you omit falls
+# back to the bundled built-in dark palette.
+
+schema = 1
+name = "solarized-light"
+
+[colors]
+# Surface
+background      = "#fdf6e3"  # panel and base background
+foreground      = "#657b83"  # default text
+dim             = "#93a1a1"  # muted / secondary text
+border          = "#268bd2"
+
+# Run status
+running         = "#859900"
+completed       = "#859900"
+failed          = "#dc322f"
+dormant         = "#93a1a1"
+waiting_cp      = "#b58900"  # waiting-for-checkpoint indicator
+
+# Checkpoint actions
+action_continue = "#859900"
+action_stop     = "#dc322f"
+action_feedback = "#d33682"
+
+# Status bar
+notice_waiting  = "#b58900"
+
+# Step badges
+step_agent      = "#6c71c4"
+step_shell      = "#268bd2"
+step_checkpoint = "#b58900"
+step_notify     = "#d33682"
+step_other      = "#93a1a1"

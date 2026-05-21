@@ -3,8 +3,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::styles::{base_style, c_action_feedback, c_background};
+use crate::styles::base_style;
 use crate::text::wrap_into_chunks;
+use crate::theme;
 
 #[derive(Copy, Clone)]
 pub struct RenderConfig {
@@ -57,8 +58,8 @@ impl InputField {
                     Span::styled(
                         badge.to_string(),
                         Style::default()
-                            .fg(c_background())
-                            .bg(c_action_feedback())
+                            .fg(theme::current().background)
+                            .bg(theme::current().action_feedback)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" ", base_style()),
@@ -75,7 +76,9 @@ impl InputField {
                 let cursor_char = if cursor_visible { "█" } else { " " };
                 spans.push(Span::styled(
                     cursor_char,
-                    Style::default().bg(c_action_feedback()).fg(c_background()),
+                    Style::default()
+                        .bg(theme::current().action_feedback)
+                        .fg(theme::current().background),
                 ));
             }
 

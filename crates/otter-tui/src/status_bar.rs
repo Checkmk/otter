@@ -8,10 +8,8 @@ use ratatui::{
 
 use crate::input_field::InputField;
 use crate::scroll::scroll_spans;
-use crate::styles::{
-    base_style, c_action_continue, c_action_feedback, c_action_stop, c_background, c_dim,
-    c_foreground, c_notice_waiting, c_waiting_cp, panel,
-};
+use crate::styles::{base_style, panel};
+use crate::theme;
 
 /// A single keybinding hint to display in the status bar.
 pub struct PanelHint {
@@ -49,10 +47,12 @@ pub enum StatusBarMode<'a> {
 }
 
 pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
-    let dim = Style::default().fg(c_dim()).bg(c_background());
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
     let key = Style::default()
-        .fg(c_foreground())
-        .bg(c_background())
+        .fg(theme::current().foreground)
+        .bg(theme::current().background)
         .add_modifier(Modifier::BOLD);
 
     let block = panel("");
@@ -95,7 +95,9 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 };
                 left_spans.push(Span::styled(
                     msg,
-                    Style::default().fg(c_notice_waiting()).bg(c_background()),
+                    Style::default()
+                        .fg(theme::current().notice_waiting)
+                        .bg(theme::current().background),
                 ));
             }
             let left_spans = scroll_spans(left_spans, left_area.width as usize, tick);
@@ -147,33 +149,37 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 Span::styled(
                     " CHECKPOINT ",
                     Style::default()
-                        .fg(c_background())
-                        .bg(c_waiting_cp())
+                        .fg(theme::current().background)
+                        .bg(theme::current().waiting_cp)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" ", base_style()),
                 Span::styled(
                     "[c]",
                     Style::default()
-                        .fg(c_action_continue())
-                        .bg(c_background())
+                        .fg(theme::current().action_continue)
+                        .bg(theme::current().background)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     " Continue",
-                    Style::default().fg(c_action_continue()).bg(c_background()),
+                    Style::default()
+                        .fg(theme::current().action_continue)
+                        .bg(theme::current().background),
                 ),
                 Span::styled("  ", base_style()),
                 Span::styled(
                     "[s]",
                     Style::default()
-                        .fg(c_action_stop())
-                        .bg(c_background())
+                        .fg(theme::current().action_stop)
+                        .bg(theme::current().background)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     " Stop",
-                    Style::default().fg(c_action_stop()).bg(c_background()),
+                    Style::default()
+                        .fg(theme::current().action_stop)
+                        .bg(theme::current().background),
                 ),
             ];
             if feedback_available {
@@ -182,13 +188,15 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                     Span::styled(
                         "[f]",
                         Style::default()
-                            .fg(c_action_feedback())
-                            .bg(c_background())
+                            .fg(theme::current().action_feedback)
+                            .bg(theme::current().background)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         " Feedback",
-                        Style::default().fg(c_action_feedback()).bg(c_background()),
+                        Style::default()
+                            .fg(theme::current().action_feedback)
+                            .bg(theme::current().background),
                     ),
                 ]);
             }

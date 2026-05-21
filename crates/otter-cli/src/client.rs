@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 
 use otter_core::types::{DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus};
 
-use crate::socket_path;
+use crate::config::load_theme_config;
+use crate::{dirs_config_dir, socket_path};
+use otter_tui::theme_loader;
 
 pub async fn run_ui() -> anyhow::Result<()> {
     let stream = match connect_to_daemon().await {
@@ -75,7 +77,11 @@ pub async fn run_ui() -> anyhow::Result<()> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    tokio::task::spawn_blocking(move || otter_tui::run(event_rx, cmd_tx, shutdown)).await??;
+    let theme_cfg = load_theme_config(&dirs_config_dir());
+    let theme = theme_loader::resolve(&theme_cfg);
+
+    tokio::task::spawn_blocking(move || otter_tui::run(event_rx, cmd_tx, shutdown, theme))
+        .await??;
 
     Ok(())
 }

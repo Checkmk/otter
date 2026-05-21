@@ -11,10 +11,9 @@ use otter_core::types::ProgressChunk;
 
 use crate::app::{App, CursorTarget, Focus, RightPanelContent};
 use crate::status_bar::PanelHint;
-use crate::styles::{
-    base_style, c_background, c_dim, c_foreground, panel, panel_focused, step_color,
-};
+use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
+use crate::theme;
 
 #[derive(Debug, PartialEq)]
 enum WrappedLogLine {
@@ -90,7 +89,9 @@ pub fn with_scroll_indicators(
 
     let above = scroll_offset;
     let below = total.saturating_sub(scroll_offset + inner_height);
-    let dim = Style::default().fg(c_dim()).bg(c_background());
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
 
     let mut visible: Vec<Line> = lines
         .into_iter()
@@ -133,7 +134,9 @@ fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bo
     let lines: Vec<Line> = match app.selected_workflow_toml() {
         None => vec![Line::from(Span::styled(
             "No config available",
-            Style::default().fg(c_dim()).bg(c_background()),
+            Style::default()
+                .fg(theme::current().dim)
+                .bg(theme::current().background),
         ))],
         Some(toml) => toml
             .lines()
@@ -262,13 +265,15 @@ fn build_log_lines<'a>(
                 } => lines.push(Line::from(vec![
                     Span::styled(
                         format!("[{}] ", time),
-                        Style::default().fg(c_dim()).bg(c_background()),
+                        Style::default()
+                            .fg(theme::current().dim)
+                            .bg(theme::current().background),
                     ),
                     Span::styled(
                         format!("{}:", step_type),
                         Style::default()
                             .fg(step_color(&step_type))
-                            .bg(c_background()),
+                            .bg(theme::current().background),
                     ),
                     Span::styled(format!(" {}", text), base_style()),
                 ])),
@@ -316,10 +321,12 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let logs = app.selected_logs();
 
     let progress = app.selected_progress();
-    let dim_style = Style::default().fg(c_dim()).bg(c_background());
+    let dim_style = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
     let stderr_style = Style::default()
         .fg(ratatui::style::Color::Red)
-        .bg(c_background());
+        .bg(theme::current().background);
 
     let lines: Vec<Line> = build_log_lines(logs, progress, inner_width, dim_style, stderr_style);
 
@@ -354,7 +361,9 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     let lines: Vec<Line> = if triggers.is_empty() {
         vec![Line::from(Span::styled(
             "No consumed triggers",
-            Style::default().fg(c_dim()).bg(c_background()),
+            Style::default()
+                .fg(theme::current().dim)
+                .bg(theme::current().background),
         ))]
     } else {
         triggers
@@ -364,7 +373,9 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
                 if is_focused && i == app.right_cursor {
                     Line::from(Span::styled(
                         hash.clone(),
-                        Style::default().fg(c_background()).bg(c_foreground()),
+                        Style::default()
+                            .fg(theme::current().background)
+                            .bg(theme::current().foreground),
                     ))
                 } else {
                     Line::from(Span::styled(hash.clone(), base_style()))

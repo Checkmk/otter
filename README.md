@@ -7,7 +7,7 @@ Automate multi-step tasks (with AI support) triggered by real-world events.
 - **Checkpoints** pause for human review and feedback
 - **Workspace** isolates agents in per-run scratch directories, a fixed directory, a script-provisioned directory, or a per-run git worktree
 - **Sandbox** optionally runs agent and shell steps in rootless Podman containers with security hardening
-- **TUI dashboard** monitors workflows, views logs, and controls execution
+- **TUI dashboard** monitors workflows, views logs, and controls execution with theming support
 
 ## Build
 

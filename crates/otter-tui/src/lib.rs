@@ -8,6 +8,8 @@ mod scroll;
 mod status_bar;
 mod styles;
 mod text;
+pub mod theme;
+pub mod theme_loader;
 mod ui;
 
 use std::io::stdout;
@@ -27,7 +29,9 @@ pub fn run(
     mut event_rx: mpsc::Receiver<DaemonEvent>,
     cmd_tx: mpsc::Sender<DaemonCommand>,
     shutdown: Arc<AtomicBool>,
+    theme: theme::Theme,
 ) -> anyhow::Result<()> {
+    theme::set(theme);
     terminal::enable_raw_mode().context("enable raw mode")?;
     let mut out = stdout();
     execute!(out, terminal::EnterAlternateScreen).context("enter alternate screen")?;

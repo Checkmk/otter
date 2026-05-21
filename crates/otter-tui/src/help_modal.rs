@@ -7,15 +7,20 @@ use ratatui::{
 };
 
 use crate::right_panel::with_scroll_indicators;
-use crate::styles::{base_style, c_background, c_dim, c_foreground, panel_focused};
+use crate::styles::{base_style, panel_focused};
+use crate::theme;
 
 pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
     let key = Style::default()
-        .fg(c_foreground())
-        .bg(c_background())
+        .fg(theme::current().foreground)
+        .bg(theme::current().background)
         .add_modifier(Modifier::BOLD);
-    let label = Style::default().fg(c_dim()).bg(c_background());
-    let heading = Style::default().fg(c_foreground()).bg(c_background());
+    let label = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+    let heading = Style::default()
+        .fg(theme::current().foreground)
+        .bg(theme::current().background);
 
     let row = |k: &'static str, l: &'static str| -> Line<'static> {
         Line::from(vec![

@@ -11,10 +11,8 @@ use ratatui::{
 use crate::app::{App, CursorTarget, Focus};
 use crate::scroll::scroll_spans;
 use crate::status_bar::PanelHint;
-use crate::styles::{
-    c_background, c_completed, c_dormant, c_failed, c_foreground, c_running, c_waiting_cp, panel,
-    panel_focused, spinner_frame,
-};
+use crate::styles::{panel, panel_focused, spinner_frame};
+use crate::theme;
 
 fn workflow_state_color(
     state: &WorkflowState,
@@ -24,9 +22,9 @@ fn workflow_state_color(
     tick: u64,
 ) -> (String, Color) {
     match state {
-        WorkflowState::Dormant => ("·".to_string(), c_dormant()),
+        WorkflowState::Dormant => ("·".to_string(), theme::current().dormant),
         WorkflowState::Running => match run_status {
-            Some(RunStatus::WaitingCheckpoint) => ("~".to_string(), c_waiting_cp()),
+            Some(RunStatus::WaitingCheckpoint) => ("~".to_string(), theme::current().waiting_cp),
             // Triggered workflow: engine alive but between trigger events (last run may have failed)
             Some(RunStatus::Completed)
             | Some(RunStatus::Failed)
@@ -35,13 +33,15 @@ fn workflow_state_color(
                 if matches!(kind, Some(WorkflowType::Triggered)) =>
             {
                 match trigger {
-                    Some(TriggerDef::Polling { .. }) => ("⏲".to_string(), c_dormant()),
-                    _ => ("·".to_string(), c_dormant()),
+                    Some(TriggerDef::Polling { .. }) => ("⏲".to_string(), theme::current().dormant),
+                    _ => ("·".to_string(), theme::current().dormant),
                 }
             }
-            Some(RunStatus::Failed) | Some(RunStatus::Stopped) => ("✗".to_string(), c_failed()),
-            Some(RunStatus::Completed) => ("✓".to_string(), c_completed()),
-            _ => (spinner_frame(tick).to_string(), c_running()),
+            Some(RunStatus::Failed) | Some(RunStatus::Stopped) => {
+                ("✗".to_string(), theme::current().failed)
+            }
+            Some(RunStatus::Completed) => ("✓".to_string(), theme::current().completed),
+            _ => (spinner_frame(tick).to_string(), theme::current().running),
         },
     }
 }
@@ -58,11 +58,13 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 
             let content_style = if is_selected {
                 Style::default()
-                    .fg(c_background())
-                    .bg(c_foreground())
+                    .fg(theme::current().background)
+                    .bg(theme::current().foreground)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(c_foreground()).bg(c_background())
+                Style::default()
+                    .fg(theme::current().foreground)
+                    .bg(theme::current().background)
             };
 
             let scrolled = scroll_spans(
@@ -75,16 +77,22 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 
             let mut spans = vec![Span::styled(
                 prefix.to_string(),
-                Style::default().fg(c_foreground()).bg(c_background()),
+                Style::default()
+                    .fg(theme::current().foreground)
+                    .bg(theme::current().background),
             )];
             spans.extend(scrolled);
             spans.push(Span::styled(
                 padding,
-                Style::default().fg(c_foreground()).bg(c_background()),
+                Style::default()
+                    .fg(theme::current().foreground)
+                    .bg(theme::current().background),
             ));
             spans.push(Span::styled(
                 icon,
-                Style::default().fg(icon_color).bg(c_background()),
+                Style::default()
+                    .fg(icon_color)
+                    .bg(theme::current().background),
             ));
             ListItem::new(Line::from(spans))
         };

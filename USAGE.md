@@ -13,7 +13,8 @@
 9. [Secrets Management](#secrets-management)
 10. [Workflow Management](#workflow-management)
 11. [Service Management](#service-management)
-12. [Examples](#examples)
+12. [Theming](#theming)
+13. [Examples](#examples)
 
 ---
 
@@ -691,6 +692,33 @@ otter service stop      # stop the running service
 otter service enable    # start service and register start-on-boot
 otter service disable   # disable automatic startup and stop the service
 ```
+
+---
+
+## Theming
+
+The TUI ships with built-in `dark` (default) and `light` themes. Select one in `~/.config/otter/config.toml`:
+
+```toml
+[theme]
+mode = "auto"   # "dark" | "light" | "auto" | "<custom-name>"
+```
+
+- `dark` / `light` — use the bundled theme of that name.
+- `auto` — follow the OS color-scheme preference, read once at TUI launch. Restart the TUI to pick up an OS change.
+- `<custom-name>` — load `~/.config/otter/themes/<custom-name>.toml`.
+
+### Custom themes
+
+Seed files for the bundled themes are written to `~/.config/otter/themes/dark.toml` and `light.toml` on first launch. Copy one, edit, and select it by name:
+
+```bash
+cp ~/.config/otter/themes/light.toml ~/.config/otter/themes/my-theme.toml
+# then set mode = "my-theme" in config.toml
+```
+
+- Colors are 6-digit `#rrggbb` hex; omitted fields fall back to the bundled dark palette.
+- Editing `dark.toml` / `light.toml` has no effect — those modes always use the bundled palette. Use a custom name to override.
 
 ---
 

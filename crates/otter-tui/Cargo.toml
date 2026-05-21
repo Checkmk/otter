@@ -11,3 +11,10 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+dark-light = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

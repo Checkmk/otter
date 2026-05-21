@@ -1,0 +1,48 @@
+# Otter dark theme — schema v1
+#
+# This file is a schema reference; otter seeds it on first launch and never
+# overwrites it. Edits made here are IGNORED when mode = "dark" (otter uses
+# the bundled palette so updates take effect across upgrades).
+#
+# To customize, copy this file to a new name and select it in
+# ~/.config/otter/config.toml:
+#
+#     cp ~/.config/otter/themes/dark.toml ~/.config/otter/themes/my-theme.toml
+#     # then in config.toml:
+#     [theme]
+#     mode = "my-theme"
+#
+# All color fields are optional in a custom theme. Any field you omit falls
+# back to the bundled built-in dark palette.
+
+schema = 1
+name = "dark"
+
+[colors]
+# Surface
+background      = "#333543"  # panel and base background
+foreground      = "#fbc997"  # default text
+dim             = "#b78760"  # muted / secondary text
+border          = "#5b64c5"
+
+# Run status
+running         = "#618b50"
+completed       = "#618b50"
+failed          = "#ff5638"
+dormant         = "#b78760"
+waiting_cp      = "#c89931"  # waiting-for-checkpoint indicator
+
+# Checkpoint actions
+action_continue = "#618b50"
+action_stop     = "#ff5638"
+action_feedback = "#ec8499"
+
+# Status bar
+notice_waiting  = "#c89931"
+
+# Step badges
+step_agent      = "#a459b7"
+step_shell      = "#5b64c5"
+step_checkpoint = "#c89931"
+step_notify     = "#ec8499"
+step_other      = "#b78760"
