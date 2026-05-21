@@ -10,6 +10,7 @@ pub mod triggers;
 pub mod types;
 pub mod workflow_manager;
 pub mod workspace;
+pub mod workspace_pool;
 
 #[cfg(test)]
 mod test_helpers;

@@ -13,9 +13,9 @@ use crate::triggers::build_trigger;
 use crate::types::StepError;
 use crate::types::{
     EngineEvent, LogEntry, RunOutcome, RunStatus, StepContext, StepType, StorageBackend,
-    TriggerEvent, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig,
+    TriggerEvent, WorkflowDef, WorkflowRun, WorkflowType, WorkspaceConfig, WorkspaceSource,
 };
-use crate::workspace::resolve_workspace;
+use crate::workspace::{cleanup_workspace, resolve_workspace};
 use otter_notify::{NoOpNotifier, Notifier};
 use otter_secrets::{NoOpSecretStore, SecretStore};
 use tokio::sync::mpsc;
@@ -138,15 +138,12 @@ impl Engine {
                 workflow.workspace.as_ref(),
                 &workflow.name,
                 run.id,
+                &scratch_dir,
                 self.secret_store.as_ref(),
             )
             .await?;
             run.workspace_dir = workspace_dir.clone();
-            let workspace_type = match &workflow.workspace {
-                None | Some(WorkspaceConfig::Scratch) => "scratch",
-                Some(WorkspaceConfig::Fixed { .. }) => "fixed",
-                Some(WorkspaceConfig::Script { .. }) => "script",
-            };
+            let workspace_type = workspace_type_label(workflow.workspace.as_ref());
             let effective_dir = workspace_dir.as_deref().unwrap_or(&scratch_dir);
             info!(run_id = %run.id, workflow = %workflow.name, workspace_type, workspace = %effective_dir.display(), "Starting looping workflow iteration");
 
@@ -196,17 +193,15 @@ impl Engine {
                 RunOutcome::Success
             };
 
-            if !workflow.finally.is_empty() {
-                self.execute_finally_steps(
-                    workflow,
-                    &run,
-                    &outcome,
-                    &scratch_dir,
-                    workspace_dir.as_deref(),
-                    &ui_tx,
-                )
-                .await;
-            }
+            self.execute_finally_steps(
+                workflow,
+                &run,
+                &outcome,
+                &scratch_dir,
+                workspace_dir.as_deref(),
+                &ui_tx,
+            )
+            .await;
 
             session_manager.cleanup().await;
 
@@ -361,6 +356,7 @@ impl Engine {
             workflow.workspace.as_ref(),
             &workflow.name,
             run.id,
+            &scratch_dir,
             self.secret_store.as_ref(),
         )
         .await
@@ -390,11 +386,7 @@ impl Engine {
         run.workspace_dir = workspace_dir.clone();
         self.storage.update_workflow_run(&run)?;
         Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-        let workspace_type = match &workflow.workspace {
-            None | Some(WorkspaceConfig::Scratch) => "scratch",
-            Some(WorkspaceConfig::Fixed { .. }) => "fixed",
-            Some(WorkspaceConfig::Script { .. }) => "script",
-        };
+        let workspace_type = workspace_type_label(workflow.workspace.as_ref());
         let effective_dir = workspace_dir.as_deref().unwrap_or(&scratch_dir);
         info!(run_id = %run.id, workflow = %workflow.name, workspace_type, workspace = %effective_dir.display(), "Starting triggered workflow run");
 
@@ -419,6 +411,9 @@ impl Engine {
         Self::emit(&ui_tx, EngineEvent::LogAppended(run_start_entry));
 
         // Run the pending context command (from a polling trigger) now that the workspace is ready.
+        // Failure here is treated like a step failure: skip execute_steps but still run finally
+        // (including workspace cleanup) so we don't leak pool slots / worktrees.
+        let mut context_failed = false;
         if let Some(ctx) = event.and_then(|e| e.pending_context.as_ref()) {
             let ctx_dir = match &workspace_dir {
                 Some(ws) => ws.join("trigger-context"),
@@ -442,12 +437,14 @@ impl Engine {
                 run.status = RunStatus::Failed;
                 self.storage.update_workflow_run(&run)?;
                 Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
-                return Ok(run.status);
+                context_failed = true;
             }
         }
 
-        let stop = self
-            .execute_steps(
+        let stop = if context_failed {
+            true
+        } else {
+            self.execute_steps(
                 workflow,
                 &mut run,
                 &scratch_dir,
@@ -456,7 +453,8 @@ impl Engine {
                 &shutdown,
                 &ui_tx,
             )
-            .await?;
+            .await?
+        };
 
         let outcome = if !stop {
             run.status = RunStatus::Completed;
@@ -467,17 +465,15 @@ impl Engine {
             run.status.as_outcome().unwrap_or(RunOutcome::Stopped)
         };
 
-        if !workflow.finally.is_empty() {
-            self.execute_finally_steps(
-                workflow,
-                &run,
-                &outcome,
-                &scratch_dir,
-                workspace_dir.as_deref(),
-                &ui_tx,
-            )
-            .await;
-        }
+        self.execute_finally_steps(
+            workflow,
+            &run,
+            &outcome,
+            &scratch_dir,
+            workspace_dir.as_deref(),
+            &ui_tx,
+        )
+        .await;
 
         session_manager.cleanup().await;
         info!(run_id = %run.id, "Triggered workflow run ended");
@@ -769,6 +765,32 @@ impl Engine {
                 }
             }
         }
+
+        // Implicit workspace cleanup runs after all user finally steps, so a user
+        // finally step that inspects the workspace still sees a live one. Failures
+        // are warning-logged (same posture as user finally-step failures above).
+        if let Err(e) = cleanup_workspace(workflow.workspace.as_ref(), workspace_dir, outcome).await
+        {
+            warn!(error = %e, "Workspace cleanup failed (ignoring)");
+        }
+    }
+}
+
+fn workspace_type_label(config: Option<&WorkspaceConfig>) -> &'static str {
+    match config {
+        None => "scratch",
+        Some(c) => match &c.source {
+            WorkspaceSource::Scratch => "scratch",
+            WorkspaceSource::Fixed { .. } => "fixed",
+            WorkspaceSource::Script { .. } => "script",
+            WorkspaceSource::Git { .. } => {
+                if c.pool.is_some() {
+                    "git-pooled"
+                } else {
+                    "git"
+                }
+            }
+        },
     }
 }
 

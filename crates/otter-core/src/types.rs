@@ -92,8 +92,36 @@ fn default_poll_interval() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "WorkspaceConfigRaw")]
+pub struct WorkspaceConfig {
+    pub source: WorkspaceSource,
+    pub pool: Option<PoolConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkspaceConfigRaw {
+    #[serde(flatten)]
+    source: WorkspaceSource,
+    #[serde(default)]
+    pool: Option<PoolConfig>,
+}
+
+impl TryFrom<WorkspaceConfigRaw> for WorkspaceConfig {
+    type Error = String;
+    fn try_from(raw: WorkspaceConfigRaw) -> Result<Self, Self::Error> {
+        if raw.pool.is_some() && !matches!(raw.source, WorkspaceSource::Git { .. }) {
+            return Err("[workspace.pool] is only supported when type = \"git\"".to_string());
+        }
+        Ok(WorkspaceConfig {
+            source: raw.source,
+            pool: raw.pool,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum WorkspaceConfig {
+pub enum WorkspaceSource {
     /// Use the run's scratch directory (default when omitted).
     Scratch,
     /// An existing directory on disk.
@@ -106,6 +134,26 @@ pub enum WorkspaceConfig {
         #[serde(default)]
         secrets: Option<Vec<String>>,
     },
+    /// A git worktree against a local base repo, checked out at `ref`.
+    /// Combine with `[workspace.pool]` to share reusable, locked slots across runs.
+    Git {
+        base_repo: String,
+        #[serde(default, rename = "ref")]
+        ref_: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolConfig {
+    pub dir: String,
+    #[serde(default)]
+    pub keep_directory_on: Vec<RunOutcome>,
+}
+
+impl From<WorkspaceSource> for WorkspaceConfig {
+    fn from(source: WorkspaceSource) -> Self {
+        Self { source, pool: None }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -838,6 +886,87 @@ mod tests {
             type = "looping"
             [[steps]]
             type = "nonexistent"
+        "#;
+
+        // WHEN / THEN
+        assert!(toml::from_str::<WorkflowDef>(toml_str).is_err());
+    }
+
+    #[test]
+    fn git_workspace_with_pool_deserializes() {
+        // GIVEN
+        let toml_str = r#"
+            name = "wf"
+            type = "triggered"
+            [trigger]
+            type = "manual"
+            [workspace]
+            type = "git"
+            base_repo = "/tmp/repo"
+            ref = "origin/master"
+            [workspace.pool]
+            dir = "/tmp/pool"
+            keep_directory_on = ["failed"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+
+        // WHEN
+        let def: WorkflowDef = toml::from_str(toml_str).unwrap();
+
+        // THEN
+        let ws = def.workspace.unwrap();
+        match &ws.source {
+            WorkspaceSource::Git { base_repo, ref_ } => {
+                assert_eq!(base_repo, "/tmp/repo");
+                assert_eq!(ref_.as_deref(), Some("origin/master"));
+            }
+            _ => panic!("expected git source"),
+        }
+        let pool = ws.pool.unwrap();
+        assert_eq!(pool.dir, "/tmp/pool");
+        assert_eq!(pool.keep_directory_on, vec![RunOutcome::Failed]);
+    }
+
+    #[test]
+    fn pool_with_non_git_source_fails_deserialization() {
+        // GIVEN — scratch + pool is rejected
+        let toml_str = r#"
+            name = "wf"
+            type = "looping"
+            [workspace]
+            type = "scratch"
+            [workspace.pool]
+            dir = "/tmp/pool"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+
+        // WHEN / THEN
+        let err = toml::from_str::<WorkflowDef>(toml_str).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("[workspace.pool] is only supported"),
+            "expected validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pool_with_fixed_source_fails_deserialization() {
+        // GIVEN
+        let toml_str = r#"
+            name = "wf"
+            type = "looping"
+            [workspace]
+            type = "fixed"
+            path = "/tmp"
+            [workspace.pool]
+            dir = "/tmp/pool"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
         "#;
 
         // WHEN / THEN

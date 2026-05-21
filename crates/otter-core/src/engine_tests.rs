@@ -3,7 +3,7 @@ use crate::storage::InMemoryStorage;
 use crate::test_helpers::{bash_path, executable_name, write_executable_script};
 use crate::types::{
     FinallyStepDef, RunOutcome, RunStatus, StepDef, StepType, TriggerDef, WorkflowDef, WorkflowRun,
-    WorkflowType, WorkspaceConfig,
+    WorkflowType, WorkspaceConfig, WorkspaceSource,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -136,9 +136,12 @@ async fn workspace_step_sets_working_dir_for_shell() {
             ..step_def(StepType::Shell)
         }],
     );
-    wf.workspace = Some(WorkspaceConfig::Fixed {
-        path: workspace.path().to_string_lossy().into_owned(),
-    });
+    wf.workspace = Some(
+        WorkspaceSource::Fixed {
+            path: workspace.path().to_string_lossy().into_owned(),
+        }
+        .into(),
+    );
 
     // WHEN
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -366,10 +369,13 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
             interval_secs: 3600, // won't re-poll during the test
             secrets: None,
         }),
-        workspace: Some(WorkspaceConfig::Script {
-            command: vec![ws_script.to_string_lossy().into_owned()],
-            secrets: None,
-        }),
+        workspace: Some(
+            WorkspaceSource::Script {
+                command: vec![ws_script.to_string_lossy().into_owned()],
+                secrets: None,
+            }
+            .into(),
+        ),
         resources: None,
         sandbox: None,
         steps: vec![StepDef {
@@ -454,6 +460,140 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
     assert!(
         !context_in_scratch,
         "context should not have been placed in the scratch dir"
+    );
+}
+
+#[tokio::test]
+async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
+    // GIVEN a base git repo with one commit, an empty pool dir, a triggered workflow
+    // pinned to that repo with `[workspace.pool]`, and a shell step that succeeds.
+    use crate::types::PoolConfig;
+    use std::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    let base_repo = temp.path().join("base-repo");
+    std::fs::create_dir_all(&base_repo).unwrap();
+    for args in [
+        &["init", "--initial-branch=main"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "t"],
+    ] {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&base_repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    std::fs::write(base_repo.join("README.md"), "hello").unwrap();
+    for args in [&["add", "."][..], &["commit", "-m", "init"]] {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&base_repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let pool_dir = temp.path().join("pool");
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let engine = Engine::new(
+        storage.clone(),
+        scratch.clone(),
+        Arc::new(otter_notify::NoOpNotifier),
+    );
+
+    // A poll script that emits a single hash, then nothing (interval guards repeat).
+    let poll_script = write_executable_script(
+        temp.path(),
+        &format!("poll.{}", executable_name("sh")),
+        "#!/bin/bash\necho '[\"hash-001\"]'",
+    )
+    .unwrap();
+
+    // Step asserts that README.md (from the base repo) is present at the workspace root.
+    let wf = WorkflowDef {
+        name: "test-git-pool".to_string(),
+        workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
+        trigger: Some(TriggerDef::Polling {
+            poll_command: vec![poll_script.to_string_lossy().into_owned()],
+            context_command: None,
+            interval_secs: 3600,
+            secrets: None,
+        }),
+        workspace: Some(WorkspaceConfig {
+            source: WorkspaceSource::Git {
+                base_repo: base_repo.to_string_lossy().into_owned(),
+                ref_: Some("HEAD".to_string()),
+            },
+            pool: Some(PoolConfig {
+                dir: pool_dir.to_string_lossy().into_owned(),
+                keep_directory_on: vec![],
+            }),
+        }),
+        resources: None,
+        sandbox: None,
+        steps: vec![StepDef {
+            step_type: StepType::Shell,
+            command: Some(vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "test -f README.md".to_string(),
+            ]),
+            ..step_def(StepType::Shell)
+        }],
+        finally: vec![],
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        engine.run(&wf, shutdown_clone, None).await.unwrap();
+    });
+
+    // WHEN: wait for the run to complete.
+    let start = tokio::time::Instant::now();
+    loop {
+        if storage
+            .runs()
+            .iter()
+            .any(|r| r.status == RunStatus::Completed)
+        {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "run did not complete in time; runs: {:?}",
+            storage
+                .runs()
+                .iter()
+                .map(|r| (r.id, r.status.clone()))
+                .collect::<Vec<_>>()
+        );
+        tokio::task::yield_now().await;
+    }
+    shutdown.store(true, Ordering::Relaxed);
+    handle.await.unwrap();
+
+    // THEN: the slot dir was created, the worktree persists for reuse, and the lock
+    // was released (cleanup ran at end of finally).
+    assert!(
+        pool_dir.join("slot-0").is_dir(),
+        "slot-0 worktree should exist"
+    );
+    assert!(
+        !pool_dir.join("slot-0.lock").exists(),
+        "slot-0 lock should be released after a successful run, got: {:?}",
+        std::fs::read_dir(&pool_dir).ok().map(|r| r
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>())
     );
 }
 
@@ -824,9 +964,12 @@ async fn finally_steps_run_in_order() {
             ..step_def(StepType::Shell)
         }],
     );
-    wf.workspace = Some(WorkspaceConfig::Fixed {
-        path: dir.path().to_string_lossy().into_owned(),
-    });
+    wf.workspace = Some(
+        WorkspaceSource::Fixed {
+            path: dir.path().to_string_lossy().into_owned(),
+        }
+        .into(),
+    );
     wf.finally = vec![
         FinallyStepDef {
             step: StepDef {
@@ -888,9 +1031,12 @@ async fn shutdown_between_steps_sets_stopped_status_and_runs_finally() {
             },
         ],
     );
-    wf.workspace = Some(WorkspaceConfig::Fixed {
-        path: dir.path().to_string_lossy().into_owned(),
-    });
+    wf.workspace = Some(
+        WorkspaceSource::Fixed {
+            path: dir.path().to_string_lossy().into_owned(),
+        }
+        .into(),
+    );
     wf.finally = vec![FinallyStepDef {
         step: StepDef {
             step_type: StepType::Shell,
@@ -929,9 +1075,12 @@ async fn run_finally_executes_stopped_finally_steps() {
             ..step_def(StepType::Shell)
         }],
     );
-    wf.workspace = Some(WorkspaceConfig::Fixed {
-        path: dir.path().to_string_lossy().into_owned(),
-    });
+    wf.workspace = Some(
+        WorkspaceSource::Fixed {
+            path: dir.path().to_string_lossy().into_owned(),
+        }
+        .into(),
+    );
     wf.finally = vec![
         FinallyStepDef {
             step: StepDef {
@@ -1007,10 +1156,13 @@ async fn run_finally_uses_stored_workspace_not_script() {
         WorkflowType::Triggered,
         vec![step_def(StepType::Shell)],
     );
-    wf.workspace = Some(WorkspaceConfig::Script {
-        command: vec![ws_script.to_string_lossy().into_owned()],
-        secrets: None,
-    });
+    wf.workspace = Some(
+        WorkspaceSource::Script {
+            command: vec![ws_script.to_string_lossy().into_owned()],
+            secrets: None,
+        }
+        .into(),
+    );
     wf.finally = vec![FinallyStepDef {
         step: StepDef {
             step_type: StepType::Shell,

@@ -321,6 +321,39 @@ echo "/tmp/ws-$RUN_ID"
 - **Triggered workflows**: script runs once per trigger event (per run)
 - **Looping workflows**: script runs once per iteration
 
+### `git`
+
+Creates a git worktree against a local base repo, checked out at a given ref before any steps run. Two modes:
+
+- **Unpooled** (default): each run gets a fresh worktree inside the run's scratch dir, removed at end of run. Simple, isolated, no cache reuse across runs.
+- **Pooled** (add `[workspace.pool]`): a set of locked, reusable worktree slots persisted under `pool.dir`. Build caches (Bazel, Cargo target dirs, etc.) inside the worktree survive across runs. Slots grow on demand and are released back to the pool at end of run.
+
+```toml
+[workspace]
+type = "git"
+base_repo = "/home/user/my-repo"      # required; path to local git repo
+ref = "origin/main"                   # optional; default = base_repo HEAD
+
+[workspace.pool]                      # optional; presence enables pooling
+dir = "/home/user/otter-slots"        # required; where slot worktrees live
+keep_directory_on = ["failed"]        # optional; default = []
+```
+
+**Fields:**
+
+- `base_repo` (required): Path to a local git repo. Canonicalized at runtime; must exist.
+- `ref` (optional): Any git ref valid in `base_repo` (branch, tag, SHA, `HEAD`, `origin/main`, ...). Default: `HEAD`.
+- `pool.dir` (required when `[workspace.pool]` is set): Directory under which slot worktrees and their lock dirs live. Created if missing.
+- `pool.keep_directory_on` (optional): List of run outcomes (`"success"`, `"failed"`, `"stopped"`) for which the slot's lock should be **kept** after the run, so the directory can be inspected post-mortem. Default `[]` (always release).
+
+**Behavior:**
+
+- **Unpooled**: `git -C <base_repo> worktree add --detach <scratch>/worktree <ref>`. Cleanup: `git worktree remove --force` at end of run (also drops the registration in `.git/worktrees/`).
+- **Pooled**: scans `pool.dir/slot-0`, `slot-1`, ... for a free slot; if all locked, creates `slot-N`. Locking uses an atomic `mkdir <slot>.lock` (cross-platform). The slot is reset to `ref` on acquire (`checkout --detach`, `reset --hard`, `clean -fd`). Stale locks (older than 24h) are broken automatically on the next acquire.
+- Trigger-context, when used with polling triggers, is written to `<workspace>/trigger-context/` like any non-scratch workspace.
+
+**Note:** `[workspace.pool]` is only valid when `type = "git"`. Combining it with `scratch`, `fixed`, or `script` is rejected at workflow-load time.
+
 ---
 
 ## Resource Limits

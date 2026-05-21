@@ -1,0 +1,34 @@
+# Example: built-in `git` workspace.
+#
+# Two modes:
+#   1. Unpooled (no `[workspace.pool]`): each run gets a fresh worktree inside
+#      its own scratch dir, removed at end of run. Comment-in to try.
+#   2. Pooled (this file's default): a set of reusable, locked worktree slots
+#      under `pool.dir`. Build caches (Bazel, Cargo target, node_modules, ...)
+#      inside the worktree survive across runs.
+#
+# `keep_directory_on = ["failed"]` keeps a slot locked after a failed run so
+# you can inspect the worktree post-mortem. Stale locks (>24h) are auto-broken.
+
+name = "git-workspace"
+type = "triggered"
+
+[trigger]
+type = "manual"
+
+[workspace]
+type = "git"
+base_repo = "/path/to/your/local/repo"   # edit me
+ref = "origin/master"                    # any local git ref (branch/tag/SHA)
+
+[workspace.pool]
+dir = "/tmp/otter-git-pool"              # edit me
+keep_directory_on = ["failed"]
+
+[[steps]]
+type = "shell"
+command = ["git", "log", "-1", "--oneline"]
+
+[[steps]]
+type = "shell"
+command = ["bash", "-c", "echo 'Working in:' && pwd"]
