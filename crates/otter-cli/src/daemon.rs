@@ -358,11 +358,19 @@ async fn handle_connection<S>(
             }
         }
         DaemonCommand::Start { name } => {
+            info!(workflow = %name, "Start workflow requested");
             let result = manager.lock().await.start(&name).await;
+            if let Err(e) = &result {
+                warn!(workflow = %name, error = %e, "Start workflow failed");
+            }
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::Stop { name } => {
+            info!(workflow = %name, "Stop workflow requested");
             let result = manager.lock().await.stop(&name).await;
+            if let Err(e) = &result {
+                warn!(workflow = %name, error = %e, "Stop workflow failed");
+            }
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::Status => {
@@ -370,11 +378,13 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &DaemonResponse::StatusResponse { workflows }).await;
         }
         DaemonCommand::CheckpointRespond { run_id, action } => {
+            info!(%run_id, ?action, "Checkpoint response received");
             let entry = pending_checkpoints.lock().unwrap().remove(&run_id);
             let resp = if let Some(PendingEntry { response_tx, .. }) = entry {
                 let _ = response_tx.send(action_to_checkpoint_response(action));
                 DaemonResponse::Ok
             } else {
+                warn!(%run_id, "Checkpoint response ignored: no pending checkpoint");
                 DaemonResponse::Error {
                     message: format!("no pending checkpoint for run_id {run_id}"),
                 }
@@ -382,6 +392,7 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::StopRun { run_id } => {
+            info!(%run_id, "Stop run requested");
             let killed = kill_active_run(
                 run_id,
                 &recent_runs,
@@ -400,6 +411,7 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &DaemonResponse::Ok).await;
         }
         DaemonCommand::DeleteRun { run_id } => {
+            info!(%run_id, "Delete run requested");
             let killed = kill_active_run(
                 run_id,
                 &recent_runs,
@@ -428,11 +440,20 @@ async fn handle_connection<S>(
                     let event = DaemonEvent::RunDeleted { run_id };
                     let mut subs = subscribers.lock().unwrap();
                     subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+                    info!(%run_id, "Run deleted");
                     DaemonResponse::Ok
                 }
-                _ => DaemonResponse::Error {
-                    message: "Failed to delete run".to_string(),
-                },
+                (storage_res, dir_res) => {
+                    warn!(
+                        %run_id,
+                        storage_error = ?storage_res.err(),
+                        scratch_error = ?dir_res.err(),
+                        "Delete run failed"
+                    );
+                    DaemonResponse::Error {
+                        message: "Failed to delete run".to_string(),
+                    }
+                }
             };
             let _ = write_json(&mut writer, &resp).await;
         }
@@ -447,6 +468,7 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::DeleteConsumedTrigger { workflow, trigger } => {
+            info!(workflow = %workflow, trigger = %trigger, "Delete consumed trigger requested");
             let path = consumed_triggers_path(&dirs_data_dir(), &workflow);
             let resp = match delete_consumed_trigger(&path, &trigger) {
                 Ok(()) => {
@@ -458,34 +480,47 @@ async fn handle_connection<S>(
                     }
                     DaemonResponse::Ok
                 }
-                Err(e) => DaemonResponse::Error {
-                    message: e.to_string(),
-                },
+                Err(e) => {
+                    warn!(error = %e, "Delete consumed trigger failed");
+                    DaemonResponse::Error {
+                        message: e.to_string(),
+                    }
+                }
             };
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::ReloadWorkflows => {
+            info!("Reload workflows requested");
             let resp = match load_workflows_from_dir(&workflows_dir) {
                 Ok(new_workflows) => {
+                    info!(count = new_workflows.len(), "Reloaded workflows");
                     reload_workflows(new_workflows, &manager).await;
                     broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
                     DaemonResponse::Ok
                 }
-                Err(e) => DaemonResponse::Error {
-                    message: e.to_string(),
-                },
+                Err(e) => {
+                    warn!(error = %e, "Reload workflows failed");
+                    DaemonResponse::Error {
+                        message: e.to_string(),
+                    }
+                }
             };
             let _ = write_json(&mut writer, &resp).await;
         }
         DaemonCommand::EnableWorkflow { name } => {
+            info!(workflow = %name, "Enable workflow requested");
             let mut set = read_enabled(&config_dir).unwrap_or_default();
             set.insert(name.clone());
             let _ = write_enabled(&config_dir, &set);
             let result = manager.lock().await.start(&name).await;
+            if let Err(e) = &result {
+                warn!(workflow = %name, error = %e, "Enable workflow failed to start");
+            }
             broadcast_workflows_snapshot(&manager, &config_dir, &subscribers).await;
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::DisableWorkflow { name } => {
+            info!(workflow = %name, "Disable workflow requested");
             let mut set = read_enabled(&config_dir).unwrap_or_default();
             set.remove(&name);
             let _ = write_enabled(&config_dir, &set);
@@ -504,6 +539,8 @@ async fn run_finally_after_kill(
     storage: Arc<dyn StorageBackend>,
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
 ) {
+    info!(run_id = %run.id, workflow = %def.name, "Running [[finally]] steps for stopped run");
+
     let (ev_tx, mut ev_rx) = mpsc::channel::<EngineEvent>(64);
 
     // Forward engine events to daemon subscribers while finally steps run.
@@ -526,6 +563,7 @@ async fn run_finally_after_kill(
     engine
         .run_finally(&def, &run, RunOutcome::Stopped, Some(ev_tx))
         .await;
+    info!(run_id = %run.id, workflow = %def.name, "Finished [[finally]] steps for stopped run");
 }
 
 /// Kill an active run immediately. Returns the stopped run snapshot and its workflow def+scripts_dir
@@ -546,6 +584,7 @@ async fn kill_active_run(
         .map(|r| r.workflow_name.clone());
 
     let (def, scripts_dir) = if let Some(ref wf_name) = workflow_name {
+        info!(%run_id, workflow = %wf_name, "Aborting active run");
         // Drop the pending checkpoint response so the executor unblocks immediately.
         pending_checkpoints.lock().unwrap().remove(&run_id);
         // Abort the engine task; kill_on_drop ensures the subprocess is killed.
@@ -555,6 +594,7 @@ async fn kill_active_run(
         let scripts_dir = mgr.get_scripts_dir(wf_name);
         (def, scripts_dir)
     } else {
+        info!(%run_id, "No active run to abort (already terminal or unknown)");
         (None, None)
     };
 
