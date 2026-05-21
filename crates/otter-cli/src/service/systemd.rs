@@ -69,6 +69,7 @@ impl SystemdServiceManager {
                  After=otter.socket\n\
                  \n\
                  [Service]\n\
+                 Environment=SHELL=/bin/bash\n\
                  ExecStart={binary_str} _daemon\n\
                  Restart=on-failure\n"
             ),
@@ -149,6 +150,7 @@ mod tests {
         assert!(service_content.contains("_daemon"));
         assert!(service_content.contains("Requires=otter.socket"));
         assert!(service_content.contains("Restart=on-failure"));
+        assert!(service_content.contains("Environment=SHELL=/bin/bash"));
     }
 
     #[test]
