@@ -396,7 +396,11 @@ pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
         ],
-        RightPanelContent::ConsumedTriggers => vec![PanelHint::new("[Del]", "Delete trigger")],
+        RightPanelContent::ConsumedTriggers => vec![
+            PanelHint::new("[↑↓]", "Scroll"),
+            PanelHint::new("[Del]", "Delete trigger"),
+            PanelHint::new("[Esc]", "Close"),
+        ],
     }
 }
 
