@@ -1,5 +1,6 @@
 use super::StepExecutor;
 use crate::process::build_subprocess_command;
+use crate::requirements::resolve_requires;
 use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 
@@ -28,10 +29,14 @@ impl StepExecutor for ShellExecutor {
         let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
         let display_cmd = command.join(" ");
-        let resolved = ctx
-            .secret_store
-            .resolve(step_def.requires.as_deref().unwrap_or_default())
-            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+        let resolved = resolve_requires(
+            step_def.requires.as_deref().unwrap_or_default(),
+            ctx.requirements.as_deref(),
+            ctx.scripts_dir.as_deref(),
+            ctx.secret_store.as_ref(),
+            &ctx.workflow_name,
+        )
+        .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
 
         let command = if ctx.sandbox_config.is_none() {
             ctx.resource_limiter.apply(command)
@@ -112,6 +117,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         }
     }
@@ -283,7 +289,8 @@ mod tests {
 
     #[tokio::test]
     async fn secrets_field_fails_step_when_secret_not_in_store() {
-        // GIVEN an empty store and a step that declares a missing secret
+        // GIVEN an empty store and a step that declares a missing secret.
+        // Even without a manifest, undeclared names route to the store (legacy path).
         let dir = tempfile::tempdir().unwrap();
         let store = test_store(dir.path());
         let scratch = tempfile::tempdir().unwrap();
@@ -302,6 +309,89 @@ mod tests {
         assert!(
             err.to_string().contains("MISSING_KEY"),
             "error should name the missing key: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn requires_injects_non_sensitive_value_from_values_toml() {
+        use crate::requirements::{RequireEntry, Requirements};
+
+        // GIVEN: non-sensitive entry whose value lives in
+        // <scripts_dir>/.otter-state/values.toml. The shell step reads it from env.
+        let scripts_dir = tempfile::tempdir().unwrap();
+        let state_dir = scripts_dir.path().join(".otter-state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("values.toml"), r#"REPO_PATH = "/srv/repo""#).unwrap();
+
+        let mut manifest = Requirements::new();
+        manifest.insert(
+            "REPO_PATH".into(),
+            RequireEntry {
+                description: "x".into(),
+                sensitive: false,
+                default: None,
+            },
+        );
+
+        let scratch = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(scratch.path());
+        ctx.scripts_dir = Some(scripts_dir.path().to_path_buf());
+        ctx.requirements = Some(Arc::new(manifest));
+
+        let step_def = StepDef {
+            requires: Some(vec!["REPO_PATH".into()]),
+            ..step(vec!["bash", "-c", "echo repo=$REPO_PATH"])
+        };
+
+        // WHEN
+        let out = ShellExecutor.execute(&step_def, &ctx).await.unwrap();
+
+        // THEN
+        assert!(
+            out.stdout.contains("repo=/srv/repo"),
+            "non-sensitive value not injected: {}",
+            out.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn requires_missing_non_sensitive_value_fails_with_configure_hint() {
+        use crate::requirements::{RequireEntry, Requirements};
+
+        // GIVEN a declared non-sensitive entry but no values.toml
+        let scripts_dir = tempfile::tempdir().unwrap();
+        let mut manifest = Requirements::new();
+        manifest.insert(
+            "REPO_PATH".into(),
+            RequireEntry {
+                description: "x".into(),
+                sensitive: false,
+                default: None,
+            },
+        );
+
+        let scratch = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(scratch.path());
+        ctx.scripts_dir = Some(scripts_dir.path().to_path_buf());
+        ctx.requirements = Some(Arc::new(manifest));
+
+        let step_def = StepDef {
+            requires: Some(vec!["REPO_PATH".into()]),
+            ..step(vec!["echo", "hi"])
+        };
+
+        // WHEN
+        let err = ShellExecutor.execute(&step_def, &ctx).await.unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(
+            msg.contains("REPO_PATH"),
+            "missing name not in error: {msg}"
+        );
+        assert!(
+            msg.contains("otter workflow configure"),
+            "missing-value error must hint at `configure`: {msg}"
         );
     }
 }

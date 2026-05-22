@@ -223,6 +223,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         }
     }
@@ -247,6 +248,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         }
     }
@@ -511,6 +513,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         };
 
@@ -583,6 +586,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         };
 
@@ -625,6 +629,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         };
 

@@ -46,3 +46,11 @@ command = ["git", "log", "-1", "--oneline"]
 [[steps]]
 type = "shell"
 command = ["bash", "-c", "echo 'Working in:' && pwd"]
+
+# Non-sensitive values from [require] are also available as env vars
+# at runtime when listed in `requires` — handy for companion scripts that
+# need the resolved value without inlining it into argv.
+[[steps]]
+type = "shell"
+command = ["bash", "-c", "echo \"REPO_PATH from env: $REPO_PATH\""]
+requires = ["REPO_PATH"]

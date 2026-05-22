@@ -300,7 +300,7 @@ requires = ["GITHUB_TOKEN"]   # optional
 
 **Fields:**
 - `command` (required): The command to run
-- `requires` (optional): Sensitive entries from `[require]` to inject as env vars — see [Inputs: params and secrets](#inputs-params-and-secrets)
+- `requires` (optional): Entries from `[require]` to inject as env vars — see [Inputs: params and secrets](#inputs-params-and-secrets)
 
 **Script contract:**
 - Invoked as: `<command> <workflow-name> <run-id>`
@@ -409,13 +409,15 @@ requires = ["JIRA_PAT"]           # ← sensitive: injected as env var at runtim
 
 **Non-sensitive entries** can be referenced anywhere in the workflow as `{{NAME}}` — `[workspace] base_repo`, `pool.dir`, `path`, agent messages, shell argv, polling commands. Resolved values are saved to `<workflow>/.otter-state/values.toml` (a flat `KEY = "value"` table). The daemon reads this sidecar and substitutes `{{NAME}}` into the workflow when it loads. The on-disk `workflow.toml` always stays as the original template, so `cat` shows exactly what the author shipped.
 
-**Sensitive entries** (`sensitive = true`) are prompted with hidden input and stored encrypted at `~/.config/otter/secrets.age`. The encryption key lives in the OS keyring (libsecret on Linux, Keychain on macOS, Credential Manager on Windows). Reference them with `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` — the resolved value is injected into the subprocess env under the declared name. The subprocess otherwise sees a clean environment (only `PATH`, `HOME`, `USER`, `TMPDIR`, etc., are kept).
+**Sensitive entries** (`sensitive = true`) are prompted with hidden input and stored encrypted at `~/.config/otter/secrets.age`. The encryption key lives in the OS keyring (libsecret on Linux, Keychain on macOS, Credential Manager on Windows).
+
+**Injecting values into subprocess env** — `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` injects the resolved value into the subprocess env under the declared name. Sensitive names are fetched from the keyring; non-sensitive names are read from `<workflow>/.otter-state/values.toml` on each invocation, so `otter workflow configure` edits take effect on the next run without a daemon reload. The subprocess otherwise sees a clean environment (only `PATH`, `HOME`, `USER`, `TMPDIR`, etc., are kept).
 
 **Rules:**
 
 - Names match `^[A-Z][A-Z0-9_]*$` and may not shadow safe system vars (`PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `PWD`, `LANG`, `LC_*`).
 - `{{NAME}}` references only work for non-sensitive entries (substituting a secret would write it to disk in cleartext).
-- `requires = [...]` accepts only sensitive entries in v1; a follow-up will accept non-sensitive entries too so companion scripts can read params from env.
+- `requires = [...]` accepts both sensitive and non-sensitive entries.
 - Sensitive entries are global by name: two workflows that both declare `[require.JIRA_PAT]` share one keyring entry — the second install finds it already set and skips the prompt.
 
 **Commands:**
@@ -555,7 +557,7 @@ Polls an external event source on a configurable interval.
 - `poll_command` (required): Array of strings; the command to run on each poll cycle. stdout must be a JSON array of strings (event identifiers/hashes), exit 0 on success
 - `context_command` (optional): Array of strings; the command to run for each new hash. Invoked as `<context_command> <hash> <context-dir>`, which should write trigger context files to `<context-dir>`. If omitted, no context directory is created and the workflow runs without trigger-context files.
 - `interval_secs` (optional, default: 600): Polling interval in seconds
-- `requires` (optional): Sensitive entries from `[require]` to inject as env vars into both `poll_command` and `context_command` — see [Inputs: params and secrets](#inputs-params-and-secrets)
+- `requires` (optional): Entries from `[require]` to inject as env vars into both `poll_command` and `context_command` — see [Inputs: params and secrets](#inputs-params-and-secrets)
 
 **Example:**
 ```toml

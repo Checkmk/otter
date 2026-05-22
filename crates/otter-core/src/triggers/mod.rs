@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use otter_secrets::SecretStore;
 
+use crate::requirements::Requirements;
 use crate::types::{TriggerDef, TriggerError, TriggerEvent};
 
 #[async_trait]
@@ -21,6 +22,7 @@ pub trait TriggerSource: Send + Sync {
     async fn on_run_completed(&self, _payload: &str, _succeeded: bool) {}
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_trigger(
     def: &TriggerDef,
     workflow_name: &str,
@@ -29,6 +31,7 @@ pub fn build_trigger(
     _workspace_config: Option<&crate::types::WorkspaceConfig>,
     scripts_dir: Option<&Path>,
     secret_store: Arc<dyn SecretStore>,
+    requirements: Option<Arc<Requirements>>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -49,12 +52,14 @@ pub fn build_trigger(
                 .join(format!("{}-seen.json", workflow_name));
             Ok(Arc::new(polling::PollingTrigger::new(
                 "polling".to_string(),
+                workflow_name.to_string(),
                 poll_command.clone(),
                 context_command.clone(),
                 std::time::Duration::from_secs(*interval_secs),
                 seen_path,
                 scripts_dir.map(|p| p.to_path_buf()),
                 secret_store,
+                requirements,
                 requires.clone().unwrap_or_default(),
             )))
         }

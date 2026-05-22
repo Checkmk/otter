@@ -13,6 +13,7 @@ use otter_secrets::SecretStore;
 
 use super::TriggerSource;
 use crate::process::{inject_isolated_env, PrependScriptsDir};
+use crate::requirements::{resolve_requires, Requirements};
 use crate::types::{PendingContext, TriggerError, TriggerEvent};
 
 #[derive(Serialize, Deserialize)]
@@ -58,6 +59,7 @@ fn save_consumed_triggers(path: &Path, seen: &HashSet<String>) -> anyhow::Result
 
 pub struct PollingTrigger {
     name: String,
+    workflow_name: String,
     poll_command: Vec<String>,
     context_command: Option<Vec<String>>,
     interval: Duration,
@@ -65,6 +67,7 @@ pub struct PollingTrigger {
     in_flight: Arc<Mutex<HashSet<String>>>,
     scripts_dir: Option<PathBuf>,
     secret_store: Arc<dyn SecretStore>,
+    requirements: Option<Arc<Requirements>>,
     poll_secrets: Vec<String>,
 }
 
@@ -72,16 +75,19 @@ impl PollingTrigger {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
+        workflow_name: String,
         poll_command: Vec<String>,
         context_command: Option<Vec<String>>,
         interval: Duration,
         seen_path: PathBuf,
         scripts_dir: Option<PathBuf>,
         secret_store: Arc<dyn SecretStore>,
+        requirements: Option<Arc<Requirements>>,
         poll_secrets: Vec<String>,
     ) -> Self {
         Self {
             name,
+            workflow_name,
             poll_command,
             context_command,
             interval,
@@ -89,6 +95,7 @@ impl PollingTrigger {
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             scripts_dir,
             secret_store,
+            requirements,
             poll_secrets,
         }
     }
@@ -163,10 +170,14 @@ impl TriggerSource for PollingTrigger {
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
         debug!("polling: running {:?}", self.poll_command);
-        let resolved = self
-            .secret_store
-            .resolve(&self.poll_secrets)
-            .map_err(|e| anyhow::anyhow!("secret resolution for poll command failed: {}", e))?;
+        let resolved = resolve_requires(
+            &self.poll_secrets,
+            self.requirements.as_deref(),
+            self.scripts_dir.as_deref(),
+            self.secret_store.as_ref(),
+            &self.workflow_name,
+        )
+        .map_err(|e| anyhow::anyhow!("requires resolution for poll command failed: {}", e))?;
         let mut cmd = Command::new(&self.poll_command[0]);
         cmd.args(&self.poll_command[1..]);
         inject_isolated_env(&mut cmd, &resolved, true);
@@ -264,12 +275,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -308,12 +321,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path,
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -341,12 +356,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -391,12 +408,14 @@ mod tests {
         let ctx_cmd = vec![ctx_path.to_string_lossy().to_string()];
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(ctx_cmd.clone()),
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -439,12 +458,14 @@ mod tests {
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -486,12 +507,14 @@ mod tests {
         let seen_path = temp_dir.path().join("seen.json");
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             seen_path.clone(),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -521,12 +544,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![cmd_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -566,12 +591,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(vec![ctx_path.to_string_lossy().to_string()]),
             Duration::from_millis(100), // 100ms interval
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -621,12 +648,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(50),
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -666,12 +695,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             no_secrets_store(),
+            None,
             vec![],
         );
 
@@ -724,12 +755,14 @@ mod tests {
 
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             None,
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             Arc::new(OneSecret),
+            None,
             vec!["POLL_SECRET".to_string()],
         );
 
@@ -774,12 +807,14 @@ mod tests {
         let ctx_cmd = vec!["ctx.sh".to_string()];
         let trigger = PollingTrigger::new(
             "test".to_string(),
+            "test".to_string(),
             vec![poll_path.to_string_lossy().to_string()],
             Some(ctx_cmd),
             Duration::from_millis(100),
             temp_dir.path().join("seen.json"),
             None,
             Arc::new(DummyStore),
+            None,
             vec!["API_KEY".to_string()],
         );
 

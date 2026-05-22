@@ -1,4 +1,5 @@
 use super::StepExecutor;
+use crate::requirements::resolve_requires;
 use crate::types::{ProgressChunk, StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -55,10 +56,14 @@ impl StepExecutor for AgentExecutor {
             tx
         });
 
-        let resolved_secrets = ctx
-            .secret_store
-            .resolve(step_def.requires.as_deref().unwrap_or_default())
-            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+        let resolved_secrets = resolve_requires(
+            step_def.requires.as_deref().unwrap_or_default(),
+            ctx.requirements.as_deref(),
+            ctx.scripts_dir.as_deref(),
+            ctx.secret_store.as_ref(),
+            &ctx.workflow_name,
+        )
+        .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
 
         let output = manager
             .run_step(
@@ -168,6 +173,7 @@ mod tests {
             progress_fn: None,
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
+            requirements: None,
             sandbox_config: None,
         };
         let step_def = StepDef {

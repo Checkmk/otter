@@ -343,6 +343,7 @@ pub struct StepContext {
     pub progress_fn: Option<Arc<dyn Fn(ProgressChunk) + Send + Sync>>,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
     pub secret_store: Arc<dyn SecretStore>,
+    pub requirements: Option<Arc<Requirements>>,
     /// Resolved sandbox configuration for this step, if sandboxing is active.
     pub sandbox_config: Option<agentbox::SandboxConfig>,
 }

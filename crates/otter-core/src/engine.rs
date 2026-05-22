@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::process::{inject_isolated_env, subprocess_path, PrependScriptsDir};
+use crate::requirements::{resolve_requires, Requirements};
 use crate::resource_limiter::build_limiter;
 use crate::sandbox::resolve_sandbox_config;
 use crate::session::AgentSessionManager;
@@ -27,6 +28,7 @@ pub struct Engine {
     notifier: Arc<dyn Notifier>,
     scripts_dir: Option<std::path::PathBuf>,
     secret_store: Arc<dyn SecretStore>,
+    requirements: Option<Arc<Requirements>>,
 }
 
 impl Engine {
@@ -42,6 +44,7 @@ impl Engine {
             notifier,
             scripts_dir: None,
             secret_store: Arc::new(NoOpSecretStore),
+            requirements: None,
         }
     }
 
@@ -58,6 +61,7 @@ impl Engine {
             notifier,
             scripts_dir,
             secret_store: Arc::new(NoOpSecretStore),
+            requirements: None,
         }
     }
 
@@ -75,7 +79,15 @@ impl Engine {
             notifier,
             scripts_dir,
             secret_store,
+            requirements: None,
         }
+    }
+
+    /// Builder-style setter for the workflow's `[require]` manifest. Used by
+    /// the daemon to scope env-var resolution for `requires = [..]`.
+    pub fn with_requirements(mut self, requirements: Option<Arc<Requirements>>) -> Self {
+        self.requirements = requirements;
+        self
     }
 
     pub fn with_executors(
@@ -90,6 +102,7 @@ impl Engine {
             notifier: Arc::new(NoOpNotifier),
             scripts_dir: None,
             secret_store: Arc::new(NoOpSecretStore),
+            requirements: None,
         }
     }
 
@@ -140,6 +153,8 @@ impl Engine {
                 run.id,
                 &scratch_dir,
                 self.secret_store.as_ref(),
+                self.requirements.as_deref(),
+                self.scripts_dir.as_deref(),
             )
             .await?;
             run.workspace_dir = workspace_dir.clone();
@@ -242,6 +257,7 @@ impl Engine {
             workflow.workspace.as_ref(),
             self.scripts_dir.as_deref(),
             self.secret_store.clone(),
+            self.requirements.clone(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -358,6 +374,8 @@ impl Engine {
             run.id,
             &scratch_dir,
             self.secret_store.as_ref(),
+            self.requirements.as_deref(),
+            self.scripts_dir.as_deref(),
         )
         .await
         {
@@ -421,8 +439,15 @@ impl Engine {
             };
             std::fs::create_dir_all(&ctx_dir)?;
             info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
-            let resolved = self.secret_store.resolve(&ctx.secrets).map_err(|e| {
-                anyhow::anyhow!("secret resolution for context command failed: {}", e)
+            let resolved = resolve_requires(
+                &ctx.secrets,
+                self.requirements.as_deref(),
+                self.scripts_dir.as_deref(),
+                self.secret_store.as_ref(),
+                &workflow.name,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("requires resolution for context command failed: {}", e)
             })?;
             let mut cmd = tokio::process::Command::new(&ctx.command[0]);
             cmd.args(&ctx.command[1..])
@@ -555,6 +580,7 @@ impl Engine {
                 progress_fn,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
+                requirements: self.requirements.clone(),
                 sandbox_config,
             };
 
@@ -712,6 +738,7 @@ impl Engine {
                 progress_fn: None,
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
+                requirements: self.requirements.clone(),
                 sandbox_config,
             };
 

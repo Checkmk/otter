@@ -184,13 +184,15 @@ impl WorkflowManager {
             (def, scripts_dir)
         };
 
+        let requirements = def.require.clone().map(std::sync::Arc::new);
         let engine = Engine::new_with_secret_store(
             self.storage.clone(),
             self.data_dir.join("runs"),
             self.notifier.clone(),
             scripts_dir,
             self.secret_store.clone(),
-        );
+        )
+        .with_requirements(requirements);
 
         let handle = self.handles.get_mut(name).unwrap();
         let shutdown = handle.shutdown.clone();

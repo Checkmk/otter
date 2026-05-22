@@ -6,6 +6,9 @@
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::collections::BTreeSet;
+use std::path::Path;
+
+use otter_secrets::{SecretError, SecretStore};
 
 use crate::types::{TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION};
 
@@ -39,16 +42,8 @@ pub enum ValidationError {
     #[error("undeclared template reference {{{{{name}}}}}: add [require.{name}] to the manifest")]
     UndeclaredParamRef { name: String },
 
-    #[error(
-        "undeclared `requires` reference '{name}': add [require.{name}] with `sensitive = true`"
-    )]
+    #[error("undeclared `requires` reference '{name}': add [require.{name}] to the manifest")]
     UndeclaredRequiresRef { name: String },
-
-    #[error(
-        "`requires = [..]` may only reference sensitive entries in v1; '{name}' is non-sensitive — \
-         reference it via {{{{{name}}}}} substitution instead"
-    )]
-    NonSensitiveInRequires { name: String },
 
     #[error(
         "{{{{{name}}}}} substitution may only reference non-sensitive entries; \
@@ -146,16 +141,10 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
         }
     }
 
-    // Every `requires` entry must point to a declared, sensitive entry (v1).
+    // Every `requires` entry must point to a declared entry.
     for name in &requires_refs {
-        match manifest.get(name) {
-            None => {
-                return Err(ValidationError::UndeclaredRequiresRef { name: name.clone() });
-            }
-            Some(entry) if !entry.sensitive => {
-                return Err(ValidationError::NonSensitiveInRequires { name: name.clone() });
-            }
-            _ => {}
+        if !manifest.contains_key(name) {
+            return Err(ValidationError::UndeclaredRequiresRef { name: name.clone() });
         }
     }
 
@@ -310,6 +299,87 @@ pub fn load_values_toml(path: &std::path::Path) -> anyhow::Result<IndexMap<Strin
         .into_iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
         .collect())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveRequiresError {
+    #[error(transparent)]
+    Secret(#[from] SecretError),
+
+    #[error(
+        "non-sensitive require '{name}' has no value; run \
+         `otter workflow configure {workflow}` to set it"
+    )]
+    MissingValue { workflow: String, name: String },
+
+    #[error("failed to load values.toml at {path}: {source}")]
+    ValuesLoad {
+        path: String,
+        #[source]
+        source: anyhow::Error,
+    },
+}
+
+pub fn resolve_requires(
+    names: &[String],
+    requirements: Option<&Requirements>,
+    scripts_dir: Option<&Path>,
+    secret_store: &dyn SecretStore,
+    workflow_name: &str,
+) -> Result<Vec<(String, String)>, ResolveRequiresError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut sensitive_names: Vec<String> = Vec::new();
+    let mut non_sensitive_names: Vec<String> = Vec::new();
+    for name in names {
+        let is_sensitive = requirements
+            .and_then(|r| r.get(name))
+            .map(|e| e.sensitive)
+            .unwrap_or(true);
+        if is_sensitive {
+            sensitive_names.push(name.clone());
+        } else {
+            non_sensitive_names.push(name.clone());
+        }
+    }
+
+    let sensitive_pairs: IndexMap<String, String> = if sensitive_names.is_empty() {
+        IndexMap::new()
+    } else {
+        secret_store
+            .resolve(&sensitive_names)?
+            .into_iter()
+            .collect()
+    };
+
+    let values = if non_sensitive_names.is_empty() {
+        IndexMap::new()
+    } else {
+        let path = scripts_dir
+            .map(|d| d.join(".otter-state").join("values.toml"))
+            .unwrap_or_default();
+        load_values_toml(&path).map_err(|source| ResolveRequiresError::ValuesLoad {
+            path: path.display().to_string(),
+            source,
+        })?
+    };
+
+    let mut out: Vec<(String, String)> = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some(val) = sensitive_pairs.get(name) {
+            out.push((name.clone(), val.clone()));
+        } else if let Some(val) = values.get(name) {
+            out.push((name.clone(), val.clone()));
+        } else {
+            return Err(ResolveRequiresError::MissingValue {
+                workflow: workflow_name.to_string(),
+                name: name.clone(),
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub fn missing_param_values(
@@ -512,8 +582,9 @@ mod tests {
     }
 
     #[test]
-    fn requires_must_reference_sensitive_entries_in_v1() {
-        // GIVEN
+    fn non_sensitive_in_requires_is_accepted() {
+        // GIVEN — non-sensitive requires entries are resolved at runtime from
+        // values.toml; the validator must accept them.
         let raw = r#"
             name = "wf"
             type = "looping"
@@ -526,10 +597,7 @@ mod tests {
             requires = ["REPO_PATH"]
         "#;
         // WHEN / THEN
-        match unwrap_err(raw) {
-            ValidationError::NonSensitiveInRequires { name } => assert_eq!(name, "REPO_PATH"),
-            e => panic!("unexpected error: {e}"),
-        }
+        ok(raw);
     }
 
     #[test]
@@ -921,6 +989,190 @@ NOT_A_STRING = 42
 
         // THEN
         assert_eq!(missing, vec!["C".to_string()]);
+    }
+
+    // ─── resolve_requires ───────────────────────────────────────────────────
+
+    fn manifest_with(entries: &[(&str, bool)]) -> Requirements {
+        let mut m = Requirements::new();
+        for (n, sensitive) in entries {
+            m.insert(
+                n.to_string(),
+                RequireEntry {
+                    description: "x".into(),
+                    sensitive: *sensitive,
+                    default: None,
+                },
+            );
+        }
+        m
+    }
+
+    struct StubStore {
+        items: std::collections::HashMap<String, String>,
+    }
+    impl StubStore {
+        fn new(pairs: &[(&str, &str)]) -> Self {
+            Self {
+                items: pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            }
+        }
+    }
+    impl otter_secrets::SecretStore for StubStore {
+        fn get(&self, key: &str) -> Option<String> {
+            self.items.get(key).cloned()
+        }
+        fn list(&self) -> Vec<String> {
+            self.items.keys().cloned().collect()
+        }
+        fn set(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn write_values_toml(dir: &Path, body: &str) {
+        let state_dir = dir.join(".otter-state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("values.toml"), body).unwrap();
+    }
+
+    #[test]
+    fn resolve_requires_returns_empty_for_empty_names() {
+        // GIVEN
+        let store = StubStore::new(&[]);
+        // WHEN
+        let resolved =
+            resolve_requires(&[], None, None, &store, "wf").expect("resolves with empty input");
+        // THEN
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn resolve_requires_routes_sensitive_to_secret_store() {
+        // GIVEN
+        let manifest = manifest_with(&[("TOKEN", true)]);
+        let store = StubStore::new(&[("TOKEN", "secret-value")]);
+
+        // WHEN
+        let resolved =
+            resolve_requires(&["TOKEN".to_string()], Some(&manifest), None, &store, "wf").unwrap();
+
+        // THEN
+        assert_eq!(resolved, vec![("TOKEN".to_string(), "secret-value".into())]);
+    }
+
+    #[test]
+    fn resolve_requires_loads_non_sensitive_from_values_toml() {
+        // GIVEN
+        let dir = tempfile::tempdir().unwrap();
+        write_values_toml(dir.path(), r#"REPO_PATH = "/home/me/repo""#);
+        let manifest = manifest_with(&[("REPO_PATH", false)]);
+        let store = StubStore::new(&[]);
+
+        // WHEN
+        let resolved = resolve_requires(
+            &["REPO_PATH".to_string()],
+            Some(&manifest),
+            Some(dir.path()),
+            &store,
+            "wf",
+        )
+        .unwrap();
+
+        // THEN
+        assert_eq!(
+            resolved,
+            vec![("REPO_PATH".to_string(), "/home/me/repo".to_string())]
+        );
+    }
+
+    #[test]
+    fn resolve_requires_mixes_sensitive_and_non_sensitive_in_order() {
+        // GIVEN
+        let dir = tempfile::tempdir().unwrap();
+        write_values_toml(dir.path(), r#"REPO_PATH = "/repo""#);
+        let manifest = manifest_with(&[("TOKEN", true), ("REPO_PATH", false)]);
+        let store = StubStore::new(&[("TOKEN", "t")]);
+
+        // WHEN — request in REPO_PATH-first order; result must preserve it.
+        let resolved = resolve_requires(
+            &["REPO_PATH".to_string(), "TOKEN".to_string()],
+            Some(&manifest),
+            Some(dir.path()),
+            &store,
+            "wf",
+        )
+        .unwrap();
+
+        // THEN
+        assert_eq!(
+            resolved,
+            vec![
+                ("REPO_PATH".to_string(), "/repo".to_string()),
+                ("TOKEN".to_string(), "t".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_requires_missing_non_sensitive_fails_with_configure_hint() {
+        // GIVEN — manifest declares but values.toml has nothing
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = manifest_with(&[("REPO_PATH", false)]);
+        let store = StubStore::new(&[]);
+
+        // WHEN
+        let err = resolve_requires(
+            &["REPO_PATH".to_string()],
+            Some(&manifest),
+            Some(dir.path()),
+            &store,
+            "my-wf",
+        )
+        .unwrap_err();
+
+        // THEN
+        let msg = err.to_string();
+        assert!(msg.contains("REPO_PATH"), "expected name in error: {msg}");
+        assert!(
+            msg.contains("otter workflow configure my-wf"),
+            "expected configure hint with workflow name: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_requires_missing_sensitive_propagates_secret_error() {
+        // GIVEN
+        let manifest = manifest_with(&[("TOKEN", true)]);
+        let store = StubStore::new(&[]); // empty
+
+        // WHEN
+        let err = resolve_requires(&["TOKEN".to_string()], Some(&manifest), None, &store, "wf")
+            .unwrap_err();
+
+        // THEN
+        assert!(matches!(
+            err,
+            ResolveRequiresError::Secret(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_requires_without_manifest_treats_names_as_sensitive() {
+        // GIVEN — no manifest passed; legacy/no-manifest callers route to store.
+        let store = StubStore::new(&[("LEGACY", "v")]);
+
+        // WHEN
+        let resolved = resolve_requires(&["LEGACY".to_string()], None, None, &store, "wf").unwrap();
+
+        // THEN
+        assert_eq!(resolved, vec![("LEGACY".to_string(), "v".to_string())]);
     }
 
     #[test]

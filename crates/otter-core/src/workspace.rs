@@ -5,6 +5,7 @@ use uuid::Uuid;
 use otter_secrets::SecretStore;
 
 use crate::process::inject_isolated_env;
+use crate::requirements::{resolve_requires, Requirements};
 use crate::types::{RunOutcome, WorkspaceConfig, WorkspaceSource};
 use crate::workspace_pool::{acquire_pool_slot, release_pool_slot};
 
@@ -23,6 +24,8 @@ pub async fn resolve_workspace(
     run_id: Uuid,
     scratch_dir: &Path,
     secret_store: &dyn SecretStore,
+    requirements: Option<&Requirements>,
+    scripts_dir: Option<&Path>,
 ) -> anyhow::Result<Option<PathBuf>> {
     let Some(config) = config else {
         return Ok(None);
@@ -46,11 +49,16 @@ pub async fn resolve_workspace(
                     "workspace script command must not be empty"
                 ));
             }
-            let resolved_secrets = secret_store
-                .resolve(requires.as_deref().unwrap_or_default())
-                .map_err(|e| {
-                    anyhow::anyhow!("secret resolution for workspace script failed: {}", e)
-                })?;
+            let resolved_secrets = resolve_requires(
+                requires.as_deref().unwrap_or_default(),
+                requirements,
+                scripts_dir,
+                secret_store,
+                workflow_name,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("requires resolution for workspace script failed: {}", e)
+            })?;
             let mut cmd = tokio::process::Command::new(&command[0]);
             cmd.args(&command[1..])
                 .arg(workflow_name)
@@ -266,12 +274,18 @@ mod tests {
     async fn none_returns_no_workspace() {
         // GIVEN / WHEN / THEN
         let s = scratch();
-        assert!(
-            resolve_workspace(None, "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(resolve_workspace(
+            None,
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
     }
 
     #[tokio::test]
@@ -279,12 +293,18 @@ mod tests {
         // GIVEN / WHEN / THEN
         let s = scratch();
         let config = cfg(WorkspaceSource::Scratch);
-        assert!(
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
     }
 
     #[tokio::test]
@@ -297,10 +317,17 @@ mod tests {
         let s = scratch();
 
         // WHEN
-        let result =
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap();
+        let result = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN
         assert_eq!(result.unwrap(), dir.path().canonicalize().unwrap());
@@ -315,11 +342,17 @@ mod tests {
         let s = scratch();
 
         // WHEN / THEN
-        assert!(
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .is_err()
-        );
+        assert!(resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -332,11 +365,17 @@ mod tests {
         let s = scratch();
 
         // WHEN / THEN
-        assert!(
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .is_err()
-        );
+        assert!(resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -361,6 +400,8 @@ mod tests {
             Uuid::new_v4(),
             s.path(),
             &no_secrets(),
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -399,6 +440,8 @@ mod tests {
             run_id,
             s.path(),
             &no_secrets(),
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -418,11 +461,17 @@ mod tests {
         let s = scratch();
 
         // WHEN / THEN
-        assert!(
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .is_err()
-        );
+        assert!(resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -435,11 +484,17 @@ mod tests {
         let s = scratch();
 
         // WHEN / THEN
-        assert!(
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .is_err()
-        );
+        assert!(resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -458,10 +513,17 @@ mod tests {
         let s = scratch();
 
         // WHEN
-        let result =
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap();
+        let result = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN
         assert!(result.is_some());
@@ -509,9 +571,17 @@ mod tests {
         let s = scratch();
 
         // WHEN
-        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &OneSecret)
-            .await
-            .unwrap();
+        resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &OneSecret,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN — secret was injected
         let val = std::fs::read_to_string(&secret_file).unwrap();
@@ -541,9 +611,17 @@ mod tests {
         let s = scratch();
 
         // WHEN
-        resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-            .await
-            .unwrap();
+        resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN — sentinel must not appear (env is isolated)
         let val = std::fs::read_to_string(&env_file).unwrap();
@@ -552,6 +630,66 @@ mod tests {
             "",
             "daemon env must not leak into isolated workspace script"
         );
+    }
+
+    #[tokio::test]
+    async fn script_injects_non_sensitive_value_from_values_toml() {
+        use crate::requirements::{RequireEntry, Requirements};
+
+        // GIVEN a workspace script that reads $REPO_PATH from env, and a
+        // values.toml under <scripts_dir>/.otter-state/ holding the value.
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join("env.txt");
+        let target = dir.path().to_string_lossy().into_owned();
+        let config = cfg(WorkspaceSource::Script {
+            command: vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                format!(
+                    "echo \"$REPO_PATH\" > '{}' ; echo '{}'",
+                    env_file.display(),
+                    target
+                ),
+            ],
+            requires: Some(vec!["REPO_PATH".to_string()]),
+        });
+
+        let scripts_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(scripts_dir.path().join(".otter-state")).unwrap();
+        std::fs::write(
+            scripts_dir.path().join(".otter-state").join("values.toml"),
+            r#"REPO_PATH = "/srv/repo""#,
+        )
+        .unwrap();
+
+        let mut manifest = Requirements::new();
+        manifest.insert(
+            "REPO_PATH".into(),
+            RequireEntry {
+                description: "x".into(),
+                sensitive: false,
+                default: None,
+            },
+        );
+
+        let s = scratch();
+
+        // WHEN
+        resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            Some(&manifest),
+            Some(scripts_dir.path()),
+        )
+        .await
+        .unwrap();
+
+        // THEN — non-sensitive value was injected
+        let val = std::fs::read_to_string(&env_file).unwrap();
+        assert_eq!(val.trim(), "/srv/repo");
     }
 
     // ────────────────────────── git workspace ──────────────────────────
@@ -567,10 +705,17 @@ mod tests {
         });
 
         // WHEN
-        let result =
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap();
+        let result = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN — worktree under scratch/worktree with the base commit checked out
         let wt = result.unwrap();
@@ -599,10 +744,17 @@ mod tests {
         };
 
         // WHEN
-        let result =
-            resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-                .await
-                .unwrap();
+        let result = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // THEN
         let slot = result.unwrap();
@@ -626,10 +778,18 @@ mod tests {
                 keep_directory_on: vec![],
             }),
         };
-        let slot = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-            .await
-            .unwrap()
-            .unwrap();
+        let slot = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // WHEN
         cleanup_workspace(Some(&config), Some(&slot), &RunOutcome::Success)
@@ -657,10 +817,18 @@ mod tests {
                 keep_directory_on: vec![RunOutcome::Failed],
             }),
         };
-        let slot = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-            .await
-            .unwrap()
-            .unwrap();
+        let slot = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // WHEN — run failed
         cleanup_workspace(Some(&config), Some(&slot), &RunOutcome::Failed)
@@ -680,10 +848,18 @@ mod tests {
             base_repo: repo.to_string_lossy().into_owned(),
             ref_: Some("HEAD".to_string()),
         });
-        let wt = resolve_workspace(Some(&config), "wf", Uuid::new_v4(), s.path(), &no_secrets())
-            .await
-            .unwrap()
-            .unwrap();
+        let wt = resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert!(wt.is_dir());
 
         // WHEN

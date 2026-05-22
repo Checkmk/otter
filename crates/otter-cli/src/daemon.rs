@@ -559,7 +559,9 @@ async fn run_finally_after_kill(
 
     let scratch_base = dirs_data_dir().join("runs");
     let notifier = Arc::new(DesktopNotifier);
-    let engine = Engine::new_with_scripts_dir(storage, scratch_base, notifier, scripts_dir);
+    let requirements = def.require.clone().map(Arc::new);
+    let engine = Engine::new_with_scripts_dir(storage, scratch_base, notifier, scripts_dir)
+        .with_requirements(requirements);
     engine
         .run_finally(&def, &run, RunOutcome::Stopped, Some(ev_tx))
         .await;
