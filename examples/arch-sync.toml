@@ -1,5 +1,6 @@
 name = "arch-sync"
 type = "looping"
+schema = 1
 
 # Point to the correct absolute path of the repository
 # [workspace]

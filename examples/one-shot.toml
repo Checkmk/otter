@@ -1,5 +1,6 @@
 name = "one-shot-impl-otter"
 type = "triggered"
+schema = 1
 
 [trigger]
 type = "manual"

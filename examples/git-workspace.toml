@@ -17,6 +17,7 @@
 
 name = "git-workspace"
 type = "triggered"
+schema = 1
 
 [require.REPO_PATH]
 description = "Absolute path to your local git clone"

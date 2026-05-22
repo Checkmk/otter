@@ -332,14 +332,13 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
     // Full validation up front so we fail before touching the filesystem.
     let def = validate_workflow(&raw_toml).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    if let Some(v) = def.schema {
-        anyhow::ensure!(
-            v <= WORKFLOW_SCHEMA_VERSION,
-            "Workflow requires schema version {} but this otter supports up to {}",
-            v,
-            WORKFLOW_SCHEMA_VERSION
-        );
-    }
+    let v = def.schema.expect("required by validate_workflow");
+    anyhow::ensure!(
+        v <= WORKFLOW_SCHEMA_VERSION,
+        "Workflow requires schema version {} but this otter supports up to {}",
+        v,
+        WORKFLOW_SCHEMA_VERSION
+    );
 
     let workflows_dir = dirs_config_dir().join("workflows");
     std::fs::create_dir_all(&workflows_dir)?;

@@ -1,5 +1,6 @@
 name = "hello-agent"
 type = "triggered"
+schema = 1
 
 [trigger]
 type = "manual"

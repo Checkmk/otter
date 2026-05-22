@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
-use crate::types::{TriggerDef, WorkflowDef, WorkspaceSource};
+use crate::types::{TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION};
 
 /// A single `[require.<NAME>]` entry.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -75,6 +75,12 @@ pub enum ValidationError {
          add matching [require.<NAME>] declarations with `sensitive = true`"
     )]
     LegacySecretsField { site: &'static str },
+
+    #[error(
+        "workflow must declare `schema = {current}` at the top level \
+         (this otter supports up to schema {current})"
+    )]
+    MissingSchema { current: u32 },
 }
 
 /// Parse + validate a workflow TOML string. The primary entry point used by
@@ -90,6 +96,12 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
 
     let def: WorkflowDef =
         toml::from_str(raw).map_err(|e| ValidationError::Parse(e.to_string()))?;
+
+    if def.schema.is_none() {
+        return Err(ValidationError::MissingSchema {
+            current: WORKFLOW_SCHEMA_VERSION,
+        });
+    }
 
     let template_refs = find_param_refs(raw);
     let requires_refs = collect_requires_refs(&def);
@@ -395,6 +407,7 @@ mod tests {
     const BASIC: &str = r#"
         name = "wf"
         type = "looping"
+            schema = 1
         [[steps]]
         type = "shell"
         command = ["echo", "hi"]
@@ -407,11 +420,31 @@ mod tests {
     }
 
     #[test]
+    fn missing_schema_field_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::MissingSchema { current } => {
+                assert_eq!(current, WORKFLOW_SCHEMA_VERSION);
+            }
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
     fn workflow_with_requires_ref_but_no_manifest_errors() {
         // GIVEN
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [[steps]]
             type = "shell"
             command = ["echo", "hi"]
@@ -427,6 +460,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [[steps]]
             type = "shell"
             command = ["echo", "{{REPO_PATH}}"]
@@ -441,6 +475,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.OTHER]
             description = "..."
             sensitive = true
@@ -462,6 +497,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.OTHER]
             description = "..."
             [[steps]]
@@ -481,6 +517,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.REPO_PATH]
             description = "..."
             [[steps]]
@@ -501,6 +538,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.JIRA_PAT]
             description = "..."
             sensitive = true
@@ -521,6 +559,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.UNUSED]
             description = "..."
             [[steps]]
@@ -561,6 +600,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "triggered"
+            schema = 1
             [require.A]
             description = "a"
             sensitive = true
@@ -606,6 +646,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "triggered"
+            schema = 1
             [require.REPO_PATH]
             description = "..."
             [require.POOL_DIR]
@@ -673,6 +714,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.lower_case]
             description = "..."
             [[steps]]
@@ -695,6 +737,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.PATH]
             description = "..."
             [[steps]]
@@ -714,6 +757,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.LC_ALL]
             description = "..."
             [[steps]]
@@ -733,6 +777,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.TOKEN]
             description = "..."
             sensitive = true
@@ -755,6 +800,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.X]
             description = "..."
             default = "prefix-{{Y}}"
@@ -775,6 +821,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.X]
             description = "..."
             bogus = true
@@ -795,6 +842,7 @@ mod tests {
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [[steps]]
             type = "shell"
             command = ["echo", "hi"]
@@ -849,6 +897,7 @@ NOT_A_STRING = 42
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.A]
             description = "a"
             [require.B]
@@ -880,6 +929,7 @@ NOT_A_STRING = 42
         let raw = r#"
             name = "wf"
             type = "looping"
+            schema = 1
             [require.ZEBRA]
             description = "z"
             [require.APPLE]

@@ -700,7 +700,7 @@ pub(crate) fn load_workflows_from_dir(
         };
 
         // Schema version check.
-        let schema_ver = validated_def.schema.unwrap_or(1);
+        let schema_ver = validated_def.schema.expect("required by validate_workflow");
         if schema_ver > WORKFLOW_SCHEMA_VERSION {
             warn!(
                 workflow = %validated_def.name,
@@ -953,6 +953,7 @@ mod tests {
             r#"
 name = "good"
 type = "looping"
+            schema = 1
 [[steps]]
 type = "shell"
 command = ["echo", "ok"]
@@ -964,6 +965,7 @@ command = ["echo", "ok"]
             r#"
 name = "bad"
 type = "looping"
+            schema = 1
 [[steps]]
 type = "shell"
 command = ["echo", "hi"]

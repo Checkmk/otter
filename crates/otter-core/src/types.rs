@@ -46,7 +46,6 @@ pub struct WorkflowDef {
     pub name: String,
     #[serde(rename = "type")]
     pub workflow_type: WorkflowType,
-    /// TOML schema version. Absent means version 1 (full backward compatibility).
     #[serde(default)]
     pub schema: Option<u32>,
     /// Human-readable package version (e.g. "1.0.0"). Display only.

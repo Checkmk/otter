@@ -644,7 +644,7 @@ my-workflow/
 ```toml
 name = "my-workflow"
 type = "triggered"
-schema = 1            # optional; defaults to 1
+schema = 1
 version = "1.2.0"     # optional; human-readable package version
 ```
 
