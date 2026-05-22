@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::requirements::Requirements;
 use crate::resource_limiter::ResourceLimiter;
 use crate::session::AgentSessionManager;
 use otter_secrets::SecretStore;
@@ -63,6 +64,9 @@ pub struct WorkflowDef {
     /// Steps that always run after main steps, regardless of outcome.
     #[serde(default)]
     pub finally: Vec<FinallyStepDef>,
+    /// Declared inputs consumed by the install/configure flow.
+    #[serde(default)]
+    pub require: Option<Requirements>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +77,7 @@ pub enum WorkflowType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum TriggerDef {
     Manual,
     Polling {
@@ -83,7 +87,7 @@ pub enum TriggerDef {
         #[serde(default = "default_poll_interval")]
         interval_secs: u64,
         #[serde(default)]
-        secrets: Option<Vec<String>>,
+        requires: Option<Vec<String>>,
     },
 }
 
@@ -120,7 +124,7 @@ impl TryFrom<WorkspaceConfigRaw> for WorkspaceConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkspaceSource {
     /// Use the run's scratch directory (default when omitted).
     Scratch,
@@ -128,11 +132,11 @@ pub enum WorkspaceSource {
     Fixed { path: String },
     /// A command whose stdout (trimmed) is the workspace path.
     /// Invoked as: `command[0] command[1..] <workflow-name> <run-id>`.
-    /// Always runs with a clean environment; declare `secrets` to inject from the store.
+    /// Always runs with a clean environment; declare `requires` to inject from the store.
     Script {
         command: Vec<String>,
         #[serde(default)]
-        secrets: Option<Vec<String>>,
+        requires: Option<Vec<String>>,
     },
     /// A git worktree against a local base repo, checked out at `ref`.
     /// Combine with `[workspace.pool]` to share reusable, locked slots across runs.
@@ -217,7 +221,7 @@ pub struct StepDef {
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
     #[serde(default)]
-    pub secrets: Option<Vec<String>>,
+    pub requires: Option<Vec<String>>,
     /// Per-step sandbox override: `true` forces sandbox on, `false` opts out,
     /// absent inherits from workflow-level `[sandbox]`.
     #[serde(default)]
@@ -587,7 +591,7 @@ mod tests {
                 message: None,
                 session: None,
                 notify: None,
-                secrets: None,
+                requires: None,
                 sandbox: None,
                 agent: Default::default(),
             },
@@ -609,7 +613,7 @@ mod tests {
                 message: None,
                 session: None,
                 notify: None,
-                secrets: None,
+                requires: None,
                 sandbox: None,
                 agent: Default::default(),
             },

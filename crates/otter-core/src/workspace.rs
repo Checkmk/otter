@@ -40,14 +40,14 @@ pub async fn resolve_workspace(
             }
             Ok(Some(resolved))
         }
-        WorkspaceSource::Script { command, secrets } => {
+        WorkspaceSource::Script { command, requires } => {
             if command.is_empty() {
                 return Err(anyhow::anyhow!(
                     "workspace script command must not be empty"
                 ));
             }
             let resolved_secrets = secret_store
-                .resolve(secrets.as_deref().unwrap_or_default())
+                .resolve(requires.as_deref().unwrap_or_default())
                 .map_err(|e| {
                     anyhow::anyhow!("secret resolution for workspace script failed: {}", e)
                 })?;
@@ -350,7 +350,7 @@ mod tests {
                 "-c".to_string(),
                 format!("echo '{}'", target),
             ],
-            secrets: None,
+            requires: None,
         });
         let s = scratch();
 
@@ -387,7 +387,7 @@ mod tests {
                     target
                 ),
             ],
-            secrets: None,
+            requires: None,
         });
         let run_id = Uuid::new_v4();
         let s = scratch();
@@ -413,7 +413,7 @@ mod tests {
         // GIVEN
         let config = cfg(WorkspaceSource::Script {
             command: vec!["bash".to_string(), "-c".to_string(), "exit 1".to_string()],
-            secrets: None,
+            requires: None,
         });
         let s = scratch();
 
@@ -430,7 +430,7 @@ mod tests {
         // GIVEN
         let config = cfg(WorkspaceSource::Script {
             command: vec!["bash".to_string(), "-c".to_string(), "echo ''".to_string()],
-            secrets: None,
+            requires: None,
         });
         let s = scratch();
 
@@ -453,7 +453,7 @@ mod tests {
                 "-c".to_string(),
                 format!("printf '{}\n'", path),
             ],
-            secrets: None,
+            requires: None,
         });
         let s = scratch();
 
@@ -483,7 +483,7 @@ mod tests {
                     target
                 ),
             ],
-            secrets: Some(vec!["MY_SECRET".to_string()]),
+            requires: Some(vec!["MY_SECRET".to_string()]),
         });
 
         struct OneSecret;
@@ -536,7 +536,7 @@ mod tests {
                     target
                 ),
             ],
-            secrets: None,
+            requires: None,
         });
         let s = scratch();
 

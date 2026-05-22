@@ -1,6 +1,7 @@
 pub mod agent_runner;
 pub mod engine;
 pub mod process;
+pub mod requirements;
 pub mod resource_limiter;
 pub mod sandbox;
 pub mod session;

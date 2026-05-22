@@ -7,6 +7,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser, Subcommand};
+use otter_core::requirements::{
+    expand_tilde, validate_value_chars, validate_workflow, RequireEntry, Requirements,
+};
 use uuid::Uuid;
 
 use otter_core::types::{DaemonCommand, StorageBackend, WORKFLOW_SCHEMA_VERSION};
@@ -106,6 +109,15 @@ enum WorkflowCommands {
     Disable {
         /// Name of the workflow to disable
         name: String,
+    },
+    /// Re-prompt for `[require]` values of an installed workflow and rewrite
+    /// it. Use this to update params or secrets without reinstalling.
+    Configure {
+        /// Name of the installed workflow
+        name: String,
+        /// Also prompt to overwrite each declared sensitive entry.
+        #[arg(long)]
+        reset_secrets: bool,
     },
 }
 
@@ -288,6 +300,10 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
         WorkflowCommands::Remove { name } => handle_workflow_remove(name).await,
         WorkflowCommands::Enable { name } => handle_workflow_enable(name).await,
         WorkflowCommands::Disable { name } => handle_workflow_disable(name),
+        WorkflowCommands::Configure {
+            name,
+            reset_secrets,
+        } => handle_workflow_configure(name, reset_secrets).await,
     }
 }
 
@@ -310,11 +326,11 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
         anyhow::bail!("'{}' is not a .toml file or directory", path.display());
     };
 
-    // Parse just enough to get the name and check schema_version
-    let toml_content = std::fs::read_to_string(&toml_path)
+    let raw_toml = std::fs::read_to_string(&toml_path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", toml_path.display(), e))?;
-    let def: otter_core::types::WorkflowDef = toml::from_str(&toml_content)
-        .map_err(|e| anyhow::anyhow!("Invalid workflow TOML: {}", e))?;
+
+    // Full validation up front so we fail before touching the filesystem.
+    let def = validate_workflow(&raw_toml).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if let Some(v) = def.schema {
         anyhow::ensure!(
@@ -328,34 +344,69 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
     let workflows_dir = dirs_config_dir().join("workflows");
     std::fs::create_dir_all(&workflows_dir)?;
 
-    // Check for conflicts in both forms regardless of install type
+    // Refuse re-install when either form already exists. Use `otter workflow
+    // configure` to update values without reinstalling.
     let dir_dest = workflows_dir.join(&def.name);
     let file_dest = workflows_dir.join(format!("{}.toml", def.name));
     if dir_dest.exists() || file_dest.exists() {
         anyhow::bail!(
-            "Workflow '{}' is already installed. Remove it first with: otter workflow remove {}",
+            "Workflow '{}' is already installed. Use `otter workflow configure {}` to update \
+             values, or remove first with: otter workflow remove {}",
+            def.name,
             def.name,
             def.name
         );
     }
 
-    if is_package {
-        copy_dir_all(&path, &dir_dest)?;
-        println!(
-            "Installed workflow '{}' to '{}'.",
-            def.name,
-            dir_dest.display()
-        );
+    // Pre-flight: gather all interactive input BEFORE touching the filesystem,
+    // so a failed prompt (TTY check, missing keyring, user abort) doesn't
+    // leave a partial install behind.
+    let has_manifest = def.require.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
+    let resolved_values = if has_manifest {
+        let manifest = def.require.as_ref().expect("checked above");
+        ensure_tty(manifest)?;
+        let needs_keyring = manifest.values().any(|e| e.sensitive);
+        let store = if needs_keyring {
+            Some(open_secret_store_or_bail()?)
+        } else {
+            None
+        };
+
+        let mut values: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+        for (name, entry) in manifest.iter() {
+            if entry.sensitive {
+                let store = store
+                    .as_ref()
+                    .expect("keyring opened when any entry is sensitive");
+                prompt_sensitive(name, entry, store.as_ref(), false)?;
+            } else {
+                let v = prompt_param(name, entry, None)?;
+                values.insert(name.clone(), v);
+            }
+        }
+        Some(values)
     } else {
-        std::fs::copy(&path, &file_dest)?;
-        println!(
-            "Installed workflow '{}' to '{}'.",
-            def.name,
-            file_dest.display()
-        );
+        None
+    };
+
+    // Now commit to disk: copy source → write template → write values.toml.
+    std::fs::create_dir_all(&dir_dest)?;
+    if is_package {
+        copy_dir_excluding_state(&path, &dir_dest)?;
+    }
+    std::fs::write(dir_dest.join("workflow.toml"), &raw_toml)?;
+    if let Some(values) = resolved_values {
+        let state_dir = dir_dest.join(".otter-state");
+        std::fs::create_dir_all(&state_dir)?;
+        std::fs::write(state_dir.join("values.toml"), values_toml(&values))?;
     }
 
-    // Notify the daemon to reload
+    println!(
+        "Installed workflow '{}' to '{}'.",
+        def.name,
+        dir_dest.display()
+    );
+
     if client::send_command_once(DaemonCommand::ReloadWorkflows)
         .await
         .is_ok()
@@ -363,6 +414,175 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
         println!("Daemon reloaded.");
     }
 
+    Ok(())
+}
+
+fn values_toml(values: &indexmap::IndexMap<String, String>) -> String {
+    let mut s = String::from(
+        "# Generated by `otter workflow install`. Does NOT contain secrets —\n\
+         # those live in the OS keyring. Re-run `otter workflow configure <name>`\n\
+         # to change these values.\n\n",
+    );
+    for (k, v) in values {
+        s.push_str(&format!("{k} = \"{v}\"\n"));
+    }
+    s
+}
+
+fn ensure_tty(manifest: &Requirements) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    eprintln!("This workflow declares the following inputs (interactive install required):");
+    for (name, entry) in manifest.iter() {
+        let kind = if entry.sensitive { "secret" } else { "param" };
+        eprintln!("  - {name} ({kind}): {}", entry.description);
+    }
+    anyhow::bail!("install requires a TTY for prompts; run in an interactive shell");
+}
+
+/// Prompt for a non-sensitive param. `current` (if `Some`) is shown as the
+/// default and used when the user presses Enter on an empty line.
+fn prompt_param(name: &str, entry: &RequireEntry, current: Option<&str>) -> anyhow::Result<String> {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let default = current.or(entry.default.as_deref());
+    loop {
+        println!("\n{name} — {}", entry.description);
+        match default {
+            Some(d) => print!("  [{d}] > "),
+            None => print!("  > "),
+        }
+        stdout.flush()?;
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let raw = if trimmed.is_empty() {
+            match default {
+                Some(d) => d.to_string(),
+                None => {
+                    eprintln!("  (value required)");
+                    continue;
+                }
+            }
+        } else {
+            trimmed.to_string()
+        };
+        if let Err(c) = validate_value_chars(&raw) {
+            eprintln!("  (rejected: value may not contain {c:?})");
+            continue;
+        }
+        return Ok(expand_tilde(&raw));
+    }
+}
+
+/// Prompt for a sensitive entry. Writes directly to the keyring. Skips when
+/// the entry is already set unless `force` is true.
+fn prompt_sensitive(
+    name: &str,
+    entry: &RequireEntry,
+    store: &EncryptedSecretStore,
+    force: bool,
+) -> anyhow::Result<()> {
+    if !force && store.list().iter().any(|k| k == name) {
+        println!("\n{name} — {}", entry.description);
+        println!("  ✓ already set (use --reset-secrets to overwrite)");
+        return Ok(());
+    }
+    println!("\n{name} — {}", entry.description);
+    loop {
+        let value = dialoguer::Password::new()
+            .with_prompt(format!("  {name}"))
+            .interact()
+            .map_err(|e| anyhow::anyhow!("prompt failed: {e}"))?;
+        if let Err(c) = validate_value_chars(&value) {
+            eprintln!("  (rejected: value may not contain {c:?})");
+            continue;
+        }
+        store.set(name, &value)?;
+        println!("  ✓ stored");
+        return Ok(());
+    }
+}
+
+async fn handle_workflow_configure(name: String, reset_secrets: bool) -> anyhow::Result<()> {
+    let workflows_dir = dirs_config_dir().join("workflows");
+    let dir_dest = workflows_dir.join(&name);
+    if !dir_dest.is_dir() {
+        let flat = workflows_dir.join(format!("{}.toml", name));
+        if flat.exists() {
+            anyhow::bail!(
+                "Workflow '{name}' predates the package layout — please reinstall to configure"
+            );
+        }
+        anyhow::bail!("Workflow '{name}' is not installed");
+    }
+    let template_path = dir_dest.join("workflow.toml");
+    let template = std::fs::read_to_string(&template_path)?;
+    let def = validate_workflow(&template).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let manifest = match &def.require {
+        Some(m) if !m.is_empty() => m,
+        _ => anyhow::bail!("Workflow '{name}' has no [require] manifest; nothing to configure"),
+    };
+
+    ensure_tty(manifest)?;
+
+    let state_dir = dir_dest.join(".otter-state");
+    let values_path = state_dir.join("values.toml");
+    let previous = otter_core::requirements::load_values_toml(&values_path)?;
+
+    let needs_keyring = manifest.values().any(|e| e.sensitive);
+    let store = if needs_keyring {
+        Some(open_secret_store_or_bail()?)
+    } else {
+        None
+    };
+
+    let mut new_values: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+    for (name, entry) in manifest.iter() {
+        if entry.sensitive {
+            let store = store.as_ref().expect("keyring opened above");
+            let already_set = store.list().iter().any(|k| k == name);
+            // Edge case: declared sensitive but missing from keyring (user
+            // deleted it). Always prompt in that case, regardless of flag.
+            let force = reset_secrets || !already_set;
+            prompt_sensitive(name, entry, store.as_ref(), force)?;
+        } else {
+            let current = previous.get(name).map(String::as_str);
+            let v = prompt_param(name, entry, current)?;
+            new_values.insert(name.clone(), v);
+        }
+    }
+
+    std::fs::create_dir_all(&state_dir)?;
+    atomic_write(&values_path, values_toml(&new_values).as_bytes())?;
+
+    println!("Updated workflow '{name}'.");
+
+    if client::send_command_once(DaemonCommand::ReloadWorkflows)
+        .await
+        .is_ok()
+    {
+        println!("Daemon reloaded.");
+    }
+
+    Ok(())
+}
+
+/// Write `bytes` to `path` via a sibling temp file + rename so concurrent
+/// daemon reloads can never observe a partial file.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", path.display()))?;
+    let tmp = parent.join(format!(
+        ".{}.tmp",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("out")
+    ));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -481,13 +701,17 @@ fn handle_workflow_disable(name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
+fn open_secret_store_or_bail() -> anyhow::Result<std::sync::Arc<EncryptedSecretStore>> {
     let kp = KeyringKeyProvider::new();
     kp.probe().map_err(|e| anyhow::anyhow!("OS keyring unavailable: {e}\nSecrets management requires a working OS keyring (libsecret on Linux, Keychain on macOS)."))?;
-    let store = EncryptedSecretStore::new(
+    Ok(std::sync::Arc::new(EncryptedSecretStore::new(
         dirs_config_dir().join("secrets.age"),
         std::sync::Arc::new(kp),
-    );
+    )))
+}
+
+fn handle_secret_command(command: SecretCommands) -> anyhow::Result<()> {
+    let store = open_secret_store_or_bail()?;
     match command {
         SecretCommands::Set { name, value } => {
             store.set(&name, &value)?;
@@ -569,6 +793,24 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_excluding_state(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        if entry.file_name() == ".otter-state" {
+            continue;
+        }
         let file_type = entry.file_type()?;
         let target = dst.join(entry.file_name());
         if file_type.is_dir() {

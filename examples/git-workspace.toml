@@ -9,20 +9,33 @@
 #
 # `keep_directory_on = ["failed"]` keeps a slot locked after a failed run so
 # you can inspect the worktree post-mortem. Stale locks (>24h) are auto-broken.
+#
+# REPO_PATH and POOL_DIR are declared in the [require] manifest below, so
+# `otter workflow install` prompts for both at install time and substitutes
+# them into the workspace fields. Use `otter workflow configure git-workspace`
+# to change them later without reinstalling.
 
 name = "git-workspace"
 type = "triggered"
+
+[require.REPO_PATH]
+description = "Absolute path to your local git clone"
+default = "~/your-repo"
+
+[require.POOL_DIR]
+description = "Directory under which pooled worktree slots live (created if missing)"
+default = "~/.cache/otter-git-pool"
 
 [trigger]
 type = "manual"
 
 [workspace]
 type = "git"
-base_repo = "/path/to/your/local/repo"   # edit me
+base_repo = "{{REPO_PATH}}"
 ref = "origin/master"                    # any local git ref (branch/tag/SHA)
 
 [workspace.pool]
-dir = "/tmp/otter-git-pool"              # edit me
+dir = "{{POOL_DIR}}"
 keep_directory_on = ["failed"]
 
 [[steps]]

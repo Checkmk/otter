@@ -30,7 +30,7 @@ impl StepExecutor for ShellExecutor {
         let display_cmd = command.join(" ");
         let resolved = ctx
             .secret_store
-            .resolve(step_def.secrets.as_deref().unwrap_or_default())
+            .resolve(step_def.requires.as_deref().unwrap_or_default())
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
 
         let command = if ctx.sandbox_config.is_none() {
@@ -123,7 +123,7 @@ mod tests {
             message: None,
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: Default::default(),
         }
@@ -230,7 +230,7 @@ mod tests {
         std::env::set_var("OTTER_CANARY", "should_not_leak");
 
         let step_def = StepDef {
-            secrets: Some(vec!["MY_SECRET".into()]),
+            requires: Some(vec!["MY_SECRET".into()]),
             ..step(vec![
                 "bash",
                 "-c",
@@ -291,7 +291,7 @@ mod tests {
         ctx.secret_store = Arc::new(store);
 
         let step_def = StepDef {
-            secrets: Some(vec!["MISSING_KEY".into()]),
+            requires: Some(vec!["MISSING_KEY".into()]),
             ..step(vec!["echo", "hello"])
         };
 

@@ -100,7 +100,7 @@ mod tests {
             message: Some("deployment complete".to_string()),
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: Default::default(),
         };
@@ -125,7 +125,7 @@ mod tests {
             message: None,
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: Default::default(),
         };

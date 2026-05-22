@@ -17,7 +17,7 @@ fn shell_step() -> StepDef {
         message: None,
         session: None,
         notify: None,
-        secrets: None,
+        requires: None,
         sandbox: None,
         agent: Default::default(),
     }
@@ -35,6 +35,7 @@ fn looping_workflow(name: &str) -> WorkflowDef {
         sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
+        require: None,
     }
 }
 
@@ -50,6 +51,7 @@ fn triggered_workflow(name: &str) -> WorkflowDef {
         sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
+        require: None,
     }
 }
 
@@ -65,6 +67,7 @@ fn manual_workflow(name: &str) -> WorkflowDef {
         sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
+        require: None,
     }
 }
 
@@ -78,13 +81,14 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
             poll_command: command,
             context_command: None,
             interval_secs: 3600, // Very long interval (1 hour)
-            secrets: None,
+            requires: None,
         }),
         workspace: None,
         resources: None,
         sandbox: None,
         steps: vec![shell_step()],
         finally: vec![],
+        require: None,
     }
 }
 
@@ -519,11 +523,12 @@ async fn abort_and_stop_returns_workflow_to_dormant_immediately() {
             message: None,
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: Default::default(),
         }],
         finally: vec![],
+        require: None,
     };
     manager.register(wf, String::new());
     manager.start("long-job").await.unwrap();

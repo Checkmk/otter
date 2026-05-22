@@ -42,7 +42,7 @@ pub fn build_trigger(
             poll_command,
             context_command,
             interval_secs,
-            secrets,
+            requires,
         } => {
             let seen_path = data_dir
                 .join("triggers")
@@ -55,7 +55,7 @@ pub fn build_trigger(
                 seen_path,
                 scripts_dir.map(|p| p.to_path_buf()),
                 secret_store,
-                secrets.clone().unwrap_or_default(),
+                requires.clone().unwrap_or_default(),
             )))
         }
     }

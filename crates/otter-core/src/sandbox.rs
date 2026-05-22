@@ -115,7 +115,7 @@ mod tests {
             message: None,
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: AgentConfig::default(),
         }
@@ -319,7 +319,7 @@ mod tests {
             message: Some("test".into()),
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: AgentConfig {
                 provider: Some("claude".into()),

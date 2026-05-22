@@ -687,21 +687,23 @@ pub(crate) fn load_workflows_from_dir(
 
     let mut workflows = Vec::new();
     for (path, scripts_dir) in &entries {
-        let content =
+        let raw =
             std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
-        let def: WorkflowDef = match toml::from_str(&content) {
+
+        // Structural validation on the raw template.
+        let validated_def = match otter_core::requirements::validate_workflow(&raw) {
             Ok(d) => d,
             Err(e) => {
-                warn!(path = ?path, error = %e, "Skipping workflow: parse error");
+                warn!(path = ?path, error = %e, "Skipping workflow: validation error");
                 continue;
             }
         };
 
-        // Schema version check
-        let schema_ver = def.schema.unwrap_or(1);
+        // Schema version check.
+        let schema_ver = validated_def.schema.unwrap_or(1);
         if schema_ver > WORKFLOW_SCHEMA_VERSION {
             warn!(
-                workflow = %def.name,
+                workflow = %validated_def.name,
                 schema_version = schema_ver,
                 current = WORKFLOW_SCHEMA_VERSION,
                 "Skipping workflow: requires schema version {} but this otter supports up to {}",
@@ -711,10 +713,60 @@ pub(crate) fn load_workflows_from_dir(
             continue;
         }
 
-        info!(workflow = %def.name, "Loaded workflow");
-        workflows.push((def, content, scripts_dir.clone()));
+        // Resolve `{{NAME}}` template refs using `.otter-state/values.toml`.
+        // Sensitive entries are not substituted here — they're injected as env
+        // vars at subprocess start via `requires = [...]`.
+        let (effective_toml, effective_def) =
+            match resolve_template(&raw, &validated_def, scripts_dir.as_deref()) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    warn!(workflow = %validated_def.name, error = %e, "Skipping workflow");
+                    continue;
+                }
+            };
+
+        info!(workflow = %effective_def.name, "Loaded workflow");
+        workflows.push((effective_def, effective_toml, scripts_dir.clone()));
     }
     Ok(workflows)
+}
+
+/// Substitute `{{NAME}}` refs in `raw` using `<scripts_dir>/.otter-state/values.toml`.
+/// Returns the substituted text and the re-parsed `WorkflowDef`. Errors with a
+/// clear message when a declared non-sensitive entry has no value (user needs
+/// to run `otter workflow configure`).
+fn resolve_template(
+    raw: &str,
+    validated_def: &WorkflowDef,
+    scripts_dir: Option<&Path>,
+) -> anyhow::Result<(String, WorkflowDef)> {
+    let manifest = match &validated_def.require {
+        Some(m) if !m.is_empty() => m,
+        _ => {
+            // No manifest → no substitution needed.
+            return Ok((raw.to_string(), validated_def.clone()));
+        }
+    };
+
+    let values_path = scripts_dir
+        .map(|d| d.join(".otter-state").join("values.toml"))
+        .unwrap_or_default();
+    let values = otter_core::requirements::load_values_toml(&values_path)
+        .with_context(|| format!("Failed to read values from {}", values_path.display()))?;
+
+    let missing = otter_core::requirements::missing_param_values(manifest, &values);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "unresolved [require] params: {}. Run `otter workflow configure {}` to set them.",
+            missing.join(", "),
+            validated_def.name
+        );
+    }
+
+    let substituted = otter_core::requirements::substitute_params(raw, &values);
+    let def: WorkflowDef =
+        toml::from_str(&substituted).with_context(|| "substituted workflow failed to parse")?;
+    Ok((substituted, def))
 }
 
 fn result_to_response(result: anyhow::Result<()>) -> DaemonResponse {
@@ -890,5 +942,41 @@ mod tests {
         assert_eq!(summaries.len(), 2);
         assert!(summaries.iter().any(|s| s.contains("alpha")));
         assert!(summaries.iter().any(|s| s.contains("beta")));
+    }
+
+    #[test]
+    fn invalid_workflow_is_skipped_with_warning_siblings_still_load() {
+        // GIVEN a workflows dir with one valid and one invalid (requires-without-manifest) file
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("good.toml"),
+            r#"
+name = "good"
+type = "looping"
+[[steps]]
+type = "shell"
+command = ["echo", "ok"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("bad.toml"),
+            r#"
+name = "bad"
+type = "looping"
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+requires = ["MISSING"]
+"#,
+        )
+        .unwrap();
+
+        // WHEN
+        let loaded = load_workflows_from_dir(dir.path()).unwrap();
+
+        // THEN — only the valid one loads; the bad one is skipped, no panic
+        let names: Vec<_> = loaded.iter().map(|(d, _, _)| d.name.clone()).collect();
+        assert_eq!(names, vec!["good"]);
     }
 }

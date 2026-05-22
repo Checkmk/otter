@@ -57,7 +57,7 @@ impl StepExecutor for AgentExecutor {
 
         let resolved_secrets = ctx
             .secret_store
-            .resolve(step_def.secrets.as_deref().unwrap_or_default())
+            .resolve(step_def.requires.as_deref().unwrap_or_default())
             .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
 
         let output = manager
@@ -176,7 +176,7 @@ mod tests {
             message: Some("do work".into()),
             session: None,
             notify: None,
-            secrets: None,
+            requires: None,
             sandbox: None,
             agent: crate::types::AgentConfig {
                 provider: Some("claude".into()),

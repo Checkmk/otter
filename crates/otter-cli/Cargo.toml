@@ -21,6 +21,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 crossterm = { workspace = true }
+dialoguer = { version = "0.11", default-features = false, features = ["password"] }
+indexmap = "2"
 
 serde_json         = { workspace = true }
 uuid               = { workspace = true }

@@ -20,7 +20,7 @@ fn step_def(step_type: StepType) -> StepDef {
         message: None,
         session: None,
         notify: None,
-        secrets: None,
+        requires: None,
         sandbox: None,
         agent: Default::default(),
     }
@@ -38,6 +38,7 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
         sandbox: None,
         steps,
         finally: vec![],
+        require: None,
     }
 }
 
@@ -201,6 +202,7 @@ async fn triggered_workflow_runs_once_per_event() {
             ..step_def(StepType::Shell)
         }],
         finally: vec![],
+        require: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -367,12 +369,12 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![ctx_script.to_string_lossy().into_owned()]),
             interval_secs: 3600, // won't re-poll during the test
-            secrets: None,
+            requires: None,
         }),
         workspace: Some(
             WorkspaceSource::Script {
                 command: vec![ws_script.to_string_lossy().into_owned()],
-                secrets: None,
+                requires: None,
             }
             .into(),
         ),
@@ -389,6 +391,7 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
             ..step_def(StepType::Shell)
         }],
         finally: vec![],
+        require: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -525,7 +528,7 @@ async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: None,
             interval_secs: 3600,
-            secrets: None,
+            requires: None,
         }),
         workspace: Some(WorkspaceConfig {
             source: WorkspaceSource::Git {
@@ -549,6 +552,7 @@ async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
             ..step_def(StepType::Shell)
         }],
         finally: vec![],
+        require: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -637,7 +641,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![executable_name("ctx.sh")]), // bare name — requires scripts_dir in PATH
             interval_secs: 3600,
-            secrets: None,
+            requires: None,
         }),
         workspace: None,
         resources: None,
@@ -652,6 +656,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
             ..step_def(StepType::Shell)
         }],
         finally: vec![],
+        require: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1210,7 +1215,7 @@ async fn run_finally_uses_stored_workspace_not_script() {
     wf.workspace = Some(
         WorkspaceSource::Script {
             command: vec![ws_script.to_string_lossy().into_owned()],
-            secrets: None,
+            requires: None,
         }
         .into(),
     );

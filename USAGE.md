@@ -10,7 +10,7 @@
 6. [Resource Limits](#resource-limits)
 7. [Sandbox Configuration](#sandbox-configuration)
 8. [Triggers](#triggers)
-9. [Secrets Management](#secrets-management)
+9. [Inputs: params and secrets](#inputs-params-and-secrets)
 10. [Workflow Management](#workflow-management)
 11. [Service Management](#service-management)
 12. [Theming](#theming)
@@ -295,12 +295,12 @@ A command is run before each workflow run. Its stdout (trimmed) is used as the w
 [workspace]
 type = "script"
 command = ["setup-workspace.sh"]
-secrets = ["GITHUB_TOKEN"]   # optional
+requires = ["GITHUB_TOKEN"]   # optional
 ```
 
 **Fields:**
 - `command` (required): The command to run
-- `secrets` (optional): Secrets to inject — see [Secret injection](#secret-injection)
+- `requires` (optional): Sensitive entries from `[require]` to inject as env vars — see [Inputs: params and secrets](#inputs-params-and-secrets)
 
 **Script contract:**
 - Invoked as: `<command> <workflow-name> <run-id>`
@@ -384,63 +384,54 @@ cpu_quota = "200%"  # cap the whole run to 2 CPU cores
 
 ---
 
-## Secrets Management
+## Inputs: params and secrets
 
-Secrets allow workflows to receive sensitive values (API keys, tokens, passwords) without
-exposing the service's full environment to subprocesses. Any subprocess command — steps,
-workspace scripts, and trigger commands — can declare which secrets it needs; only those
-secrets, plus a minimal safe set of system variables, are visible to that subprocess.
-
-### Global secret store
-
-Secrets are stored encrypted at `~/.config/otter/secrets.age` using
-[age](https://age-encryption.org) encryption.
-
-**Key management (automatic):**
-- On first use, a random encryption key is generated and stored in the OS keyring
-  (libsecret on Linux, Keychain on macOS, Windows Credential Manager on Windows).
-- All subsequent operations retrieve the key from the keyring — no passphrase prompts.
-- Secrets are decrypted lazily — only when a workflow step actually resolves a secret.
-- **Requires a working OS keyring.** `otter secret` commands fail with a clear error if the keyring is unavailable.
-
-**Warning — backup your keyring:**
-The encryption key exists only in the OS keyring. If the keyring is lost (wiped, OS reinstall, machine migration) `secrets.age` becomes permanently unreadable — there is no recovery path. Back up your keyring before migrating machines or reinstalling the OS.
-
-Manage secrets via the CLI:
-
-```bash
-otter secret set GITHUB_TOKEN ghp_abc123   # store or overwrite
-otter secret get GITHUB_TOKEN              # print value
-otter secret list                          # list all secret names
-otter secret delete GITHUB_TOKEN           # remove
-```
-
-### Secret injection
-
-Add a `secrets` field to any subprocess command to inject secrets from the store. Supported on:
-- `[[steps]]` — `shell` and `agent` steps
-- `[workspace]` — `script` workspace commands
-- `[trigger]` — `polling` trigger commands (`poll_command` and `context_command`)
+Workflows often need values that differ per install — a repo path, an API token, a username. Declare each one in `[require]`; `otter workflow install` prompts for it and either saves the value to a sidecar (non-sensitive) or stores it encrypted in the OS keyring (sensitive). The installed `workflow.toml` is left intact as a template; references are resolved when the daemon loads it.
 
 ```toml
+[require.REPO_PATH]
+description = "Path to your local repo"
+default = "~/work/my-repo"        # optional; non-sensitive entries only
+
+[require.JIRA_PAT]
+description = "Personal access token from id.atlassian.com → API tokens"
+sensitive = true                  # optional; default false
+
+[workspace]
+type = "git"
+base_repo = "{{REPO_PATH}}"       # ← non-sensitive: substituted by daemon
+
 [[steps]]
 type = "shell"
 command = ["./deploy.sh"]
-secrets = ["GITHUB_TOKEN", "DEPLOY_KEY"]
-
-[[steps]]
-type = "agent"
-provider = "claude"
-message = "Write an implementation plan for JIRA issue described in trigger-context/issue.json."
-secrets = ["JIRA_API_KEY"]
+requires = ["JIRA_PAT"]           # ← sensitive: injected as env var at runtime
 ```
 
-**Behavior:**
-- All subprocess commands always run with a **clean environment** (no service env vars inherited)
-- A safe set of system variables is re-injected (`PATH`, `HOME`, `USER`, `TMPDIR`, etc.)
-- Each declared secret is looked up in the store and injected as an environment variable
-- If a declared secret name is not found in the store, the command fails with a clear error
-- Omitting `secrets` and setting `secrets = []` are equivalent — the subprocess sees only the safe system vars
+**Non-sensitive entries** can be referenced anywhere in the workflow as `{{NAME}}` — `[workspace] base_repo`, `pool.dir`, `path`, agent messages, shell argv, polling commands. Resolved values are saved to `<workflow>/.otter-state/values.toml` (a flat `KEY = "value"` table). The daemon reads this sidecar and substitutes `{{NAME}}` into the workflow when it loads. The on-disk `workflow.toml` always stays as the original template, so `cat` shows exactly what the author shipped.
+
+**Sensitive entries** (`sensitive = true`) are prompted with hidden input and stored encrypted at `~/.config/otter/secrets.age`. The encryption key lives in the OS keyring (libsecret on Linux, Keychain on macOS, Credential Manager on Windows). Reference them with `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` — the resolved value is injected into the subprocess env under the declared name. The subprocess otherwise sees a clean environment (only `PATH`, `HOME`, `USER`, `TMPDIR`, etc., are kept).
+
+**Rules:**
+
+- Names match `^[A-Z][A-Z0-9_]*$` and may not shadow safe system vars (`PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `PWD`, `LANG`, `LC_*`).
+- `{{NAME}}` references only work for non-sensitive entries (substituting a secret would write it to disk in cleartext).
+- `requires = [...]` accepts only sensitive entries in v1; a follow-up will accept non-sensitive entries too so companion scripts can read params from env.
+- Sensitive entries are global by name: two workflows that both declare `[require.JIRA_PAT]` share one keyring entry — the second install finds it already set and skips the prompt.
+
+**Commands:**
+
+```bash
+otter workflow install <path>                    # prompts for each [require] entry
+otter workflow configure <name>                  # re-prompt; Enter keeps current value
+otter workflow configure <name> --reset-secrets  # also re-prompt each sensitive entry
+
+otter secret set <name> <value>                  # store or overwrite a secret directly
+otter secret get <name>                          # print value
+otter secret list                                # list all stored secret names
+otter secret delete <name>                       # remove
+```
+
+**⚠ Back up your keyring.** The encryption key lives only in the OS keyring. If the keyring is wiped (OS reinstall, machine migration, accidental delete), `secrets.age` becomes permanently unreadable — there is no recovery path.
 
 ---
 
@@ -564,19 +555,23 @@ Polls an external event source on a configurable interval.
 - `poll_command` (required): Array of strings; the command to run on each poll cycle. stdout must be a JSON array of strings (event identifiers/hashes), exit 0 on success
 - `context_command` (optional): Array of strings; the command to run for each new hash. Invoked as `<context_command> <hash> <context-dir>`, which should write trigger context files to `<context-dir>`. If omitted, no context directory is created and the workflow runs without trigger-context files.
 - `interval_secs` (optional, default: 600): Polling interval in seconds
-- `secrets` (optional): Secrets to inject into both `poll_command` and `context_command` — see [Secret injection](#secret-injection)
+- `requires` (optional): Sensitive entries from `[require]` to inject as env vars into both `poll_command` and `context_command` — see [Inputs: params and secrets](#inputs-params-and-secrets)
 
 **Example:**
 ```toml
 name = "jira-ticket"
 type = "triggered"
 
+[require.JIRA_PAT]
+description = "Jira personal access token"
+sensitive = true
+
 [trigger]
 type = "polling"
 poll_command = ["poll-jira", "--poll"]
 context_command = ["poll-jira", "--context"]
 interval_secs = 600
-secrets = ["JIRA_PAT"]
+requires = ["JIRA_PAT"]
 
 [[steps]]
 type = "shell"
@@ -658,14 +653,18 @@ version = "1.2.0"     # optional; human-readable package version
 ### Installing and removing
 
 ```bash
-# Install a flat .toml file — copies to ~/.config/otter/workflows/<name>.toml
+# Install a flat .toml file or a package directory — either way the
+# installed form is a package directory at ~/.config/otter/workflows/<name>/.
+# If the workflow has a [require] manifest, install prompts for declared
+# values; see the Requirements Manifest section.
 otter workflow install ./my-workflow.toml
-
-# Install a package directory — copies to ~/.config/otter/workflows/<name>/
-# Both signal the service to reload without restart
 otter workflow install ./my-workflow/
 
-# Remove — deletes the installed file or directory and reloads the service
+# Re-prompt for [require] values without reinstalling
+otter workflow configure my-workflow
+otter workflow configure my-workflow --reset-secrets
+
+# Remove — deletes the installed workflow and reloads the service
 otter workflow remove my-workflow
 ```
 
