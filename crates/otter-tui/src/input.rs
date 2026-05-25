@@ -98,7 +98,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.toggle_enable_selected();
             }
         }
-        KeyCode::Tab => {
+        KeyCode::Tab | KeyCode::Right => {
             app.enter_right_panel();
         }
         _ => {}
@@ -129,7 +129,7 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
 fn handle_right_panel(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Esc | KeyCode::Tab => app.close_right_panel(),
+        KeyCode::Esc | KeyCode::Tab | KeyCode::Left => app.close_right_panel(),
         KeyCode::Up | KeyCode::Char('k') => app.move_right_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_right_down(),
         KeyCode::PageUp => app.scroll_right_page_up(),

@@ -50,7 +50,7 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
         Line::from(""),
         row("[q]", "Quit"),
         row("[↑↓] / [jk]", "Move cursor / scroll"),
-        row("[Tab]", "Switch panel focus"),
+        row("[Tab] / [←→]", "Switch panel focus"),
         Line::from(""),
         section("Managing workflows", " (CLI)"),
         Line::from(""),
