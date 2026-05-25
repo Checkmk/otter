@@ -381,6 +381,7 @@ impl Engine {
         {
             Ok(dir) => dir,
             Err(e) => {
+                error!(run_id = %run.id, workflow = %workflow.name, error = %e, "Workspace setup failed");
                 run.status = RunStatus::Failed;
                 self.storage.update_workflow_run(&run)?;
                 Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
