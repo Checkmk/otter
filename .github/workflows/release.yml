@@ -1,0 +1,75 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write  # required to create / upload to GitHub Releases
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VERSION=$(awk -F\" '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ "$CARGO_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "tag ${{ steps.tag.outputs.tag }} does not match Cargo.toml version $CARGO_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build release binary
+        run: cargo build --release --bin otter --target ${{ env.TARGET }}
+
+      - name: Package tarball
+        id: package
+        run: |
+          mkdir -p dist
+          cp target/${{ env.TARGET }}/release/otter dist/otter
+          cd dist
+          ASSET="otter-${{ steps.tag.outputs.tag }}-${{ env.TARGET }}.tar.gz"
+          tar -czf "$ASSET" otter
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          rm otter
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/${{ steps.package.outputs.asset }}
+            dist/${{ steps.package.outputs.asset }}.sha256
