@@ -180,6 +180,7 @@ mod tests {
             step_type: StepType::Agent,
             command: None,
             message: Some("do work".into()),
+            message_file: None,
             session: None,
             notify: None,
             requires: None,

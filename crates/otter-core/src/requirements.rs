@@ -10,7 +10,9 @@ use std::path::Path;
 
 use otter_secrets::{SecretError, SecretStore};
 
-use crate::types::{TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION};
+use crate::types::{
+    StepDef, StepType, TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION,
+};
 
 /// A single `[require.<NAME>]` entry.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -76,6 +78,15 @@ pub enum ValidationError {
          (this otter supports up to schema {current})"
     )]
     MissingSchema { current: u32 },
+
+    #[error("`message_file` is only valid on `agent` steps (found on `{step_type}` step)")]
+    MessageFileOnNonAgent { step_type: String },
+
+    #[error("step may set either `message` or `message_file`, not both")]
+    MessageAndMessageFile,
+
+    #[error("agent step must set either `message` or `message_file`")]
+    AgentMissingMessage,
 }
 
 /// Parse + validate a workflow TOML string. The primary entry point used by
@@ -148,6 +159,14 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
         }
     }
 
+    // Per-step message/message_file checks.
+    for step in &def.steps {
+        validate_step_message(step)?;
+    }
+    for fin in &def.finally {
+        validate_step_message(&fin.step)?;
+    }
+
     // Declared-but-unused entries: warn only (typo guard).
     for name in manifest.keys() {
         if !template_refs.contains(name) && !requires_refs.contains(name) {
@@ -160,6 +179,104 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
     }
 
     Ok(def)
+}
+
+fn validate_step_message(step: &StepDef) -> Result<(), ValidationError> {
+    if step.message_file.is_some() && !matches!(step.step_type, StepType::Agent) {
+        return Err(ValidationError::MessageFileOnNonAgent {
+            step_type: step.step_type.to_string(),
+        });
+    }
+    if step.message.is_some() && step.message_file.is_some() {
+        return Err(ValidationError::MessageAndMessageFile);
+    }
+    if matches!(step.step_type, StepType::Agent)
+        && step.message.is_none()
+        && step.message_file.is_none()
+    {
+        return Err(ValidationError::AgentMissingMessage);
+    }
+    Ok(())
+}
+
+/// Errors raised when resolving `message_file` references at workflow-load time.
+#[derive(Debug, thiserror::Error)]
+pub enum MessageFileError {
+    #[error(
+        "step references `message_file = \"{path}\"` but the workflow is a flat .toml file \
+         with no package directory; move the workflow into a package directory and place the \
+         prompt file alongside `workflow.toml`"
+    )]
+    NoPackageDir { path: String },
+
+    #[error("failed to read message_file {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "message_file path {path} escapes the workflow package directory; \
+         only paths inside the package are allowed"
+    )]
+    EscapesPackage { path: String },
+}
+
+/// Replace every `message_file` reference on a parsed `WorkflowDef` with the
+/// file's contents, populating `message` in place. Paths are resolved relative
+/// to `package_dir`; absolute paths are rejected (would let a workflow pull in
+/// arbitrary files from the host). Paths that resolve outside `package_dir` are
+/// also rejected.
+pub fn resolve_message_files(
+    def: &mut WorkflowDef,
+    package_dir: Option<&Path>,
+) -> Result<(), MessageFileError> {
+    for step in def.steps.iter_mut() {
+        resolve_one_message_file(step, package_dir)?;
+    }
+    for fin in def.finally.iter_mut() {
+        resolve_one_message_file(&mut fin.step, package_dir)?;
+    }
+    Ok(())
+}
+
+fn resolve_one_message_file(
+    step: &mut StepDef,
+    package_dir: Option<&Path>,
+) -> Result<(), MessageFileError> {
+    let Some(rel) = step.message_file.take() else {
+        return Ok(());
+    };
+    let pkg = package_dir.ok_or_else(|| MessageFileError::NoPackageDir { path: rel.clone() })?;
+    let candidate = pkg.join(&rel);
+
+    // Reject paths that escape the package directory. We canonicalize the
+    // package and the candidate's parent (the file itself may not exist when
+    // canonicalize would otherwise fail), then check containment.
+    let pkg_canon = pkg
+        .canonicalize()
+        .map_err(|source| MessageFileError::Read {
+            path: pkg.display().to_string(),
+            source,
+        })?;
+    let candidate_canon = candidate
+        .canonicalize()
+        .map_err(|source| MessageFileError::Read {
+            path: candidate.display().to_string(),
+            source,
+        })?;
+    if !candidate_canon.starts_with(&pkg_canon) {
+        return Err(MessageFileError::EscapesPackage { path: rel });
+    }
+
+    let contents =
+        std::fs::read_to_string(&candidate_canon).map_err(|source| MessageFileError::Read {
+            path: candidate_canon.display().to_string(),
+            source,
+        })?;
+    step.message = Some(contents);
+    Ok(())
 }
 
 /// Hand-rolled scanner: collect every `{{NAME}}` reference in the raw TOML
@@ -1198,5 +1315,249 @@ NOT_A_STRING = 42
         let names: Vec<&str> = manifest.keys().map(String::as_str).collect();
         // THEN — author wrote Z, A, M; that's the prompt order.
         assert_eq!(names, vec!["ZEBRA", "APPLE", "MANGO"]);
+    }
+
+    // ─── message_file ────────────────────────────────────────────────────
+
+    #[test]
+    fn agent_step_without_message_or_message_file_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::AgentMissingMessage => {}
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn agent_step_with_both_message_and_message_file_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message = "inline"
+            message_file = "prompt.md"
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::MessageAndMessageFile => {}
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn message_file_on_shell_step_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            message_file = "prompt.md"
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::MessageFileOnNonAgent { step_type } => {
+                assert_eq!(step_type, "shell");
+            }
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn message_file_on_finally_agent_step_is_validated() {
+        // GIVEN — finally checkpoint with message_file (not allowed)
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            [[finally]]
+            type = "checkpoint"
+            message_file = "prompt.md"
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::MessageFileOnNonAgent { step_type } => {
+                assert_eq!(step_type, "checkpoint");
+            }
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn agent_step_with_message_file_passes_validation() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "prompts/foo.md"
+        "#;
+        // WHEN
+        let def = ok(raw);
+        // THEN
+        assert_eq!(def.steps[0].message_file.as_deref(), Some("prompts/foo.md"));
+        assert!(def.steps[0].message.is_none());
+    }
+
+    #[test]
+    fn resolve_message_files_inlines_file_contents() {
+        // GIVEN
+        let pkg = tempfile::tempdir().unwrap();
+        std::fs::write(pkg.path().join("prompt.md"), "do the thing").unwrap();
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "prompt.md"
+        "#;
+        let mut def = ok(raw);
+
+        // WHEN
+        resolve_message_files(&mut def, Some(pkg.path())).unwrap();
+
+        // THEN
+        assert_eq!(def.steps[0].message.as_deref(), Some("do the thing"));
+        assert!(def.steps[0].message_file.is_none());
+    }
+
+    #[test]
+    fn resolve_message_files_inlines_into_finally_steps_too() {
+        // GIVEN
+        let pkg = tempfile::tempdir().unwrap();
+        std::fs::write(pkg.path().join("wrap-up.md"), "wrap up").unwrap();
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            [[finally]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "wrap-up.md"
+        "#;
+        let mut def = ok(raw);
+
+        // WHEN
+        resolve_message_files(&mut def, Some(pkg.path())).unwrap();
+
+        // THEN
+        assert_eq!(def.finally[0].step.message.as_deref(), Some("wrap up"));
+    }
+
+    #[test]
+    fn resolve_message_files_errors_when_no_package_dir() {
+        // GIVEN — flat .toml file has no package dir
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "prompt.md"
+        "#;
+        let mut def = ok(raw);
+
+        // WHEN
+        let err = resolve_message_files(&mut def, None).unwrap_err();
+
+        // THEN
+        assert!(matches!(err, MessageFileError::NoPackageDir { .. }));
+    }
+
+    #[test]
+    fn resolve_message_files_errors_when_file_missing() {
+        // GIVEN
+        let pkg = tempfile::tempdir().unwrap();
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "missing.md"
+        "#;
+        let mut def = ok(raw);
+
+        // WHEN
+        let err = resolve_message_files(&mut def, Some(pkg.path())).unwrap_err();
+
+        // THEN
+        assert!(matches!(err, MessageFileError::Read { .. }));
+    }
+
+    #[test]
+    fn resolve_message_files_rejects_path_escape() {
+        // GIVEN — outside.md exists outside the package dir
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("outside.md"), "leaked").unwrap();
+        let pkg = tempfile::tempdir().unwrap();
+        let raw = format!(
+            r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message_file = "{}/outside.md"
+        "#,
+            outside.path().display()
+        );
+        let mut def = ok(&raw);
+
+        // WHEN
+        let err = resolve_message_files(&mut def, Some(pkg.path())).unwrap_err();
+
+        // THEN
+        assert!(matches!(err, MessageFileError::EscapesPackage { .. }));
+    }
+
+    #[test]
+    fn resolve_message_files_noop_when_no_message_file_set() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            command = ["claude"]
+            message = "inline"
+        "#;
+        let mut def = ok(raw);
+
+        // WHEN — passing None for package_dir must not error when no file ref
+        resolve_message_files(&mut def, None).unwrap();
+
+        // THEN
+        assert_eq!(def.steps[0].message.as_deref(), Some("inline"));
     }
 }

@@ -840,7 +840,7 @@ pub(crate) fn load_workflows_from_dir(
         // Resolve `{{NAME}}` template refs using `.otter-state/values.toml`.
         // Sensitive entries are not substituted here — they're injected as env
         // vars at subprocess start via `requires = [...]`.
-        let (effective_toml, effective_def) =
+        let (effective_toml, mut effective_def) =
             match resolve_template(&raw, &validated_def, scripts_dir.as_deref()) {
                 Ok(pair) => pair,
                 Err(e) => {
@@ -848,6 +848,15 @@ pub(crate) fn load_workflows_from_dir(
                     continue;
                 }
             };
+
+        // Inline any `message_file` references into `message` on each step.
+        if let Err(e) = otter_core::requirements::resolve_message_files(
+            &mut effective_def,
+            scripts_dir.as_deref(),
+        ) {
+            warn!(workflow = %effective_def.name, error = %e, "Skipping workflow");
+            continue;
+        }
 
         info!(workflow = %effective_def.name, "Loaded workflow");
         workflows.push((effective_def, effective_toml, scripts_dir.clone()));

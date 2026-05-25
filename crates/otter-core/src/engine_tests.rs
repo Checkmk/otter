@@ -18,6 +18,7 @@ fn step_def(step_type: StepType) -> StepDef {
         step_type,
         command: None,
         message: None,
+        message_file: None,
         session: None,
         notify: None,
         requires: None,

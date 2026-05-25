@@ -219,6 +219,8 @@ pub struct StepDef {
     pub step_type: StepType,
     pub command: Option<Vec<String>>,
     pub message: Option<String>,
+    #[serde(default)]
+    pub message_file: Option<String>,
     pub session: Option<String>,
     pub notify: Option<Vec<String>>,
     #[serde(default)]
@@ -627,6 +629,7 @@ mod tests {
                 step_type: StepType::Shell,
                 command: None,
                 message: None,
+                message_file: None,
                 session: None,
                 notify: None,
                 requires: None,
@@ -649,6 +652,7 @@ mod tests {
                 step_type: StepType::Shell,
                 command: None,
                 message: None,
+                message_file: None,
                 session: None,
                 notify: None,
                 requires: None,

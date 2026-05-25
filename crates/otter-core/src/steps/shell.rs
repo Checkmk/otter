@@ -127,6 +127,7 @@ mod tests {
             step_type: StepType::Shell,
             command: Some(command.into_iter().map(String::from).collect()),
             message: None,
+            message_file: None,
             session: None,
             notify: None,
             requires: None,

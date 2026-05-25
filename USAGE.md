@@ -161,7 +161,8 @@ Runs an AI CLI tool (Claude, Copilot, or custom) with a message. Supports persis
 **Fields:**
 - `provider` (optional): `"claude"` or `"copilot"`. Mutually exclusive with `command`.
 - `command` (optional): Escape hatch; arbitrary CLI command array. Mutually exclusive with `provider`.
-- `message` (required): Prompt sent to the agent.
+- `message` (required unless `message_file` is set): Prompt sent to the agent.
+- `message_file` (optional): Path to a file whose contents are used as the prompt. Resolved relative to the workflow package directory. Mutually exclusive with `message`; only allowed on `agent` steps.
 - `session` (optional): Session name. Steps sharing the same session name resume the same conversation within a workflow run.
 - `allowed_tools` (optional): List of tool names the agent may use.
   - **Claude**: maps to `--allowed-tools <comma-separated-list>` (e.g., `["Write", "Read"]` → `--allowed-tools Write,Read`)
@@ -196,6 +197,14 @@ Custom CLI (escape hatch):
 type = "agent"
 command = ["aider", "--model", "gpt-4"]
 message = "Fix the bug in main.rs"
+```
+
+Prompt sourced from a file in the workflow package:
+```toml
+[[steps]]
+type = "agent"
+provider = "claude"
+message_file = "prompts/implement-feature.md"
 ```
 
 **Behavior:**
