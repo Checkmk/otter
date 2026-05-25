@@ -1,6 +1,8 @@
 name = "arch-sync"
 type = "looping"
 schema = 1
+version = "0.1.0"
+description = "Iteratively re-align code with README/TARGET_ARCHITECTURE.md using Claude, pausing for review between plan and implementation."
 
 # Point to the correct absolute path of the repository
 # [workspace]

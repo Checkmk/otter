@@ -5,7 +5,9 @@ use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-use otter_core::types::{DaemonCommand, DaemonEvent, DaemonResponse, WorkflowStatus};
+use otter_core::types::{
+    DaemonCommand, DaemonEvent, DaemonResponse, MarketplaceStatus, WorkflowStatus,
+};
 
 use crate::config::load_theme_config;
 use crate::{dirs_config_dir, socket_path};
@@ -94,7 +96,16 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
             eprintln!("Error: {message}");
             std::process::exit(1);
         }
-        DaemonResponse::StatusResponse { workflows } => print_workflows(&workflows),
+        DaemonResponse::StatusResponse {
+            workflows,
+            marketplaces,
+        } => {
+            print_workflows(&workflows);
+            if !marketplaces.is_empty() {
+                println!();
+                print_marketplaces(&marketplaces);
+            }
+        }
         DaemonResponse::ConsumedTriggersResponse { .. } => {}
     }
     Ok(())
@@ -102,7 +113,10 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
 
 pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
     match send_command_once(DaemonCommand::Status).await {
-        Ok(DaemonResponse::StatusResponse { workflows }) => {
+        Ok(DaemonResponse::StatusResponse {
+            workflows,
+            marketplaces,
+        }) => {
             let mode = if service_enabled {
                 "systemd (auto-start)"
             } else {
@@ -110,6 +124,10 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
             };
             println!("Service: running ({mode})\n");
             print_workflows(&workflows);
+            if !marketplaces.is_empty() {
+                println!();
+                print_marketplaces(&marketplaces);
+            }
         }
         Ok(DaemonResponse::Error { message }) => {
             eprintln!("Error: {message}");
@@ -125,15 +143,54 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
 }
 
 fn print_workflows(workflows: &[WorkflowStatus]) {
-    println!("{:<30} {:<12} STATE", "NAME", "KIND");
-    println!("{}", "-".repeat(54));
+    println!("{:<30} {:<12} {:<14} NOTES", "NAME", "KIND", "STATE");
+    println!("{}", "-".repeat(74));
     for wf in workflows {
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(v) = &wf.update_available {
+            notes.push(format!("update available: {v}"));
+        }
+        if wf.origin_dangling {
+            notes.push("origin marketplace removed".to_string());
+        }
         println!(
-            "{:<30} {:<12} {:?}",
+            "{:<30} {:<12} {:<14} {}",
             wf.name,
             format!("{:?}", wf.kind),
-            wf.state,
+            format!("{:?}", wf.state),
+            notes.join(", "),
         );
+    }
+}
+
+fn print_marketplaces(marketplaces: &[MarketplaceStatus]) {
+    println!("marketplaces:");
+    println!("  {:<20} {:<5} {:<20} URL", "NAME", "WFS", "LAST FETCH");
+    println!("  {}", "-".repeat(80));
+    for m in marketplaces {
+        let fetched = match m.last_fetched_at {
+            None => "never".to_string(),
+            Some(t) => format_relative(t),
+        };
+        println!(
+            "  {:<20} {:<5} {:<20} {}",
+            m.name, m.workflow_count, fetched, m.url
+        );
+    }
+}
+
+fn format_relative(t: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let dur = now.signed_duration_since(t);
+    let secs = dur.num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
 }
 

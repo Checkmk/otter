@@ -1163,6 +1163,8 @@ mod tests {
             trigger: None,
             toml_content: toml_content.map(str::to_string),
             enabled,
+            update_available: None,
+            origin_dangling: false,
         }
     }
 
@@ -1249,6 +1251,8 @@ mod tests {
             trigger: None,
             toml_content: Some("name = \"wf\"\n".to_string()),
             enabled: true,
+            update_available: None,
+            origin_dangling: false,
         }]));
 
         // THEN runs and expanded are preserved; state, toml, autostart updated

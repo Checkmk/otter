@@ -1,6 +1,8 @@
 name = "secret-workflow"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "End-to-end demo of the secrets flow: prompt at install time, store in the OS keyring, inject as env at runtime."
 
 # Showcase the secrets isolation flow end-to-end.
 #
@@ -9,7 +11,7 @@ schema = 1
 # declares the same name in `requires = [...]` so the value is injected into
 # the step's env at runtime.
 #
-#   otter workflow install examples/secret-workflow.toml
+#   otter workflow install examples/secret-workflow
 #   otter start secret-workflow
 #
 # Expected output in the TUI logs:

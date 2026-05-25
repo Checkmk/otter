@@ -1,6 +1,8 @@
 name = "one-shot-impl-otter"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "Hand Claude a feedback prompt, let it implement and commit the change in a single session."
 
 [trigger]
 type = "manual"

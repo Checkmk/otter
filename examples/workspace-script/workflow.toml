@@ -1,6 +1,8 @@
 name = "workspace-script"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "Per-run workspace provisioned by a companion script (returns a path on stdout)."
 
 [workspace]
 type = "script"

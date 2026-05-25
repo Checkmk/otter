@@ -1,6 +1,8 @@
 name = "sandboxed-agent"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "Run Claude inside a Podman sandbox to demonstrate the read-only rootfs and /workspace bind mount."
 
 [trigger]
 type = "manual"

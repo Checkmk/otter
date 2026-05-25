@@ -1,6 +1,8 @@
 name = "hello-world"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "Print a greeting and fire a desktop notification on demand."
 
 [trigger]
 type = "manual"

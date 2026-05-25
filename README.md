@@ -28,7 +28,7 @@ cargo build --release
 
 ```bash
 # Install workflow
-otter workflow install examples/hello-world.toml
+otter workflow install examples/hello-world
 
 # Start background service
 otter service start
@@ -43,17 +43,31 @@ otter start hello-world
 otter service stop
 ```
 
+## Marketplace
+
+Install workflows by name from any git repo that publishes them. This
+repository doubles as one:
+
+```bash
+otter marketplace add "$(pwd)"
+otter workflow install hello-world@otter-examples
+```
+
+See [USAGE.md](USAGE.md#marketplaces) for details.
+
 ## Common Commands
 
 ```bash
-otter                         # open the TUI dashboard
-otter help                    # show all commands
-otter status                  # list service and workflow state
-otter service start           # start background service for this session
-otter service stop            # stop background service
-otter workflow install <path> # install a workflow (.toml or package dir)
-otter start <name>            # start or resume a workflow
-otter stop <name>             # stop a running workflow
+otter                                     # open the TUI dashboard
+otter help                                # show all commands
+otter status                              # list service, workflow, and marketplace state
+otter service start                       # start background service for this session
+otter service stop                        # stop background service
+otter workflow install <path>             # install a workflow from disk
+otter workflow install <n>@<marketplace>  # install from a registered marketplace
+otter marketplace add <git-url>           # register a marketplace
+otter start <name>                        # start or resume a workflow
+otter stop <name>                         # stop a running workflow
 ```
 
 ## Example Workflows

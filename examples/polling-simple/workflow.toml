@@ -1,6 +1,8 @@
 name = "polling-simple"
 type = "triggered"
 schema = 1
+version = "0.1.0"
+description = "Polling trigger driven by a companion shell script that emits hashes and writes trigger-context files."
 
 [trigger]
 type = "polling"

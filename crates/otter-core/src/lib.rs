@@ -1,5 +1,6 @@
 pub mod agent_runner;
 pub mod engine;
+pub mod marketplace;
 pub mod process;
 pub mod requirements;
 pub mod resource_limiter;

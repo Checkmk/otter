@@ -52,6 +52,8 @@ pub struct WorkflowDef {
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub trigger: Option<TriggerDef>,
     #[serde(default)]
     pub workspace: Option<WorkspaceConfig>,
@@ -438,6 +440,18 @@ pub struct WorkflowStatus {
     pub toml_content: Option<String>,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub origin_dangling: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceStatus {
+    pub name: String,
+    pub url: String,
+    pub workflow_count: usize,
+    pub last_fetched_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -514,9 +528,17 @@ pub enum DaemonCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonResponse {
     Ok,
-    Error { message: String },
-    StatusResponse { workflows: Vec<WorkflowStatus> },
-    ConsumedTriggersResponse { triggers: Vec<String> },
+    Error {
+        message: String,
+    },
+    StatusResponse {
+        workflows: Vec<WorkflowStatus>,
+        #[serde(default)]
+        marketplaces: Vec<MarketplaceStatus>,
+    },
+    ConsumedTriggersResponse {
+        triggers: Vec<String>,
+    },
 }
 
 pub trait StorageBackend: Send + Sync {

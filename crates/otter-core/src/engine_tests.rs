@@ -32,6 +32,7 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
         workflow_type,
         schema: None,
         version: None,
+        description: None,
         trigger: None,
         workspace: None,
         resources: None,
@@ -192,6 +193,7 @@ async fn triggered_workflow_runs_once_per_event() {
         workflow_type: WorkflowType::Triggered,
         schema: None,
         version: None,
+        description: None,
         trigger: Some(TriggerDef::Manual),
         workspace: None,
         resources: None,
@@ -365,6 +367,7 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
         workflow_type: WorkflowType::Triggered,
         schema: None,
         version: None,
+        description: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![ctx_script.to_string_lossy().into_owned()]),
@@ -524,6 +527,7 @@ async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
         workflow_type: WorkflowType::Triggered,
         schema: None,
         version: None,
+        description: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: None,
@@ -637,6 +641,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
         workflow_type: WorkflowType::Triggered,
         schema: None,
         version: None,
+        description: None,
         trigger: Some(TriggerDef::Polling {
             poll_command: vec![poll_script.to_string_lossy().into_owned()],
             context_command: Some(vec![executable_name("ctx.sh")]), // bare name — requires scripts_dir in PATH

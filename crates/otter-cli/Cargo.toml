@@ -23,6 +23,7 @@ tracing-appender = { workspace = true }
 crossterm = { workspace = true }
 dialoguer = { version = "0.11", default-features = false, features = ["password"] }
 indexmap = "2"
+chrono = { workspace = true }
 
 serde_json         = { workspace = true }
 uuid               = { workspace = true }

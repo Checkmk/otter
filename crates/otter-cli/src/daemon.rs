@@ -15,12 +15,13 @@ use tracing::info;
 use uuid::Uuid;
 
 use otter_core::engine::Engine;
+use otter_core::marketplace;
 use otter_core::triggers::polling::{
     consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers,
 };
 use otter_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
+    MarketplaceStatus, RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
 };
 use otter_core::WorkflowManager;
 use otter_notify::{DesktopNotifier, Notification, Notifier};
@@ -187,6 +188,12 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     });
 
     info!(socket = ?socket_path, "Daemon started — all workflows dormant");
+
+    let config_dir_fetch = config_dir.clone();
+    let data_dir_fetch = data_dir.clone();
+    tokio::spawn(async move {
+        run_marketplace_fetch(&config_dir_fetch, &data_dir_fetch).await;
+    });
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_ctrlc = shutdown.clone();
@@ -374,8 +381,17 @@ async fn handle_connection<S>(
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
         DaemonCommand::Status => {
-            let workflows = build_workflow_snapshot(&manager, &config_dir).await;
-            let _ = write_json(&mut writer, &DaemonResponse::StatusResponse { workflows }).await;
+            let workflows =
+                build_workflow_snapshot_with_origin(&manager, &config_dir, &dirs_data_dir()).await;
+            let marketplaces = build_marketplace_snapshot(&config_dir, &dirs_data_dir());
+            let _ = write_json(
+                &mut writer,
+                &DaemonResponse::StatusResponse {
+                    workflows,
+                    marketplaces,
+                },
+            )
+            .await;
         }
         DaemonCommand::CheckpointRespond { run_id, action } => {
             info!(%run_id, ?action, "Checkpoint response received");
@@ -638,6 +654,80 @@ async fn build_workflow_snapshot(
         s.enabled = enabled.contains(&s.name);
     }
     statuses
+}
+
+/// Build a snapshot annotated with `update_available` and `origin_dangling` by
+/// joining the workflow manager's view with marketplace state on disk.
+async fn build_workflow_snapshot_with_origin(
+    manager: &Mutex<WorkflowManager>,
+    config_dir: &Path,
+    data_dir: &Path,
+) -> Vec<otter_core::types::WorkflowStatus> {
+    let mut statuses = build_workflow_snapshot(manager, config_dir).await;
+    let workflows_dir = config_dir.join("workflows");
+    let updates = marketplace::compute_updates(&workflows_dir, data_dir);
+    let registered: Vec<String> = marketplace::load_registry(config_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+    let dangling = marketplace::dangling_origins(&workflows_dir, &registered);
+
+    for s in &mut statuses {
+        if let Some(u) = updates.iter().find(|u| u.workflow_name == s.name) {
+            s.update_available = u.latest.clone();
+        }
+        if dangling.iter().any(|(name, _)| name == &s.name) {
+            s.origin_dangling = true;
+        }
+    }
+    statuses
+}
+
+/// One pass over every registered marketplace: `git fetch` + refresh state.
+/// Failures are logged but don't kill the loop. Public so tests can drive it.
+pub(crate) async fn run_marketplace_fetch(config_dir: &Path, data_dir: &Path) {
+    let mps = match marketplace::load_registry(config_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(error = %e, "Failed to load marketplace registry; skipping fetch");
+            return;
+        }
+    };
+    for m in mps {
+        let clone = marketplace::clone_dir(data_dir, &m.name);
+        if !clone.is_dir() {
+            warn!(marketplace = %m.name, "Marketplace clone missing on disk; skipping fetch");
+            continue;
+        }
+        match marketplace::fetch_marketplace(&clone).await {
+            Ok(()) => {
+                info!(marketplace = %m.name, "Marketplace fetched");
+            }
+            Err(e) => {
+                warn!(marketplace = %m.name, error = %e, "Marketplace fetch failed");
+                continue;
+            }
+        }
+        if let Err(e) = marketplace::refresh_state_from_clone(data_dir, &m.name) {
+            warn!(marketplace = %m.name, error = %e, "Failed to refresh marketplace state");
+        }
+    }
+}
+
+fn build_marketplace_snapshot(config_dir: &Path, data_dir: &Path) -> Vec<MarketplaceStatus> {
+    let mps = marketplace::load_registry(config_dir).unwrap_or_default();
+    let mut out = Vec::with_capacity(mps.len());
+    for m in mps {
+        let state = marketplace::load_state(data_dir, &m.name).unwrap_or_default();
+        out.push(MarketplaceStatus {
+            name: m.name,
+            url: m.url,
+            workflow_count: state.known_versions.len(),
+            last_fetched_at: state.last_fetched_at,
+        });
+    }
+    out
 }
 
 async fn broadcast_workflows_snapshot(

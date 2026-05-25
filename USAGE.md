@@ -422,11 +422,9 @@ requires = ["JIRA_PAT"]           # ← sensitive: injected as env var at runtim
 
 **Commands:**
 
-```bash
-otter workflow install <path>                    # prompts for each [require] entry
-otter workflow configure <name>                  # re-prompt; Enter keeps current value
-otter workflow configure <name> --reset-secrets  # also re-prompt each sensitive entry
+`[require]` values are gathered at install time and editable afterwards with `otter workflow configure` — see [Workflow management](#installing). Secrets are also addressable directly:
 
+```bash
 otter secret set <name> <value>                  # store or overwrite a secret directly
 otter secret get <name>                          # print value
 otter secret list                                # list all stored secret names
@@ -626,9 +624,7 @@ Example script and workflow are available in the [examples/polling-simple](examp
 
 ## Workflow management
 
-A **workflow package** is a directory containing a `workflow.toml` plus any companion scripts used by the workflow's steps. Packaging them together keeps the workflow self-contained and makes installation atomic.
-
-Companion scripts in the package directory are automatically prepended to `PATH` when any step in that workflow runs
+A **workflow package** is a directory containing a `workflow.toml` plus any companion scripts used by the workflow's steps. Companion scripts in the package directory are automatically prepended to `PATH` when any step in that workflow runs.
 
 ### Package layout
 
@@ -647,37 +643,89 @@ my-workflow/
 name = "my-workflow"
 type = "triggered"
 schema = 1
-version = "1.2.0"     # optional; human-readable package version
+version = "1.2.0"     # human-readable package version (used for marketplace update detection)
+description = "..."   # one-liner shown in marketplace install previews
 ```
 
 **`schema`** declares the minimum otter workflow schema version required to run this workflow. If the installed otter does not support the version, it logs a warning and skips the workflow.
 
-### Installing and removing
+### Installing
+
+`otter workflow install <target>` is idempotent: it installs the workflow if it's new, or upgrades it in place if it's already installed — preserving saved `[require]` values, leaving keyring secrets untouched, and only prompting for newly-introduced keys.
+
+`<target>` accepts:
+
+- **a local path** — `.toml` file or package directory.
+- **`<name>@<marketplace>`** — package in a registered marketplace; the README and `[require]` table are previewed with a y/n confirm before any prompts. See [Marketplaces](#marketplaces).
+- **bare `<name>`** — already-installed workflow; re-resolves the package from the marketplace it was installed from. Re-installing at the same upstream version is a no-op.
 
 ```bash
-# Install a flat .toml file or a package directory — either way the
-# installed form is a package directory at ~/.config/otter/workflows/<name>/.
-# If the workflow has a [require] manifest, install prompts for declared
-# values; see the Requirements Manifest section.
-otter workflow install ./my-workflow.toml
-otter workflow install ./my-workflow/
+otter workflow install ./my-workflow/             # local package directory
+otter workflow install ./my-workflow.toml         # local .toml file (no companion scripts)
+otter workflow install jira-sync@acme             # from a registered marketplace
+otter workflow install jira-sync                  # refresh from origin marketplace
+otter workflow install jira-sync --force          # discard saved values and reinstall fresh
+```
 
-# Re-prompt for [require] values without reinstalling
-otter workflow configure my-workflow
-otter workflow configure my-workflow --reset-secrets
+The installed workflow lives at `~/.config/otter/workflows/<name>/`.
 
-# Remove — deletes the installed workflow and reloads the service
-otter workflow remove my-workflow
+### Reconfiguring and removing
+
+```bash
+otter workflow configure <name>                   # re-prompt for [require] values; Enter keeps current
+otter workflow configure <name> --reset-secrets   # also re-prompt sensitive entries
+
+otter workflow remove <name>                      # delete the installed workflow
 ```
 
 ### Auto-start on daemon startup
 
-Workflows can be configured to start automatically whenever the daemon starts:
+```bash
+otter workflow enable <name>    # start automatically on next daemon start
+otter workflow disable <name>   # stop auto-starting
+```
+
+---
+
+## Marketplaces
+
+A **marketplace** is a git repository publishing a curated set of installable workflow packages. Register one once, then install workflows from it by name (see [Workflow management → Installing](#installing) for the install command itself). The daemon `git fetch`es each registered marketplace on startup; new upstream versions surface as `update available: X.Y.Z` annotations in `otter status`, and `otter workflow install <name>` pulls them in.
+
+> ⚠ Marketplaces are user-vetted. `marketplace add` clones whatever URL you
+> point it at, and the workflows from a marketplace run arbitrary shell and
+> agent steps once installed. Inspect the marketplace's source before adding it.
+
+### Registering and unregistering
 
 ```bash
-otter workflow enable my-workflow   # start automatically on next daemon start
-otter workflow disable my-workflow  # stop auto-starting
+otter marketplace add <git-url>                   # register under the manifest's declared name
+otter marketplace remove <marketplace>            # unregister & delete the clone
 ```
+
+Removing a marketplace leaves already-installed workflows in place; they're surfaced in `otter status` as `origin marketplace removed`.
+
+### Marketplace repo contract
+
+A marketplace is a git repo with a single registry file at the root:
+
+```toml
+# .otter-marketplace.toml
+schema = 1
+name = "acme"                # required canonical identity (alphanumeric, `-`, `_`)
+
+[[workflow]]
+path = "workflows/hello-world"
+
+[[workflow]]
+path = "workflows/jira-sync"
+wip = true   # listed but hidden from default browse output
+```
+
+The `name` is the handle under which the marketplace is registered locally and the value recorded in every installed workflow's origin sidecar — it's the marketplace's stable identity across machines.
+
+Each `path` points at a workflow **package directory** containing the required `workflow.toml` (with `version` for update detection, optional `description` for listings) plus an optional `README.md` (rendered verbatim as the install preview before prompts).
+
+This repository doubles as a working marketplace — see the top-level [.otter-marketplace.toml](.otter-marketplace.toml) and the packages under [examples/](examples/) for a copy-and-edit starting point.
 
 ---
 

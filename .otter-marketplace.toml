@@ -1,0 +1,29 @@
+schema = 1
+name = "otter-examples"
+
+[[workflow]]
+path = "examples/hello-world"
+
+[[workflow]]
+path = "examples/hello-agent"
+
+[[workflow]]
+path = "examples/arch-sync"
+
+[[workflow]]
+path = "examples/one-shot-impl-otter"
+
+[[workflow]]
+path = "examples/git-workspace"
+
+[[workflow]]
+path = "examples/polling-simple"
+
+[[workflow]]
+path = "examples/workspace-script"
+
+[[workflow]]
+path = "examples/sandboxed-agent"
+
+[[workflow]]
+path = "examples/secret-workflow"

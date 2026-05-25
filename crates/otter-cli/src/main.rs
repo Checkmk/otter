@@ -48,6 +48,11 @@ enum Commands {
         #[command(subcommand)]
         command: WorkflowCommands,
     },
+    /// Manage registered workflow marketplaces
+    Marketplace {
+        #[command(subcommand)]
+        command: MarketplaceCommands,
+    },
     /// Manage consumed workflow triggers
     Trigger {
         #[command(subcommand)]
@@ -89,11 +94,40 @@ enum ServiceCommands {
 }
 
 #[derive(Subcommand)]
+enum MarketplaceCommands {
+    /// Clone a marketplace git repo and register it
+    Add {
+        /// Anything `git clone` accepts: a local path or a `git://` /
+        /// `https://` / `ssh://` URL.
+        url: String,
+    },
+    /// Unregister a marketplace and delete its local clone. Installed workflows
+    /// that came from it remain on disk but their `origin.toml` becomes dangling.
+    Remove {
+        /// Name as printed by `otter status` / written to `marketplaces.toml`
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum WorkflowCommands {
-    /// Install a workflow (.toml file or package directory with workflow.toml) into the config dir
+    /// Install or upgrade a workflow.
+    ///
+    /// Accepts three forms:
+    /// - a local path (.toml file or package directory),
+    /// - `<name>@<marketplace>` reference into a registered marketplace,
+    /// - bare `<name>` of an already-installed workflow (re-resolved from its
+    ///   recorded origin marketplace).
+    ///
+    /// If the workflow is already installed, `[require]` values are preserved
+    /// and only newly-introduced inputs are prompted for. Use `--force` to
+    /// wipe the existing install and start fresh.
     Install {
-        /// Path to a .toml file or a workflow package directory
-        path: PathBuf,
+        /// Path, `<name>@<marketplace>` reference, or installed workflow name
+        target: String,
+        /// Discard existing values and reinstall from scratch
+        #[arg(long)]
+        force: bool,
     },
     /// Remove an installed workflow by name
     Remove {
@@ -197,6 +231,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Run { command }) => handle_runs_command(command).await,
         Some(Commands::Trigger { command }) => handle_triggers_command(command).await,
         Some(Commands::Workflow { command }) => handle_workflow_command(command).await,
+        Some(Commands::Marketplace { command }) => handle_marketplace_command(command).await,
         Some(Commands::Secret { command }) => handle_secret_command(command),
         Some(Commands::Service { command }) => handle_service_command(command),
         Some(Commands::Log) => handle_log_command(),
@@ -296,7 +331,7 @@ async fn handle_triggers_command(command: TriggersCommands) -> anyhow::Result<()
 
 async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()> {
     match command {
-        WorkflowCommands::Install { path } => handle_workflow_install(path).await,
+        WorkflowCommands::Install { target, force } => handle_workflow_install(target, force).await,
         WorkflowCommands::Remove { name } => handle_workflow_remove(name).await,
         WorkflowCommands::Enable { name } => handle_workflow_enable(name).await,
         WorkflowCommands::Disable { name } => handle_workflow_disable(name),
@@ -307,23 +342,100 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
     }
 }
 
-async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
-    let path = path
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("Cannot access '{}': {}", path.display(), e))?;
+/// Resolved source for an install: where the package lives on disk and (if
+/// applicable) the marketplace it should be linked to via `origin.toml`.
+struct InstallSource {
+    /// Either a `workflow.toml` file or a package directory containing one.
+    path: PathBuf,
+    /// `Some((marketplace_name, rel-path-in-clone))` when the source came from
+    /// a marketplace (either `<name>@<marketplace>` or a bare-name refresh).
+    origin: Option<(String, String)>,
+    /// `true` when the source was a bare installed-workflow name, in which
+    /// case we skip the y/n README confirmation — the user is upgrading
+    /// something they already chose to install.
+    is_bare_name_refresh: bool,
+}
 
-    let (toml_path, is_package) = if path.is_dir() {
-        let tp = path.join("workflow.toml");
+fn resolve_install_source(target: &str) -> anyhow::Result<InstallSource> {
+    // Case 1: <name>@<marketplace> marketplace reference.
+    if let Some((marketplace_name, workflow_name)) = parse_marketplace_ref(target) {
+        let data_dir = dirs_data_dir();
+        let pkg = otter_core::marketplace::resolve_workflow_in_marketplace(
+            &data_dir,
+            marketplace_name,
+            workflow_name,
+        )?;
+        let clone = otter_core::marketplace::clone_dir(&data_dir, marketplace_name);
+        let rel = pkg
+            .strip_prefix(&clone)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| pkg.to_string_lossy().to_string());
+        return Ok(InstallSource {
+            path: pkg,
+            origin: Some((marketplace_name.to_string(), rel)),
+            is_bare_name_refresh: false,
+        });
+    }
+
+    // Case 2: existing filesystem path.
+    let candidate = PathBuf::from(target);
+    if candidate.exists() {
+        let canon = candidate
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("Cannot access '{}': {}", candidate.display(), e))?;
+        return Ok(InstallSource {
+            path: canon,
+            origin: None,
+            is_bare_name_refresh: false,
+        });
+    }
+
+    // Case 3: bare installed-workflow name — re-resolve from recorded origin.
+    let workflows_dir = dirs_config_dir().join("workflows");
+    let dest = workflows_dir.join(target);
+    if dest.is_dir() {
+        let origin = otter_core::marketplace::load_origin(&dest)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Workflow '{target}' has no recorded origin — pass a local path to reinstall."
+            )
+        })?;
+        let pkg = otter_core::marketplace::resolve_workflow_in_marketplace(
+            &dirs_data_dir(),
+            &origin.marketplace,
+            target,
+        )?;
+        return Ok(InstallSource {
+            path: pkg,
+            origin: Some((origin.marketplace.clone(), origin.path.clone())),
+            is_bare_name_refresh: true,
+        });
+    }
+
+    anyhow::bail!(
+        "'{target}' is not a path, not '<name>@<marketplace>', and not an installed workflow name."
+    );
+}
+
+async fn handle_workflow_install(target: String, force: bool) -> anyhow::Result<()> {
+    let source = resolve_install_source(&target)?;
+
+    let (toml_path, is_package) = if source.path.is_dir() {
+        let tp = source.path.join("workflow.toml");
         anyhow::ensure!(
             tp.exists(),
             "No workflow.toml found in '{}'",
-            path.display()
+            source.path.display()
         );
         (tp, true)
-    } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
-        (path.clone(), false)
+    } else if source.path.is_file()
+        && source.path.extension().and_then(|e| e.to_str()) == Some("toml")
+    {
+        (source.path.clone(), false)
     } else {
-        anyhow::bail!("'{}' is not a .toml file or directory", path.display());
+        anyhow::bail!(
+            "'{}' is not a .toml file or directory",
+            source.path.display()
+        );
     };
 
     let raw_toml = std::fs::read_to_string(&toml_path)
@@ -342,19 +454,98 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
 
     let workflows_dir = dirs_config_dir().join("workflows");
     std::fs::create_dir_all(&workflows_dir)?;
-
-    // Refuse re-install when either form already exists. Use `otter workflow
-    // configure` to update values without reinstalling.
     let dir_dest = workflows_dir.join(&def.name);
     let file_dest = workflows_dir.join(format!("{}.toml", def.name));
-    if dir_dest.exists() || file_dest.exists() {
-        anyhow::bail!(
-            "Workflow '{}' is already installed. Use `otter workflow configure {}` to update \
-             values, or remove first with: otter workflow remove {}",
-            def.name,
-            def.name,
-            def.name
+    let already_installed = dir_dest.exists() || file_dest.exists();
+
+    // --force: wipe any existing install before doing a fresh one.
+    if already_installed && force {
+        let _ = std::fs::remove_file(&file_dest);
+        let _ = std::fs::remove_dir_all(&dir_dest);
+    }
+
+    // Upgrade path: workflow already installed and not forcing a fresh start.
+    if already_installed && !force {
+        // Same-version no-op when re-resolving a marketplace install: skip
+        // staging, prompts, and disk writes entirely.
+        if source.origin.is_some() {
+            if let Ok(Some(existing_origin)) = otter_core::marketplace::load_origin(&dir_dest) {
+                if existing_origin.installed_version.is_some()
+                    && existing_origin.installed_version == def.version
+                {
+                    println!(
+                        "'{}' is already at version {}.",
+                        def.name,
+                        def.version.as_deref().unwrap_or("?")
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        anyhow::ensure!(
+            is_package,
+            "Cannot upgrade from a bare .toml file — pass a package directory or use --force."
         );
+
+        let staging = workflows_dir.join(format!(".{}.upgrade", def.name));
+        let backup = workflows_dir.join(format!(".{}.old", def.name));
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging)?;
+        }
+        if backup.exists() {
+            std::fs::remove_dir_all(&backup)?;
+        }
+
+        let new_origin =
+            source
+                .origin
+                .as_ref()
+                .map(|(marketplace_name, rel)| otter_core::marketplace::Origin {
+                    marketplace: marketplace_name.clone(),
+                    path: rel.clone(),
+                    installed_version: def.version.clone(),
+                });
+        let result = stage_and_swap_upgrade(
+            &def.name,
+            &source.path,
+            &dir_dest,
+            &staging,
+            &backup,
+            new_origin.as_ref(),
+        )
+        .await;
+
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+            let _ = std::fs::remove_dir_all(&backup);
+        }
+        result?;
+
+        println!(
+            "Upgraded workflow '{}'{}.",
+            def.name,
+            def.version
+                .as_deref()
+                .map(|v| format!(" to {v}"))
+                .unwrap_or_default()
+        );
+        if client::send_command_once(DaemonCommand::ReloadWorkflows)
+            .await
+            .is_ok()
+        {
+            println!("Daemon reloaded.");
+        }
+        return Ok(());
+    }
+
+    // Fresh install path. Confirm marketplace README/[require] preview unless
+    // this is a bare-name refresh after --force (the user already opted in
+    // when they first installed it).
+    if let Some((marketplace_name, _)) = source.origin.as_ref() {
+        if !source.is_bare_name_refresh {
+            confirm_marketplace_install(&source.path, marketplace_name, &def.name)?;
+        }
     }
 
     // Pre-flight: gather all interactive input BEFORE touching the filesystem,
@@ -372,12 +563,16 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
         };
 
         let mut values: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+        let overwrite_hint = format!(
+            "use `otter workflow configure {} --reset-secrets` to overwrite",
+            def.name
+        );
         for (name, entry) in manifest.iter() {
             if entry.sensitive {
                 let store = store
                     .as_ref()
                     .expect("keyring opened when any entry is sensitive");
-                prompt_sensitive(name, entry, store.as_ref(), false)?;
+                prompt_sensitive(name, entry, store.as_ref(), false, &overwrite_hint)?;
             } else {
                 let v = prompt_param(name, entry, None)?;
                 values.insert(name.clone(), v);
@@ -391,13 +586,26 @@ async fn handle_workflow_install(path: PathBuf) -> anyhow::Result<()> {
     // Now commit to disk: copy source → write template → write values.toml.
     std::fs::create_dir_all(&dir_dest)?;
     if is_package {
-        copy_dir_excluding_state(&path, &dir_dest)?;
+        copy_dir_excluding_state(&source.path, &dir_dest)?;
     }
     std::fs::write(dir_dest.join("workflow.toml"), &raw_toml)?;
     if let Some(values) = resolved_values {
         let state_dir = dir_dest.join(".otter-state");
         std::fs::create_dir_all(&state_dir)?;
         std::fs::write(state_dir.join("values.toml"), values_toml(&values))?;
+    }
+
+    // Persist marketplace origin sidecar so subsequent `install <name>` knows
+    // where the package came from and so the daemon can report updates.
+    if let Some((marketplace_name, rel)) = source.origin {
+        otter_core::marketplace::save_origin(
+            &dir_dest,
+            &otter_core::marketplace::Origin {
+                marketplace: marketplace_name,
+                path: rel,
+                installed_version: def.version.clone(),
+            },
+        )?;
     }
 
     println!(
@@ -484,10 +692,11 @@ fn prompt_sensitive(
     entry: &RequireEntry,
     store: &EncryptedSecretStore,
     force: bool,
+    overwrite_hint: &str,
 ) -> anyhow::Result<()> {
     if !force && store.list().iter().any(|k| k == name) {
         println!("\n{name} — {}", entry.description);
-        println!("  ✓ already set (use --reset-secrets to overwrite)");
+        println!("  ✓ already set ({overwrite_hint})");
         return Ok(());
     }
     println!("\n{name} — {}", entry.description);
@@ -504,6 +713,286 @@ fn prompt_sensitive(
         println!("  ✓ stored");
         return Ok(());
     }
+}
+
+/// Parse `<name>@<marketplace>` references — e.g. `hello-world@acme`.
+/// Returns `(marketplace_name, workflow_name)` to match
+/// `resolve_workflow_in_marketplace`'s argument order. Requires exactly one
+/// `@`, both halves non-empty, and both consisting of ASCII alphanumeric /
+/// `-` / `_` characters.
+fn parse_marketplace_ref(target: &str) -> Option<(&str, &str)> {
+    let (workflow_name, marketplace_name) = target.split_once('@')?;
+    if workflow_name.is_empty() || marketplace_name.is_empty() {
+        return None;
+    }
+    if target.matches('@').count() != 1 {
+        return None;
+    }
+    let valid = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    if !valid(workflow_name) || !valid(marketplace_name) {
+        return None;
+    }
+    Some((marketplace_name, workflow_name))
+}
+
+/// Render the marketplace package's README (if any) and the `[require]` table
+/// to stdout, then ask for `y/n` confirmation before any prompts kick in.
+fn confirm_marketplace_install(
+    pkg: &Path,
+    marketplace_name: &str,
+    workflow_name: &str,
+) -> anyhow::Result<()> {
+    use std::io::{BufRead, Write};
+
+    println!(
+        "About to install '{workflow_name}' from marketplace '{marketplace_name}' (source: {}).",
+        pkg.display()
+    );
+
+    let readme = pkg.join("README.md");
+    if readme.exists() {
+        if let Ok(content) = std::fs::read_to_string(&readme) {
+            println!("\n--- README.md ---\n{content}\n-----------------\n");
+        }
+    }
+
+    // Surface the [require] manifest up front so the user knows what they'll
+    // be asked for. We parse leniently — a workflow without [require] is fine.
+    let wf_toml = pkg.join("workflow.toml");
+    if let Ok(raw) = std::fs::read_to_string(&wf_toml) {
+        if let Ok(def) = toml::from_str::<otter_core::types::WorkflowDef>(&raw) {
+            if let Some(req) = def.require.as_ref() {
+                if !req.is_empty() {
+                    println!("This workflow declares the following inputs:");
+                    for (n, entry) in req.iter() {
+                        let kind = if entry.sensitive { "secret" } else { "param" };
+                        println!("  - {n} ({kind}): {}", entry.description);
+                    }
+                }
+            }
+        }
+    }
+
+    print!("\nProceed? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let answer = line.trim().to_lowercase();
+    if answer != "y" && answer != "yes" {
+        anyhow::bail!("Install cancelled.");
+    }
+    Ok(())
+}
+
+async fn stage_and_swap_upgrade(
+    name: &str,
+    new_pkg: &Path,
+    dest: &Path,
+    staging: &Path,
+    backup: &Path,
+    origin: Option<&otter_core::marketplace::Origin>,
+) -> anyhow::Result<()> {
+    // 1. Copy new package files into staging (workflow.toml + any companion scripts).
+    copy_dir_excluding_state(new_pkg, staging)?;
+
+    // 2. Validate the new workflow.toml against this otter's schema.
+    let new_toml_path = staging.join("workflow.toml");
+    let raw = std::fs::read_to_string(&new_toml_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read staged workflow.toml: {e}"))?;
+    let def = validate_workflow(&raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let v = def.schema.expect("required by validate_workflow");
+    anyhow::ensure!(
+        v <= WORKFLOW_SCHEMA_VERSION,
+        "Workflow requires schema version {} but this otter supports up to {}",
+        v,
+        WORKFLOW_SCHEMA_VERSION
+    );
+    anyhow::ensure!(
+        def.name == name,
+        "Upgraded package's workflow name '{}' does not match installed name '{}'",
+        def.name,
+        name
+    );
+
+    // 3. Copy the existing .otter-state/ (preserving values.toml, origin.toml)
+    //    into the staging dir so values are preserved.
+    let live_state = dest.join(".otter-state");
+    let staged_state = staging.join(".otter-state");
+    std::fs::create_dir_all(&staged_state)?;
+    if live_state.is_dir() {
+        for entry in std::fs::read_dir(&live_state)? {
+            let entry = entry?;
+            let target = staged_state.join(entry.file_name());
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+
+    // 4. Prompt for any newly-introduced [require] entries.
+    let values_path = staged_state.join("values.toml");
+    let previous = otter_core::requirements::load_values_toml(&values_path)?;
+    if let Some(manifest) = def.require.as_ref() {
+        if !manifest.is_empty() {
+            let needs_keyring = manifest.values().any(|e| e.sensitive);
+            let store = if needs_keyring {
+                Some(open_secret_store_or_bail()?)
+            } else {
+                None
+            };
+            let mut new_values: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+            let mut needs_tty = false;
+            for (n, entry) in manifest.iter() {
+                if entry.sensitive {
+                    let store = store.as_ref().expect("keyring opened above");
+                    if !store.list().iter().any(|k| k == n) {
+                        needs_tty = true;
+                    }
+                } else if !previous.contains_key(n) {
+                    needs_tty = true;
+                }
+            }
+            if needs_tty {
+                ensure_tty(manifest)?;
+            }
+            let overwrite_hint =
+                format!("use `otter workflow configure {name} --reset-secrets` to overwrite");
+            for (n, entry) in manifest.iter() {
+                if entry.sensitive {
+                    let store = store.as_ref().expect("keyring opened above");
+                    let already_set = store.list().iter().any(|k| k == n);
+                    if !already_set {
+                        prompt_sensitive(n, entry, store.as_ref(), true, &overwrite_hint)?;
+                    }
+                } else if let Some(existing) = previous.get(n) {
+                    new_values.insert(n.clone(), existing.clone());
+                } else {
+                    let v = prompt_param(n, entry, None)?;
+                    new_values.insert(n.clone(), v);
+                }
+            }
+            std::fs::write(&values_path, values_toml(&new_values))?;
+        }
+    }
+
+    // 5. Update origin.toml with the new version (only when re-installing
+    //    from a marketplace source — local-path upgrades leave any inherited
+    //    origin.toml untouched in the copied `.otter-state/`).
+    if let Some(origin) = origin {
+        otter_core::marketplace::save_origin(staging, origin)?;
+    }
+
+    // 6. Atomic swap: live → backup → live, then drop the backup.
+    std::fs::rename(dest, backup)?;
+    if let Err(e) = std::fs::rename(staging, dest) {
+        // Try to recover the live install before bubbling up.
+        let _ = std::fs::rename(backup, dest);
+        return Err(anyhow::anyhow!("Failed to swap upgraded package: {e}"));
+    }
+    std::fs::remove_dir_all(backup)?;
+    Ok(())
+}
+
+async fn handle_marketplace_command(command: MarketplaceCommands) -> anyhow::Result<()> {
+    match command {
+        MarketplaceCommands::Add { url } => handle_marketplace_add(url).await,
+        MarketplaceCommands::Remove { name } => handle_marketplace_remove(name).await,
+    }
+}
+
+async fn handle_marketplace_add(url: String) -> anyhow::Result<()> {
+    let config_dir = dirs_config_dir();
+    let data_dir = dirs_data_dir();
+    let mut registry = otter_core::marketplace::load_registry(&config_dir)?;
+
+    // Clone into a staging directory first so we can read the declared name
+    // before placing the clone in its final, name-keyed location. Staging lives
+    // alongside the final dir so the rename is atomic on the same filesystem.
+    let marketplaces_dir = otter_core::marketplace::marketplaces_dir(&data_dir);
+    std::fs::create_dir_all(&marketplaces_dir)?;
+    let staging = marketplaces_dir.join(format!(".staging-{}", Uuid::new_v4()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+
+    println!("Cloning '{url}' ...");
+    if let Err(e) = otter_core::marketplace::clone_marketplace(&url, &staging).await {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    let idx = match otter_core::marketplace::load_index(&staging) {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+    let name = idx.name.clone();
+
+    if registry.iter().any(|m| m.name == name) {
+        let _ = std::fs::remove_dir_all(&staging);
+        anyhow::bail!(
+            "Marketplace '{name}' is already registered. Remove it first with `otter marketplace remove {name}`."
+        );
+    }
+
+    let final_clone = otter_core::marketplace::clone_dir(&data_dir, &name);
+    if final_clone.exists() {
+        std::fs::remove_dir_all(&final_clone)?;
+    }
+    std::fs::rename(&staging, &final_clone).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to move staged clone {} → {}: {e}",
+            staging.display(),
+            final_clone.display()
+        )
+    })?;
+
+    println!(
+        "Registered marketplace '{name}' ({} workflow{}).",
+        idx.workflows.len(),
+        if idx.workflows.len() == 1 { "" } else { "s" }
+    );
+
+    registry.push(otter_core::marketplace::Marketplace {
+        name: name.clone(),
+        url,
+        added_at: chrono::Utc::now(),
+    });
+    otter_core::marketplace::save_registry(&config_dir, &registry)?;
+
+    // Refresh state synchronously so `otter status` shows correct counts right away.
+    if let Err(e) = otter_core::marketplace::refresh_state_from_clone(&data_dir, &name) {
+        eprintln!("Warning: failed to record marketplace state: {e}");
+    }
+
+    Ok(())
+}
+
+async fn handle_marketplace_remove(name: String) -> anyhow::Result<()> {
+    let config_dir = dirs_config_dir();
+    let data_dir = dirs_data_dir();
+    let mut registry = otter_core::marketplace::load_registry(&config_dir)?;
+    let before = registry.len();
+    registry.retain(|m| m.name != name);
+    if registry.len() == before {
+        anyhow::bail!("Marketplace '{name}' is not registered.");
+    }
+    otter_core::marketplace::save_registry(&config_dir, &registry)?;
+
+    let clone = otter_core::marketplace::clone_dir(&data_dir, &name);
+    if clone.exists() {
+        std::fs::remove_dir_all(&clone)?;
+    }
+    let state_path = otter_core::marketplace::state_path(&data_dir, &name);
+    if state_path.exists() {
+        let _ = std::fs::remove_file(&state_path);
+    }
+
+    println!("Removed marketplace '{name}'. Installed workflows from it remain on disk.");
+    Ok(())
 }
 
 async fn handle_workflow_configure(name: String, reset_secrets: bool) -> anyhow::Result<()> {
@@ -547,7 +1036,13 @@ async fn handle_workflow_configure(name: String, reset_secrets: bool) -> anyhow:
             // Edge case: declared sensitive but missing from keyring (user
             // deleted it). Always prompt in that case, regardless of flag.
             let force = reset_secrets || !already_set;
-            prompt_sensitive(name, entry, store.as_ref(), force)?;
+            prompt_sensitive(
+                name,
+                entry,
+                store.as_ref(),
+                force,
+                "re-run with --reset-secrets to overwrite",
+            )?;
         } else {
             let current = previous.get(name).map(String::as_str);
             let v = prompt_param(name, entry, current)?;
@@ -867,6 +1362,27 @@ pub(crate) fn dirs_config_dir() -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn parse_marketplace_ref_accepts_workflow_at_marketplace() {
+        // GIVEN/WHEN/THEN — returns (marketplace_name, workflow_name)
+        assert_eq!(
+            parse_marketplace_ref("hello-world@official"),
+            Some(("official", "hello-world"))
+        );
+    }
+
+    #[test]
+    fn parse_marketplace_ref_rejects_non_marketplace_inputs() {
+        // GIVEN inputs that don't match <name>@<marketplace>
+        // WHEN/THEN
+        assert_eq!(parse_marketplace_ref("./hello-world"), None);
+        assert_eq!(parse_marketplace_ref("examples/hello-world"), None); // path-shaped
+        assert_eq!(parse_marketplace_ref("hello-world"), None); // bare name
+        assert_eq!(parse_marketplace_ref("@official"), None); // empty workflow name
+        assert_eq!(parse_marketplace_ref("hello@"), None); // empty marketplace
+        assert_eq!(parse_marketplace_ref("a@b@c"), None); // multiple @
+    }
 
     #[test]
     fn read_enabled_missing_file_returns_empty() {
