@@ -471,6 +471,14 @@ async fn handle_workflow_install(target: String, force: bool) -> anyhow::Result<
     std::fs::create_dir_all(&workflows_dir)?;
     let dir_dest = workflows_dir.join(&def.name);
     let file_dest = workflows_dir.join(format!("{}.toml", def.name));
+
+    // A legacy single-file install (`<name>.toml`) carries no `.otter-state/`,
+    // so there is nothing for the upgrade path to preserve. Drop it now and
+    // fall through to a fresh package install.
+    if !dir_dest.exists() && file_dest.exists() {
+        std::fs::remove_file(&file_dest)?;
+    }
+
     let already_installed = dir_dest.exists() || file_dest.exists();
 
     // --force: wipe any existing install before doing a fresh one.

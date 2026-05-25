@@ -4,12 +4,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, Modal, Mode};
+use crate::app::{App, CursorTarget, Focus, Modal, Mode};
 use crate::help_modal::render_help_modal;
+use crate::marketplaces_panel::{footer_height, marketplaces_hints, render_marketplaces};
 use crate::right_panel::{render_right_panel, right_panel_hints};
 use crate::runs_panel::{left_panel_hints, render_runs};
 use crate::status_bar::{render_status_bar, PanelHint, StatusBarMode};
 use crate::styles::base_style;
+use crate::styles::{panel, panel_focused};
 use crate::text::wrap_into_chunks;
 
 fn centered_rect(width: Constraint, height: Constraint, area: Rect) -> Rect {
@@ -70,7 +72,26 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(35), Constraint::Min(1)])
         .split(inner[0]);
 
-    render_runs(f, app, main[0]);
+    let left_panel = main[0];
+    let left_focused = app.modal.is_none() && app.focus == Focus::Left;
+    let left_block = if left_focused {
+        panel_focused("Workflows")
+    } else {
+        panel("Workflows")
+    };
+    let left_inner = left_block.inner(left_panel);
+    f.render_widget(left_block, left_panel);
+
+    let mp_height = footer_height(app, left_inner.height);
+    let left_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(mp_height)])
+        .split(left_inner);
+
+    render_runs(f, app, left_split[0]);
+    if mp_height > 0 {
+        render_marketplaces(f, app, left_split[1]);
+    }
     render_right_panel(f, app, main[1]);
 
     if let Some(modal) = &mut app.modal {
@@ -117,7 +138,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     feedback_available: cp.feedback_available,
                 },
                 None => StatusBarMode::Normal {
-                    panel_hints: left_panel_hints(app),
+                    panel_hints: match app.cursor {
+                        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
+                            marketplaces_hints(app)
+                        }
+                        _ => left_panel_hints(app),
+                    },
                     other_checkpoints: app.other_checkpoint_count(),
                     tick: app.tick,
                     update_available: app.update_available.as_deref(),

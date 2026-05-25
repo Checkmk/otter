@@ -10,7 +10,7 @@ use otter_core::types::{
 };
 
 use crate::config::load_theme_config;
-use crate::{dirs_config_dir, socket_path};
+use crate::{dirs_config_dir, dirs_data_dir, socket_path};
 use otter_tui::theme_loader;
 
 pub async fn run_ui() -> anyhow::Result<()> {
@@ -82,8 +82,12 @@ pub async fn run_ui() -> anyhow::Result<()> {
     let theme_cfg = load_theme_config(&dirs_config_dir());
     let theme = theme_loader::resolve(&theme_cfg);
 
-    tokio::task::spawn_blocking(move || otter_tui::run(event_rx, cmd_tx, shutdown, theme))
-        .await??;
+    let data_dir = dirs_data_dir();
+    let config_dir = dirs_config_dir();
+    tokio::task::spawn_blocking(move || {
+        otter_tui::run(event_rx, cmd_tx, shutdown, theme, data_dir, config_dir)
+    })
+    .await??;
 
     Ok(())
 }
@@ -155,28 +159,59 @@ fn print_update_line() {
 }
 
 fn print_workflows(workflows: &[WorkflowStatus]) {
-    println!("{:<30} {:<12} {:<14} NOTES", "NAME", "KIND", "STATE");
-    println!("{}", "-".repeat(74));
-    for wf in workflows {
-        let display_name = match &wf.origin {
-            Some(o) => format!("{}@{}", wf.name, o.marketplace),
-            None => wf.name.clone(),
-        };
-        let mut notes: Vec<String> = Vec::new();
-        if let Some(o) = &wf.origin {
-            if o.dangling {
-                notes.push(format!("'{}' removed", o.marketplace));
+    // Compute per-row strings up-front so column widths can size to content.
+    struct Row {
+        name: String,
+        kind: String,
+        state: String,
+        notes: String,
+    }
+    let rows: Vec<Row> = workflows
+        .iter()
+        .map(|wf| {
+            let name = match &wf.origin {
+                Some(o) => format!("{}@{}", wf.name, o.marketplace),
+                None => wf.name.clone(),
+            };
+            let mut notes: Vec<String> = Vec::new();
+            if let Some(o) = &wf.origin {
+                if o.dangling {
+                    notes.push(format!("'{}' removed", o.marketplace));
+                }
             }
-        }
-        if let Some(v) = &wf.update_available {
-            notes.push(format!("update available: {v}"));
-        }
+            if let Some(v) = &wf.update_available {
+                notes.push(format!("update available: {v}"));
+            }
+            Row {
+                name,
+                kind: format!("{:?}", wf.kind),
+                state: format!("{:?}", wf.state),
+                notes: notes.join(", "),
+            }
+        })
+        .collect();
+
+    let col = |header: &str, get: fn(&Row) -> &str| {
+        rows.iter()
+            .map(|r| get(r).chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(header.chars().count())
+    };
+    let name_w = col("NAME", |r| &r.name);
+    let kind_w = col("KIND", |r| &r.kind);
+    let state_w = col("STATE", |r| &r.state);
+    let total_w = name_w + kind_w + state_w + "NOTES".len() + 3; // 3 inter-column spaces
+
+    println!(
+        "{:<name_w$} {:<kind_w$} {:<state_w$} NOTES",
+        "NAME", "KIND", "STATE"
+    );
+    println!("{}", "-".repeat(total_w));
+    for r in &rows {
         println!(
-            "{:<30} {:<12} {:<14} {}",
-            display_name,
-            format!("{:?}", wf.kind),
-            format!("{:?}", wf.state),
-            notes.join(", "),
+            "{:<name_w$} {:<kind_w$} {:<state_w$} {}",
+            r.name, r.kind, r.state, r.notes
         );
     }
 }

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use chrono::Utc;
 use otter_core::types::{
-    CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, ProgressChunk, TriggerDef, WorkflowRun,
-    WorkflowState, WorkflowStatus, WorkflowType,
+    CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, MarketplaceOrigin, MarketplaceStatus,
+    ProgressChunk, TriggerDef, WorkflowRun, WorkflowState, WorkflowStatus, WorkflowType,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -46,16 +47,22 @@ pub struct WorkflowEntry {
     pub trigger: Option<TriggerDef>,
     pub toml_content: Option<String>,
     pub autostart: bool,
+    pub update_available: Option<String>,
+    pub origin: Option<MarketplaceOrigin>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CursorTarget {
-    Workflow(usize),   // index into workflows vec
-    Run(usize, usize), // workflow_idx, run_idx
+    Workflow(usize),                   // index into workflows vec
+    Run(usize, usize),                 // workflow_idx, run_idx
+    Marketplace(usize),                // index into marketplaces vec
+    MarketplaceWorkflow(usize, usize), // marketplace_idx, workflow_idx
 }
 
 pub struct App {
     pub workflows: Vec<WorkflowEntry>,
+    pub marketplaces: Vec<MarketplaceStatus>,
+    pub marketplace_expanded: HashMap<String, bool>,
     pub cursor: CursorTarget,
     pub logs: HashMap<Uuid, Vec<LogEntry>>,
     pub pending_checkpoints: HashMap<Uuid, PendingCheckpoint>,
@@ -75,12 +82,23 @@ pub struct App {
     pub consumed_triggers: HashMap<String, Vec<String>>,
     pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
     pub update_available: Option<String>,
+    /// Filesystem root for resolving marketplace clones when previewing.
+    pub data_dir: PathBuf,
+    /// Configuration root (`~/.config/otter/`); used to locate installed
+    /// workflow packages for the rich preview.
+    pub config_dir: PathBuf,
 }
 
 impl App {
-    pub fn new(cmd_tx: mpsc::Sender<DaemonCommand>) -> Self {
+    pub fn new(
+        cmd_tx: mpsc::Sender<DaemonCommand>,
+        data_dir: PathBuf,
+        config_dir: PathBuf,
+    ) -> Self {
         Self {
             workflows: Vec::new(),
+            marketplaces: Vec::new(),
+            marketplace_expanded: HashMap::new(),
             cursor: CursorTarget::Workflow(0),
             logs: HashMap::new(),
             pending_checkpoints: HashMap::new(),
@@ -99,6 +117,8 @@ impl App {
             consumed_triggers: HashMap::new(),
             progress: HashMap::new(),
             update_available: None,
+            data_dir,
+            config_dir,
         }
     }
 
@@ -122,9 +142,45 @@ impl App {
 
     pub fn selected_workflow(&self) -> Option<&WorkflowEntry> {
         match self.cursor {
-            CursorTarget::Workflow(wi) => self.workflows.get(wi),
-            CursorTarget::Run(wi, _) => self.workflows.get(wi),
+            CursorTarget::Workflow(wi) | CursorTarget::Run(wi, _) => self.workflows.get(wi),
+            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => None,
         }
+    }
+
+    pub fn selected_marketplace(&self) -> Option<&MarketplaceStatus> {
+        match self.cursor {
+            CursorTarget::Marketplace(mi) | CursorTarget::MarketplaceWorkflow(mi, _) => {
+                self.marketplaces.get(mi)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn selected_marketplace_workflow(
+        &self,
+    ) -> Option<(
+        &MarketplaceStatus,
+        &otter_core::types::MarketplaceWorkflowEntry,
+    )> {
+        let CursorTarget::MarketplaceWorkflow(mi, wi) = self.cursor else {
+            return None;
+        };
+        let m = self.marketplaces.get(mi)?;
+        Some((m, m.workflows.get(wi)?))
+    }
+
+    /// Returns true if a workflow with `name` is already installed locally.
+    pub fn is_workflow_installed(&self, name: &str) -> bool {
+        self.workflows.iter().any(|w| w.name == name)
+    }
+
+    /// When the named workflow is installed AND its origin marketplace
+    /// advertises a newer version, returns that latest version.
+    pub fn workflow_update_available(&self, name: &str) -> Option<&str> {
+        self.workflows
+            .iter()
+            .find(|w| w.name == name)
+            .and_then(|w| w.update_available.as_deref())
     }
 
     pub fn handle_daemon_event(&mut self, event: DaemonEvent) {
@@ -156,6 +212,9 @@ impl App {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
             DaemonEvent::WorkflowsSnapshot(snapshot) => self.apply_workflows_snapshot(snapshot),
+            DaemonEvent::MarketplacesSnapshot(snapshot) => {
+                self.apply_marketplaces_snapshot(snapshot)
+            }
             DaemonEvent::CheckpointPending {
                 run_id,
                 step_index,
@@ -252,6 +311,8 @@ impl App {
                     entry.trigger = incoming.trigger;
                     entry.toml_content = incoming.toml_content;
                     entry.autostart = incoming.enabled;
+                    entry.update_available = incoming.update_available;
+                    entry.origin = incoming.origin;
                 }
                 None => {
                     self.workflows.push(WorkflowEntry {
@@ -263,11 +324,27 @@ impl App {
                         trigger: incoming.trigger,
                         toml_content: incoming.toml_content,
                         autostart: incoming.enabled,
+                        update_available: incoming.update_available,
+                        origin: incoming.origin,
                     });
                 }
             }
         }
 
+        self.ensure_cursor_valid(old_pos);
+    }
+
+    fn apply_marketplaces_snapshot(&mut self, snapshot: Vec<MarketplaceStatus>) {
+        let old_pos = self
+            .build_flat_list()
+            .iter()
+            .position(|t| *t == self.cursor);
+        // Drop expand state for marketplaces that disappeared.
+        let names: std::collections::HashSet<&str> =
+            snapshot.iter().map(|m| m.name.as_str()).collect();
+        self.marketplace_expanded
+            .retain(|k, _| names.contains(k.as_str()));
+        self.marketplaces = snapshot;
         self.ensure_cursor_valid(old_pos);
     }
 
@@ -350,8 +427,8 @@ impl App {
 
     pub fn selected_run_id(&self) -> Option<Uuid> {
         match self.cursor {
-            CursorTarget::Workflow(_) => None,
             CursorTarget::Run(wi, ri) => self.workflows.get(wi)?.runs.get(ri).map(|r| r.id),
+            _ => None,
         }
     }
 
@@ -373,15 +450,24 @@ impl App {
             .unwrap_or(&[])
     }
 
-    pub fn selected_workflow_toml(&self) -> Option<&str> {
-        match self.cursor {
-            CursorTarget::Workflow(wi) => self.workflows.get(wi)?.toml_content.as_deref(),
-            CursorTarget::Run(_, _) => None,
+    /// Returns the on-disk package directory for the currently-selected
+    /// installed workflow, if any. Used by the rich preview to surface README
+    /// and inlined message-file contents.
+    pub fn selected_workflow_pkg_dir(&self) -> Option<PathBuf> {
+        let entry = match self.cursor {
+            CursorTarget::Workflow(wi) => self.workflows.get(wi)?,
+            _ => return None,
+        };
+        let dir = self.config_dir.join("workflows").join(&entry.name);
+        if dir.is_dir() {
+            Some(dir)
+        } else {
+            None
         }
     }
 
     /// Build a flat list of all cursor targets in navigation order
-    fn build_flat_list(&self) -> Vec<CursorTarget> {
+    pub(crate) fn build_flat_list(&self) -> Vec<CursorTarget> {
         let mut list = Vec::new();
         for (wi, entry) in self.workflows.iter().enumerate() {
             list.push(CursorTarget::Workflow(wi));
@@ -391,7 +477,25 @@ impl App {
                 }
             }
         }
+        for (mi, m) in self.marketplaces.iter().enumerate() {
+            list.push(CursorTarget::Marketplace(mi));
+            if self.is_marketplace_expanded(&m.name) {
+                for (wi, w) in m.workflows.iter().enumerate() {
+                    if !crate::marketplaces_panel::workflow_is_visible(self, w) {
+                        continue;
+                    }
+                    list.push(CursorTarget::MarketplaceWorkflow(mi, wi));
+                }
+            }
+        }
         list
+    }
+
+    pub fn is_marketplace_expanded(&self, name: &str) -> bool {
+        self.marketplace_expanded
+            .get(name)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Navigate up one position in the unified flat list (wraps to bottom)
@@ -418,19 +522,35 @@ impl App {
         }
     }
 
-    /// Toggle expanded state of the workflow at the current cursor (only if cursor is on a workflow)
+    /// Toggle expanded state of the workflow or marketplace at the current cursor
     pub fn toggle_expanded(&mut self) {
-        if let CursorTarget::Workflow(wi) = self.cursor {
-            if let Some(entry) = self.workflows.get_mut(wi) {
-                if entry.runs.is_empty() {
-                    return;
-                }
-                entry.expanded = !entry.expanded;
-                // Collapse: snap cursor to the workflow row
-                if !entry.expanded {
-                    self.cursor = CursorTarget::Workflow(wi);
+        match self.cursor {
+            CursorTarget::Workflow(wi) => {
+                if let Some(entry) = self.workflows.get_mut(wi) {
+                    if entry.runs.is_empty() {
+                        return;
+                    }
+                    entry.expanded = !entry.expanded;
+                    // Collapse: snap cursor to the workflow row
+                    if !entry.expanded {
+                        self.cursor = CursorTarget::Workflow(wi);
+                    }
                 }
             }
+            CursorTarget::Marketplace(mi) => {
+                if let Some(m) = self.marketplaces.get(mi) {
+                    if m.workflows.is_empty() {
+                        return;
+                    }
+                    let name = m.name.clone();
+                    let new_state = !self.is_marketplace_expanded(&name);
+                    self.marketplace_expanded.insert(name, new_state);
+                    if !new_state {
+                        self.cursor = CursorTarget::Marketplace(mi);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -468,80 +588,86 @@ impl App {
         self.right_scroll = 0;
     }
 
+    /// True when the right panel uses absolute (top-down) scroll semantics
+    /// rather than "lines from bottom" (used by the log view).
+    fn right_panel_is_top_down(&self) -> bool {
+        !matches!(self.cursor, CursorTarget::Run(_, _))
+    }
+
     pub fn move_right_up(&mut self) {
         match self.right_panel_content {
             RightPanelContent::ConsumedTriggers => self.move_right_cursor_up(),
-            RightPanelContent::Contextual => match self.cursor {
-                // TOML: right_scroll is absolute from top — ↑ means smaller offset (toward top)
-                CursorTarget::Workflow(_) => {
-                    self.right_scroll = self.right_scroll.saturating_sub(1)
+            RightPanelContent::Contextual => {
+                if self.right_panel_is_top_down() {
+                    self.right_scroll = self.right_scroll.saturating_sub(1);
+                } else {
+                    self.right_scroll += 1;
                 }
-                // Logs: right_scroll is lines from bottom — ↑ means more lines from bottom (toward top)
-                CursorTarget::Run(_, _) => self.right_scroll += 1,
-            },
+            }
         }
     }
 
     pub fn move_right_down(&mut self) {
         match self.right_panel_content {
             RightPanelContent::ConsumedTriggers => self.move_right_cursor_down(),
-            RightPanelContent::Contextual => match self.cursor {
-                // TOML: right_scroll is absolute from top — ↓ means larger offset (toward bottom)
-                CursorTarget::Workflow(_) => self.right_scroll += 1,
-                // Logs: right_scroll is lines from bottom — ↓ means fewer lines from bottom (toward bottom)
-                CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(1),
-            },
+            RightPanelContent::Contextual => {
+                if self.right_panel_is_top_down() {
+                    self.right_scroll += 1;
+                } else {
+                    self.right_scroll = self.right_scroll.saturating_sub(1);
+                }
+            }
         }
     }
 
     pub fn scroll_right_page_up(&mut self) {
-        match self.cursor {
-            CursorTarget::Workflow(_) => {
-                self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height)
-            }
-            CursorTarget::Run(_, _) => self.right_scroll += self.right_panel_height,
+        if self.right_panel_is_top_down() {
+            self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height);
+        } else {
+            self.right_scroll += self.right_panel_height;
         }
     }
 
     pub fn scroll_right_page_down(&mut self) {
-        match self.cursor {
-            CursorTarget::Workflow(_) => self.right_scroll += self.right_panel_height,
-            CursorTarget::Run(_, _) => {
-                self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height)
-            }
+        if self.right_panel_is_top_down() {
+            self.right_scroll += self.right_panel_height;
+        } else {
+            self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height);
         }
     }
 
     pub fn scroll_right_half_page_up(&mut self) {
         let half = (self.right_panel_height / 2).max(1);
-        match self.cursor {
-            CursorTarget::Workflow(_) => self.right_scroll = self.right_scroll.saturating_sub(half),
-            CursorTarget::Run(_, _) => self.right_scroll += half,
+        if self.right_panel_is_top_down() {
+            self.right_scroll = self.right_scroll.saturating_sub(half);
+        } else {
+            self.right_scroll += half;
         }
     }
 
     pub fn scroll_right_half_page_down(&mut self) {
         let half = (self.right_panel_height / 2).max(1);
-        match self.cursor {
-            CursorTarget::Workflow(_) => self.right_scroll += half,
-            CursorTarget::Run(_, _) => self.right_scroll = self.right_scroll.saturating_sub(half),
+        if self.right_panel_is_top_down() {
+            self.right_scroll += half;
+        } else {
+            self.right_scroll = self.right_scroll.saturating_sub(half);
         }
     }
 
     pub fn scroll_right_top(&mut self) {
-        match self.cursor {
-            // TOML: absolute offset — top is 0
-            CursorTarget::Workflow(_) => self.right_scroll = 0,
+        if self.right_panel_is_top_down() {
+            self.right_scroll = 0;
+        } else {
             // Logs: lines-from-bottom — top is usize::MAX (clamped to auto_bottom on render)
-            CursorTarget::Run(_, _) => self.right_scroll = usize::MAX,
+            self.right_scroll = usize::MAX;
         }
     }
 
     pub fn scroll_right_bottom(&mut self) {
-        // Bottom is 0 for logs (live tail), usize::MAX for TOML (clamped on render)
-        match self.cursor {
-            CursorTarget::Workflow(_) => self.right_scroll = usize::MAX,
-            CursorTarget::Run(_, _) => self.right_scroll = 0,
+        if self.right_panel_is_top_down() {
+            self.right_scroll = usize::MAX;
+        } else {
+            self.right_scroll = 0;
         }
     }
 
@@ -595,6 +721,22 @@ impl App {
             .try_send(DaemonCommand::DeleteConsumedTrigger { workflow, trigger });
     }
 
+    /// Returns the on-disk package directory for the selected marketplace
+    /// workflow, if the cursor is on one and the clone exists.
+    pub fn selected_marketplace_pkg_dir(&self) -> Option<PathBuf> {
+        let (m, w) = self.selected_marketplace_workflow()?;
+        let dir = self
+            .data_dir
+            .join("marketplaces")
+            .join(&m.name)
+            .join(&w.path);
+        if dir.is_dir() {
+            Some(dir)
+        } else {
+            None
+        }
+    }
+
     /// Delete the currently selected run (only if cursor is on a run)
     pub fn delete_selected_run(&mut self) {
         if let CursorTarget::Run(_, _) = self.cursor {
@@ -613,7 +755,11 @@ mod tests {
 
     fn make_test_app() -> App {
         let (tx, _rx) = mpsc::channel(32);
-        App::new(tx)
+        App::new(
+            tx,
+            PathBuf::from("/tmp/otter-tui-test"),
+            PathBuf::from("/tmp/otter-tui-test-config"),
+        )
     }
 
     #[test]
@@ -630,6 +776,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf2".to_string(),
@@ -640,6 +788,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Start at first workflow
@@ -678,6 +828,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Navigate through expanded workflow
@@ -716,6 +868,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Select the workflow
@@ -744,6 +898,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Start with cursor on the workflow (not on a run)
@@ -775,6 +931,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -797,6 +955,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         app.cursor = CursorTarget::Run(0, 0);
@@ -820,6 +980,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Handle RunDeleted event
@@ -843,6 +1005,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Add runs in non-chronological order
@@ -883,6 +1047,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Cursor on the last run (index 1)
@@ -919,6 +1085,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf-b".to_string(),
@@ -929,6 +1097,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Cursor on the second run of wf-b (the older one)
@@ -958,6 +1128,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Cursor on the only run
@@ -985,6 +1157,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         app.cursor = CursorTarget::Workflow(0);
@@ -1010,6 +1184,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Add a new run without starting the workflow
@@ -1033,6 +1209,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // Start the workflow
@@ -1068,6 +1246,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.cursor = CursorTarget::Run(0, 0);
 
@@ -1097,67 +1277,6 @@ mod tests {
 
         // THEN processing is cleared
         assert!(!app.pending_checkpoints[&run_id].processing);
-    }
-
-    #[test]
-    fn selected_workflow_toml_returns_content_when_cursor_on_workflow() {
-        let mut app = make_test_app();
-
-        app.workflows.push(WorkflowEntry {
-            name: "wf".to_string(),
-            kind: WorkflowType::Looping,
-            state: WorkflowState::Dormant,
-            runs: vec![],
-            expanded: false,
-            trigger: None,
-            toml_content: Some("name = \"wf\"\ntype = \"looping\"\n".to_string()),
-            autostart: false,
-        });
-
-        app.cursor = CursorTarget::Workflow(0);
-        assert_eq!(
-            app.selected_workflow_toml(),
-            Some("name = \"wf\"\ntype = \"looping\"\n")
-        );
-    }
-
-    #[test]
-    fn selected_workflow_toml_returns_none_when_toml_absent() {
-        let mut app = make_test_app();
-
-        app.workflows.push(WorkflowEntry {
-            name: "wf".to_string(),
-            kind: WorkflowType::Looping,
-            state: WorkflowState::Dormant,
-            runs: vec![],
-            expanded: false,
-            trigger: None,
-            toml_content: None,
-            autostart: false,
-        });
-
-        app.cursor = CursorTarget::Workflow(0);
-        assert_eq!(app.selected_workflow_toml(), None);
-    }
-
-    #[test]
-    fn selected_workflow_toml_returns_none_when_cursor_on_run() {
-        let mut app = make_test_app();
-
-        let run = WorkflowRun::new("wf".to_string());
-        app.workflows.push(WorkflowEntry {
-            name: "wf".to_string(),
-            kind: WorkflowType::Looping,
-            state: WorkflowState::Dormant,
-            runs: vec![run],
-            expanded: true,
-            trigger: None,
-            toml_content: Some("name = \"wf\"\n".to_string()),
-            autostart: false,
-        });
-
-        app.cursor = CursorTarget::Run(0, 0);
-        assert_eq!(app.selected_workflow_toml(), None);
     }
 
     fn snap(name: &str, toml_content: Option<&str>, enabled: bool) -> WorkflowStatus {
@@ -1246,6 +1365,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // WHEN a snapshot arrives that still contains wf (with a state change and toml)
@@ -1286,6 +1407,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.workflows.push(WorkflowEntry {
             name: "wf-b".to_string(),
@@ -1296,6 +1419,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
 
         // WHEN a snapshot arrives that only contains wf-b
@@ -1329,7 +1454,11 @@ mod tests {
     fn toggle_enable_selected_enables_workflow() {
         // GIVEN a disabled workflow
         let (tx, mut rx) = mpsc::channel(32);
-        let mut app = App::new(tx);
+        let mut app = App::new(
+            tx,
+            PathBuf::from("/tmp/otter-tui-test"),
+            PathBuf::from("/tmp/otter-tui-test-config"),
+        );
         app.workflows.push(WorkflowEntry {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
@@ -1339,6 +1468,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.cursor = CursorTarget::Workflow(0);
 
@@ -1356,7 +1487,11 @@ mod tests {
     fn toggle_enable_selected_disables_workflow() {
         // GIVEN an enabled workflow
         let (tx, mut rx) = mpsc::channel(32);
-        let mut app = App::new(tx);
+        let mut app = App::new(
+            tx,
+            PathBuf::from("/tmp/otter-tui-test"),
+            PathBuf::from("/tmp/otter-tui-test-config"),
+        );
         app.workflows.push(WorkflowEntry {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
@@ -1366,6 +1501,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: true,
+            update_available: None,
+            origin: None,
         });
         app.cursor = CursorTarget::Workflow(0);
 
@@ -1390,6 +1527,104 @@ mod tests {
         assert!(app.workflows[0].autostart);
     }
 
+    fn make_marketplace(name: &str, workflows: Vec<&str>) -> otter_core::types::MarketplaceStatus {
+        otter_core::types::MarketplaceStatus {
+            name: name.to_string(),
+            url: format!("https://example.com/{name}"),
+            workflow_count: workflows.len(),
+            last_fetched_at: None,
+            workflows: workflows
+                .into_iter()
+                .map(|n| otter_core::types::MarketplaceWorkflowEntry {
+                    name: n.to_string(),
+                    version: Some("1.0.0".to_string()),
+                    description: None,
+                    path: format!("workflows/{n}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn cursor_flows_from_runs_into_marketplaces() {
+        // GIVEN one collapsed workflow and one collapsed marketplace
+        let mut app = make_test_app();
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+            update_available: None,
+            origin: None,
+        });
+        app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
+        app.cursor = CursorTarget::Workflow(0);
+
+        // WHEN moving down
+        app.move_cursor_down();
+
+        // THEN cursor lands on the marketplace
+        assert_eq!(app.cursor, CursorTarget::Marketplace(0));
+    }
+
+    #[test]
+    fn toggle_expanded_expands_marketplace() {
+        // GIVEN a marketplace with workflows, cursor on it
+        let mut app = make_test_app();
+        app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a", "b"])]);
+        app.cursor = CursorTarget::Marketplace(0);
+
+        // WHEN toggling
+        app.toggle_expanded();
+
+        // THEN it expands and the workflow rows show up in the flat list
+        assert!(app.is_marketplace_expanded("acme"));
+        let flat = app.build_flat_list();
+        assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 0)));
+        assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 1)));
+    }
+
+    #[test]
+    fn apply_marketplaces_snapshot_drops_stale_expand_state() {
+        // GIVEN an expanded marketplace
+        let mut app = make_test_app();
+        app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
+        app.marketplace_expanded.insert("acme".to_string(), true);
+        app.marketplace_expanded.insert("gone".to_string(), true);
+
+        // WHEN a new snapshot arrives without 'gone'
+        app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
+
+        // THEN stale expand state is removed
+        assert!(app.is_marketplace_expanded("acme"));
+        assert!(!app.marketplace_expanded.contains_key("gone"));
+    }
+
+    #[test]
+    fn is_workflow_installed_matches_by_name() {
+        // GIVEN one installed workflow
+        let mut app = make_test_app();
+        app.workflows.push(WorkflowEntry {
+            name: "polling-simple".to_string(),
+            kind: WorkflowType::Triggered,
+            state: WorkflowState::Dormant,
+            runs: vec![],
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+            update_available: None,
+            origin: None,
+        });
+        // WHEN/THEN
+        assert!(app.is_workflow_installed("polling-simple"));
+        assert!(!app.is_workflow_installed("other"));
+    }
+
     #[test]
     fn toggle_expanded_is_noop_on_workflow_without_runs() {
         // GIVEN a workflow with no runs
@@ -1403,6 +1638,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         });
         app.cursor = CursorTarget::Workflow(0);
 

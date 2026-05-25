@@ -157,7 +157,12 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     DaemonEvent::RunUpdated(r)
                 }
                 EngineEvent::WorkflowStateChanged { .. } => DaemonEvent::WorkflowsSnapshot(
-                    build_workflow_snapshot(&manager_fanout, &config_dir_fanout).await,
+                    build_workflow_snapshot_with_origin(
+                        &manager_fanout,
+                        &config_dir_fanout,
+                        &dirs_data_dir(),
+                    )
+                    .await,
                 ),
                 EngineEvent::CheckpointPending {
                     run_id,
@@ -200,8 +205,14 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     let config_dir_fetch = config_dir.clone();
     let data_dir_fetch = data_dir.clone();
+    let subscribers_fetch = subscribers.clone();
     tokio::spawn(async move {
         run_marketplace_fetch(&config_dir_fetch, &data_dir_fetch).await;
+        let snapshot = build_marketplace_snapshot(&config_dir_fetch, &data_dir_fetch);
+        broadcast_event(
+            &subscribers_fetch,
+            DaemonEvent::MarketplacesSnapshot(snapshot),
+        );
     });
 
     // Self-update probe: hits the GitHub Releases API once on startup, writes
@@ -364,12 +375,15 @@ async fn handle_connection<S>(
         DaemonCommand::Subscribe => {
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
             // Send a single snapshot of all workflows before streaming live events.
-            let snapshot = build_workflow_snapshot(&manager, &config_dir).await;
+            let snapshot =
+                build_workflow_snapshot_with_origin(&manager, &config_dir, &dirs_data_dir()).await;
             let _ = write_json(
                 &mut writer,
                 &DaemonEvent::WorkflowsSnapshot(snapshot.clone()),
             )
             .await;
+            let mp_snapshot = build_marketplace_snapshot(&config_dir, &dirs_data_dir());
+            let _ = write_json(&mut writer, &DaemonEvent::MarketplacesSnapshot(mp_snapshot)).await;
             // Replay all historical runs from storage for each workflow
             for wf in &snapshot {
                 if let Ok(runs) = storage.load_workflow_runs(&wf.name) {
@@ -814,6 +828,7 @@ fn list_marketplace_workflows(
             name: def.name,
             version: def.version,
             description: def.description,
+            path: entry.path.clone(),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -825,7 +840,7 @@ async fn broadcast_workflows_snapshot(
     config_dir: &Path,
     subscribers: &std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>,
 ) {
-    let snap = build_workflow_snapshot(manager, config_dir).await;
+    let snap = build_workflow_snapshot_with_origin(manager, config_dir, &dirs_data_dir()).await;
     broadcast_event(subscribers, DaemonEvent::WorkflowsSnapshot(snap));
 }
 

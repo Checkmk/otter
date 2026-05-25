@@ -2,6 +2,8 @@ mod app;
 mod help_modal;
 mod input;
 mod input_field;
+mod list_row;
+mod marketplaces_panel;
 mod right_panel;
 mod runs_panel;
 mod scroll;
@@ -13,6 +15,7 @@ pub mod theme_loader;
 mod ui;
 
 use std::io::stdout;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -30,6 +33,8 @@ pub fn run(
     cmd_tx: mpsc::Sender<DaemonCommand>,
     shutdown: Arc<AtomicBool>,
     theme: theme::Theme,
+    data_dir: PathBuf,
+    config_dir: PathBuf,
 ) -> anyhow::Result<()> {
     theme::set(theme);
     terminal::enable_raw_mode().context("enable raw mode")?;
@@ -39,7 +44,7 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
-    let mut app = app::App::new(cmd_tx);
+    let mut app = app::App::new(cmd_tx, data_dir, config_dir);
 
     loop {
         // Drain pending daemon events

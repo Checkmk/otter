@@ -470,6 +470,10 @@ pub struct MarketplaceWorkflowEntry {
     pub name: String,
     pub version: Option<String>,
     pub description: Option<String>,
+    /// Path of the package inside the marketplace clone, relative to the clone
+    /// root. Lets TUI clients locate the on-disk package for previews.
+    #[serde(default)]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -485,6 +489,7 @@ pub enum DaemonEvent {
     LogAppended(LogEntry),
     RunUpdated(WorkflowRun),
     WorkflowsSnapshot(Vec<WorkflowStatus>),
+    MarketplacesSnapshot(Vec<MarketplaceStatus>),
     CheckpointPending {
         run_id: Uuid,
         step_index: usize,

@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use otter_core::types::ProgressChunk;
+use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
 use crate::app::{App, CursorTarget, Focus, RightPanelContent};
 use crate::status_bar::PanelHint;
@@ -119,55 +119,15 @@ pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
         RightPanelContent::Contextual => {
             let is_focused = app.modal.is_none() && app.focus == Focus::Right;
             match app.cursor {
-                CursorTarget::Workflow(_) => render_workflow_toml(f, app, area, is_focused),
                 CursorTarget::Run(_, _) => render_logs(f, app, area, is_focused),
+                CursorTarget::Workflow(_)
+                | CursorTarget::Marketplace(_)
+                | CursorTarget::MarketplaceWorkflow(_, _) => {
+                    render_definition_preview(f, app, area, is_focused)
+                }
             }
         }
     }
-}
-
-fn render_workflow_toml(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
-    app.right_panel_height = inner_height;
-
-    let lines: Vec<Line> = match app.selected_workflow_toml() {
-        None => vec![Line::from(Span::styled(
-            "No config available",
-            Style::default()
-                .fg(theme::current().dim)
-                .bg(theme::current().background),
-        ))],
-        Some(toml) => toml
-            .lines()
-            .flat_map(|raw_line| {
-                let line = raw_line.replace('\r', "");
-                if inner_width == 0 || line.len() <= inner_width {
-                    vec![Line::from(Span::styled(line, base_style()))]
-                } else {
-                    wrap_into_chunks(&line, inner_width)
-                        .into_iter()
-                        .map(|chunk| Line::from(Span::styled(chunk, base_style())))
-                        .collect()
-                }
-            })
-            .collect(),
-    };
-
-    let auto_bottom = lines.len().saturating_sub(inner_height);
-    // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
-    app.right_scroll = app.right_scroll.min(auto_bottom);
-    let scroll_offset = if is_focused { app.right_scroll } else { 0 } as u16;
-
-    let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
-    let block = if is_focused {
-        panel_focused("Definition")
-    } else {
-        panel("Definition")
-    };
-    let para = Paragraph::new(visible).block(block);
-
-    f.render_widget(para, area);
 }
 
 fn render_progress_lines<'a>(
@@ -350,6 +310,444 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     f.render_widget(para, area);
 }
 
+/// Distinguishes a marketplace-advertised workflow from a locally-installed
+/// one when rendering the rich preview. The shared sections (REQUIRES,
+/// TRIGGER, WORKSPACE, STEPS, FINALLY, README) are identical between the two;
+/// only the header and the call-to-action section vary.
+pub(crate) enum PreviewSource<'a> {
+    Marketplace {
+        marketplace_name: &'a str,
+        installed: bool,
+        pkg_dir_missing: bool,
+    },
+    Installed {
+        origin: Option<&'a MarketplaceOrigin>,
+        update_available: Option<&'a str>,
+    },
+}
+
+/// Builds the workflow definition preview as a flat list of `Line`s. Pure (no
+/// I/O for the parsed def — caller resolves files via `read_file`) to keep
+/// the rendering testable.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_workflow_preview_lines<'a, F>(
+    source: PreviewSource<'_>,
+    workflow_name: &str,
+    version: Option<&str>,
+    description: Option<&str>,
+    def: Option<&WorkflowDef>,
+    readme: Option<&str>,
+    inner_width: usize,
+    mut read_file: F,
+) -> Vec<Line<'a>>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+    let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header: name, version, origin, installed/update status
+    let mut header_spans = vec![Span::styled(workflow_name.to_string(), bold)];
+    if let Some(v) = version {
+        header_spans.push(Span::styled(format!("  v{v}"), dim));
+    }
+    match &source {
+        PreviewSource::Marketplace {
+            marketplace_name,
+            installed,
+            ..
+        } => {
+            header_spans.push(Span::styled(format!("  ·  from {marketplace_name}"), dim));
+            if *installed {
+                header_spans.push(Span::styled("  ·  installed".to_string(), dim));
+            }
+        }
+        PreviewSource::Installed { origin, .. } => {
+            if let Some(o) = origin {
+                header_spans.push(Span::styled(format!("  ·  from {}", o.marketplace), dim));
+                if o.dangling {
+                    header_spans.push(Span::styled("  (marketplace removed)".to_string(), dim));
+                }
+            }
+        }
+    }
+    lines.push(Line::from(header_spans));
+
+    if let Some(desc) = description {
+        lines.push(Line::from(""));
+        for chunk in wrap_into_chunks(desc, inner_width) {
+            lines.push(Line::from(Span::styled(chunk, base_style())));
+        }
+    }
+
+    if matches!(
+        source,
+        PreviewSource::Marketplace {
+            pkg_dir_missing: true,
+            ..
+        }
+    ) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "(marketplace clone missing on disk — run `otter marketplace add` again)".to_string(),
+            dim,
+        )));
+    }
+
+    // Call-to-action section: INSTALL for marketplace advertisements, UPDATE
+    // when an installed workflow has a newer upstream version. Installed
+    // workflows that are current (or have no origin) get nothing — the header
+    // already conveys their status.
+    match &source {
+        PreviewSource::Marketplace {
+            marketplace_name, ..
+        } => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("INSTALL".to_string(), bold)));
+            lines.push(Line::from(Span::styled(
+                format!("  otter workflow install {workflow_name}@{marketplace_name}"),
+                base_style(),
+            )));
+        }
+        PreviewSource::Installed {
+            origin: Some(o),
+            update_available: Some(latest),
+        } if !o.dangling => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("UPDATE AVAILABLE".to_string(), bold),
+                Span::styled(format!("  → v{latest}"), dim),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  otter workflow install {workflow_name}"),
+                base_style(),
+            )));
+        }
+        PreviewSource::Installed { .. } => {}
+    }
+
+    let pkg_dir_missing = matches!(
+        source,
+        PreviewSource::Marketplace {
+            pkg_dir_missing: true,
+            ..
+        }
+    );
+
+    let Some(def) = def else {
+        if !pkg_dir_missing {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "(could not parse workflow.toml)".to_string(),
+                dim,
+            )));
+        }
+        return lines;
+    };
+
+    // REQUIRES
+    if let Some(req) = def.require.as_ref() {
+        if !req.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("REQUIRES".to_string(), bold)));
+            for (name, entry) in req.iter() {
+                let kind = if entry.sensitive { "secret" } else { "param" };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {name} "), base_style()),
+                    Span::styled(format!("({kind})"), dim),
+                    Span::styled(" — ".to_string(), dim),
+                    Span::styled(entry.description.clone(), base_style()),
+                ]));
+            }
+        }
+    }
+
+    // TRIGGER
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("TRIGGER".to_string(), bold)));
+    match def.trigger.as_ref() {
+        None => lines.push(Line::from(Span::styled(
+            "  (no trigger — looping workflow or manual)".to_string(),
+            dim,
+        ))),
+        Some(otter_core::types::TriggerDef::Manual) => {
+            lines.push(Line::from(Span::styled(
+                "  manual".to_string(),
+                base_style(),
+            )));
+        }
+        Some(otter_core::types::TriggerDef::Polling {
+            poll_command,
+            context_command,
+            interval_secs,
+            ..
+        }) => {
+            lines.push(Line::from(Span::styled(
+                format!("  polling, every {interval_secs}s"),
+                base_style(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  poll: {}", poll_command.join(" ")),
+                base_style(),
+            )));
+            if let Some(ctx) = context_command {
+                lines.push(Line::from(Span::styled(
+                    format!("  context: {}", ctx.join(" ")),
+                    base_style(),
+                )));
+            }
+        }
+    }
+
+    // WORKSPACE
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("WORKSPACE".to_string(), bold)));
+    match def.workspace.as_ref() {
+        None => lines.push(Line::from(Span::styled(
+            "  scratch (default)".to_string(),
+            base_style(),
+        ))),
+        Some(w) => {
+            let s = match &w.source {
+                otter_core::types::WorkspaceSource::Scratch => "scratch".to_string(),
+                otter_core::types::WorkspaceSource::Fixed { path } => format!("fixed: {path}"),
+                otter_core::types::WorkspaceSource::Script { command, .. } => {
+                    format!("script: {}", command.join(" "))
+                }
+                otter_core::types::WorkspaceSource::Git { base_repo, ref_ } => match ref_ {
+                    Some(r) => format!("git: {base_repo} @ {r}"),
+                    None => format!("git: {base_repo}"),
+                },
+            };
+            lines.push(Line::from(Span::styled(format!("  {s}"), base_style())));
+            if w.pool.is_some() {
+                lines.push(Line::from(Span::styled("  (pooled)".to_string(), dim)));
+            }
+        }
+    }
+
+    // STEPS
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("STEPS".to_string(), bold)));
+    for (idx, step) in def.steps.iter().enumerate() {
+        append_step_lines(&mut lines, idx + 1, step, inner_width, &mut read_file);
+    }
+    if !def.finally.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("FINALLY".to_string(), bold)));
+        for (idx, fs) in def.finally.iter().enumerate() {
+            append_step_lines(&mut lines, idx + 1, &fs.step, inner_width, &mut read_file);
+        }
+    }
+
+    // README
+    if let Some(readme) = readme {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("README.md".to_string(), bold)));
+        for raw in readme.lines() {
+            let line = raw.replace('\r', "");
+            for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(2)) {
+                lines.push(Line::from(vec![
+                    Span::styled("  ".to_string(), base_style()),
+                    Span::styled(chunk, base_style()),
+                ]));
+            }
+            if line.is_empty() {
+                lines.push(Line::from(""));
+            }
+        }
+    }
+
+    lines
+}
+
+fn append_step_lines<'a, F>(
+    lines: &mut Vec<Line<'a>>,
+    n: usize,
+    step: &StepDef,
+    inner_width: usize,
+    read_file: &mut F,
+) where
+    F: FnMut(&str) -> Option<String>,
+{
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+    let step_type = step.step_type.to_string();
+    let mut header = format!("  {n}. {step_type}");
+    if let Some(provider) = step.agent.provider.as_deref() {
+        header.push_str(&format!(" ({provider})"));
+    }
+    if let Some(session) = step.session.as_deref() {
+        header.push_str(&format!(" [session: {session}]"));
+    }
+
+    // Inline message_file contents (or full message if it spans multiple lines).
+    let body: Option<(String, String)> = if let Some(file) = step.message_file.as_deref() {
+        match read_file(file) {
+            Some(content) => Some((file.to_string(), content)),
+            None => Some((file.to_string(), String::from("(message_file not found)"))),
+        }
+    } else {
+        step.message.as_ref().and_then(|m| {
+            if m.lines().count() > 1 {
+                Some(("inline message".to_string(), m.clone()))
+            } else {
+                None
+            }
+        })
+    };
+
+    // Only show a summary in the header when no body will be rendered below.
+    let summary = if body.is_some() {
+        None
+    } else if let Some(cmd) = step.command.as_ref() {
+        Some(cmd.join(" "))
+    } else {
+        step.message
+            .as_deref()
+            .map(|msg| msg.lines().next().unwrap_or("").to_string())
+    };
+    let header_line = match summary {
+        Some(s) if !s.is_empty() => format!("{header}: {s}"),
+        _ => header,
+    };
+    for chunk in wrap_into_chunks(&header_line, inner_width) {
+        lines.push(Line::from(Span::styled(
+            chunk,
+            base_style().add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+    }
+    if let Some((source, content)) = body {
+        lines.push(Line::from(Span::styled(format!("     ({source})"), dim)));
+        for raw in content.lines() {
+            let line = raw.replace('\r', "");
+            for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(7)) {
+                lines.push(Line::from(vec![
+                    Span::styled("     │ ".to_string(), dim),
+                    Span::styled(chunk, base_style()),
+                ]));
+            }
+            if line.is_empty() {
+                lines.push(Line::from(Span::styled("     │ ".to_string(), dim)));
+            }
+        }
+    }
+}
+
+fn render_definition_preview(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    app.right_panel_height = inner_height;
+
+    let lines: Vec<Line> = match app.cursor {
+        CursorTarget::Workflow(_) => build_installed_preview(app, inner_width),
+        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
+            build_marketplace_preview(app, inner_width)
+        }
+        CursorTarget::Run(_, _) => Vec::new(),
+    };
+
+    let auto_bottom = lines.len().saturating_sub(inner_height);
+    // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
+    app.right_scroll = app.right_scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { app.right_scroll } else { 0 };
+
+    let visible = with_scroll_indicators(lines, scroll_offset, inner_height);
+    let block = if is_focused {
+        panel_focused("Definition")
+    } else {
+        panel("Definition")
+    };
+    let para = Paragraph::new(visible).block(block);
+    f.render_widget(para, area);
+}
+
+fn build_installed_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+    let Some(entry) = app.selected_workflow() else {
+        return vec![Line::from(Span::styled("No workflow selected", dim))];
+    };
+
+    let def = entry
+        .toml_content
+        .as_deref()
+        .and_then(|t| toml::from_str::<WorkflowDef>(t).ok());
+    let pkg_dir = app.selected_workflow_pkg_dir();
+    let readme = pkg_dir
+        .as_ref()
+        .and_then(|d| std::fs::read_to_string(d.join("README.md")).ok());
+    let version = def.as_ref().and_then(|d| d.version.as_deref());
+    let description = def.as_ref().and_then(|d| d.description.as_deref());
+
+    build_workflow_preview_lines(
+        PreviewSource::Installed {
+            origin: entry.origin.as_ref(),
+            update_available: entry.update_available.as_deref(),
+        },
+        &entry.name,
+        version,
+        description,
+        def.as_ref(),
+        readme.as_deref(),
+        inner_width,
+        |rel| {
+            pkg_dir
+                .as_ref()
+                .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+        },
+    )
+}
+
+fn build_marketplace_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+    if let Some((m, w)) = app.selected_marketplace_workflow() {
+        let pkg_dir = app.selected_marketplace_pkg_dir();
+        let pkg_dir_missing = pkg_dir.is_none();
+        let def = pkg_dir.as_ref().and_then(|d| {
+            let toml = std::fs::read_to_string(d.join("workflow.toml")).ok()?;
+            toml::from_str::<WorkflowDef>(&toml).ok()
+        });
+        let readme = pkg_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join("README.md")).ok());
+        let installed = app.is_workflow_installed(&w.name);
+
+        build_workflow_preview_lines(
+            PreviewSource::Marketplace {
+                marketplace_name: &m.name,
+                installed,
+                pkg_dir_missing,
+            },
+            &w.name,
+            w.version.as_deref(),
+            w.description.as_deref(),
+            def.as_ref(),
+            readme.as_deref(),
+            inner_width,
+            |rel| {
+                pkg_dir
+                    .as_ref()
+                    .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+            },
+        )
+    } else if app.selected_marketplace().is_some() {
+        Vec::new()
+    } else {
+        vec![Line::from(Span::styled(
+            "No marketplace selected".to_string(),
+            dim,
+        ))]
+    }
+}
+
 fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let triggers = app.selected_consumed_triggers();
     let block = if is_focused {
@@ -420,12 +818,17 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use otter_core::types::LogEntry;
+    use std::path::PathBuf;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
     fn make_app() -> App {
         let (tx, _rx) = mpsc::channel(32);
-        App::new(tx)
+        App::new(
+            tx,
+            PathBuf::from("/tmp/otter-tui-test"),
+            PathBuf::from("/tmp/otter-tui-test-config"),
+        )
     }
 
     fn make_log(step_index: usize, step_type: &str, stdout: &str) -> LogEntry {
@@ -707,5 +1110,250 @@ mod tests {
     fn carriage_returns_stripped() {
         let lines = format_log_entry("06:00:00", "shell", "ok\r", 80);
         assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text == "ok"));
+    }
+
+    fn parse_def(toml: &str) -> WorkflowDef {
+        toml::from_str(toml).expect("parses")
+    }
+
+    fn collect_text(lines: &[Line]) -> String {
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn preview_includes_install_command_and_requires() {
+        // GIVEN a workflow with a [require] entry
+        let def = parse_def(
+            r#"
+name = "polling-simple"
+type = "triggered"
+schema = 1
+
+[require.JIRA_PAT]
+description = "Jira PAT"
+sensitive = true
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+        );
+
+        // WHEN
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Marketplace {
+                marketplace_name: "acme",
+                installed: false,
+                pkg_dir_missing: false,
+            },
+            "polling-simple",
+            Some("1.0.0"),
+            None,
+            Some(&def),
+            None,
+            80,
+            |_| None,
+        );
+
+        // THEN it shows the install command and the require entry
+        let text = collect_text(&lines);
+        assert!(text.contains("otter workflow install polling-simple@acme"));
+        assert!(text.contains("JIRA_PAT"));
+        assert!(text.contains("(secret)"));
+    }
+
+    #[test]
+    fn preview_inlines_message_file_contents() {
+        // GIVEN an agent step that references a message_file
+        let def = parse_def(
+            r#"
+name = "wf"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "agent"
+provider = "claude"
+message_file = "prompts/follow-up.md"
+"#,
+        );
+
+        // WHEN read_file returns content for that path
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Marketplace {
+                marketplace_name: "acme",
+                installed: false,
+                pkg_dir_missing: false,
+            },
+            "wf",
+            None,
+            None,
+            Some(&def),
+            None,
+            80,
+            |rel| {
+                if rel == "prompts/follow-up.md" {
+                    Some("First line\nSecond line".to_string())
+                } else {
+                    None
+                }
+            },
+        );
+
+        // THEN the file contents are inlined under the step
+        let text = collect_text(&lines);
+        assert!(text.contains("prompts/follow-up.md"));
+        assert!(text.contains("First line"));
+        assert!(text.contains("Second line"));
+    }
+
+    #[test]
+    fn preview_marks_missing_message_file_gracefully() {
+        // GIVEN a message_file that the resolver returns None for
+        let def = parse_def(
+            r#"
+name = "wf"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "agent"
+provider = "claude"
+message_file = "missing.md"
+"#,
+        );
+
+        // WHEN
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Marketplace {
+                marketplace_name: "acme",
+                installed: false,
+                pkg_dir_missing: false,
+            },
+            "wf",
+            None,
+            None,
+            Some(&def),
+            None,
+            80,
+            |_| None,
+        );
+
+        // THEN a "not found" line is rendered instead of crashing
+        let text = collect_text(&lines);
+        assert!(text.contains("missing.md"));
+        assert!(text.contains("not found"));
+    }
+
+    #[test]
+    fn preview_handles_missing_clone() {
+        // GIVEN pkg_dir_missing = true (clone removed) and no def parsed
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Marketplace {
+                marketplace_name: "acme",
+                installed: false,
+                pkg_dir_missing: true,
+            },
+            "wf",
+            Some("1.0.0"),
+            None,
+            None,
+            None,
+            80,
+            |_| None,
+        );
+
+        // THEN it shows install command + clone-missing hint, no crash
+        let text = collect_text(&lines);
+        assert!(text.contains("otter workflow install wf@acme"));
+        assert!(text.contains("marketplace clone missing"));
+    }
+
+    #[test]
+    fn installed_preview_shows_origin_and_update_section_when_outdated() {
+        // GIVEN an installed workflow from marketplace 'acme' with a newer version upstream
+        let def = parse_def(
+            r#"
+name = "jira-sync"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+        );
+        let origin = MarketplaceOrigin {
+            marketplace: "acme".to_string(),
+            dangling: false,
+        };
+
+        // WHEN
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Installed {
+                origin: Some(&origin),
+                update_available: Some("1.2.0"),
+            },
+            "jira-sync",
+            Some("1.0.0"),
+            None,
+            Some(&def),
+            None,
+            80,
+            |_| None,
+        );
+
+        // THEN the header notes the origin, and an UPDATE AVAILABLE section is shown
+        let text = collect_text(&lines);
+        assert!(text.contains("from acme"));
+        assert!(text.contains("UPDATE AVAILABLE"));
+        assert!(text.contains("→ v1.2.0"));
+        assert!(text.contains("otter workflow install jira-sync"));
+        // No marketplace-style INSTALL command with @marketplace syntax
+        assert!(!text.contains("install jira-sync@acme"));
+    }
+
+    #[test]
+    fn installed_preview_omits_update_section_when_current() {
+        // GIVEN an installed workflow with origin but no update available
+        let def = parse_def(
+            r#"
+name = "wf"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+        );
+        let origin = MarketplaceOrigin {
+            marketplace: "acme".to_string(),
+            dangling: false,
+        };
+
+        // WHEN
+        let lines = build_workflow_preview_lines(
+            PreviewSource::Installed {
+                origin: Some(&origin),
+                update_available: None,
+            },
+            "wf",
+            None,
+            None,
+            Some(&def),
+            None,
+            80,
+            |_| None,
+        );
+
+        // THEN no INSTALL/UPDATE section is rendered
+        let text = collect_text(&lines);
+        assert!(text.contains("from acme"));
+        assert!(!text.contains("UPDATE AVAILABLE"));
+        assert!(!text.contains("INSTALL"));
     }
 }

@@ -2,16 +2,15 @@ use chrono::Local;
 use otter_core::types::{RunStatus, TriggerDef, WorkflowState, WorkflowType};
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+    style::{Color, Style},
     widgets::{List, ListItem, ListState},
     Frame,
 };
 
-use crate::app::{App, CursorTarget, Focus};
-use crate::scroll::{scroll_spans, truncate_spans};
+use crate::app::{App, CursorTarget};
+use crate::list_row::list_row;
 use crate::status_bar::PanelHint;
-use crate::styles::{panel, panel_focused, spinner_frame};
+use crate::styles::{base_style, spinner_frame};
 use crate::theme;
 
 fn workflow_state_color(
@@ -47,55 +46,26 @@ fn workflow_state_color(
 }
 
 pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_width = area.width as usize;
     let tick = app.tick;
 
     let make_item =
         |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
-            let prefix_len = prefix.chars().count();
-            let icon_len = icon.chars().count();
-            let available_for_content = inner_width.saturating_sub(prefix_len + icon_len);
-
-            let content_style = if is_selected {
-                Style::default()
-                    .fg(theme::current().background)
-                    .bg(theme::current().foreground)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(theme::current().foreground)
-                    .bg(theme::current().background)
-            };
-
-            let content_spans = vec![Span::styled(content.to_string(), content_style)];
-            let rendered = if is_selected {
-                scroll_spans(content_spans, available_for_content, tick)
-            } else {
-                truncate_spans(content_spans, available_for_content)
-            };
-            let displayed_len: usize = rendered.iter().map(|s| s.content.chars().count()).sum();
-            let padding = " ".repeat(available_for_content.saturating_sub(displayed_len));
-
-            let mut spans = vec![Span::styled(
-                prefix.to_string(),
-                Style::default()
-                    .fg(theme::current().foreground)
-                    .bg(theme::current().background),
-            )];
-            spans.extend(rendered);
-            spans.push(Span::styled(
-                padding,
-                Style::default()
-                    .fg(theme::current().foreground)
-                    .bg(theme::current().background),
-            ));
-            spans.push(Span::styled(
+            let trailing = [(
                 icon,
                 Style::default()
                     .fg(icon_color)
                     .bg(theme::current().background),
-            ));
-            ListItem::new(Line::from(spans))
+            )];
+            list_row(
+                prefix,
+                content,
+                &trailing,
+                base_style(),
+                is_selected,
+                inner_width,
+                tick,
+            )
         };
 
     let mut items: Vec<ListItem> = Vec::new();
@@ -200,13 +170,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(idx));
     }
 
-    let block = if app.modal.is_none() && app.focus == Focus::Left {
-        panel_focused("Workflows")
-    } else {
-        panel("Workflows")
-    };
-    let list = List::new(items).block(block);
-
+    let list = List::new(items);
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -272,11 +236,16 @@ mod tests {
     use super::*;
     use crate::app::WorkflowEntry;
     use otter_core::types::{WorkflowRun, WorkflowState, WorkflowType};
+    use std::path::PathBuf;
     use tokio::sync::mpsc;
 
     fn make_app() -> App {
         let (tx, _rx) = mpsc::channel(32);
-        App::new(tx)
+        App::new(
+            tx,
+            PathBuf::from("/tmp/otter-tui-test"),
+            PathBuf::from("/tmp/otter-tui-test-config"),
+        )
     }
 
     fn make_entry(
@@ -295,6 +264,8 @@ mod tests {
             trigger: None,
             toml_content: None,
             autostart: false,
+            update_available: None,
+            origin: None,
         }
     }
 

@@ -87,6 +87,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 Some(WorkflowState::Running) => app.stop_selected(),
                 _ => {}
             },
+            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {}
         },
         // When checkpoint is active, 's' stops the checkpoint
         KeyCode::Char('s') if has_checkpoint => app.respond_checkpoint(CheckpointAction::Stop),
