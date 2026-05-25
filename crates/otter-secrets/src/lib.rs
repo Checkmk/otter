@@ -176,7 +176,7 @@ struct SecretsFile {
 pub struct EncryptedSecretStore {
     path: PathBuf,
     key_provider: Arc<dyn KeyProvider>,
-    cache: std::sync::Mutex<Option<HashMap<String, String>>>,
+    write_lock: std::sync::Mutex<()>,
 }
 
 impl EncryptedSecretStore {
@@ -184,22 +184,13 @@ impl EncryptedSecretStore {
         Self {
             path,
             key_provider,
-            cache: std::sync::Mutex::new(None),
+            write_lock: std::sync::Mutex::new(()),
         }
     }
 
-    /// Unlock the store (decrypt from disk), populating the in-memory cache.
-    /// Returns the locked guard so callers can read/modify the map atomically.
-    fn unlock(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, Option<HashMap<String, String>>>, SecretError> {
-        let mut guard = self.cache.lock().expect("cache lock poisoned");
-        if guard.is_some() {
-            return Ok(guard);
-        }
+    fn read_from_disk(&self) -> Result<HashMap<String, String>, SecretError> {
         if !self.path.exists() {
-            *guard = Some(HashMap::new());
-            return Ok(guard);
+            return Ok(HashMap::new());
         }
         let ciphertext = std::fs::read(&self.path)
             .map_err(|e| SecretError::Locked(format!("read {}: {e}", self.path.display())))?;
@@ -211,11 +202,10 @@ impl EncryptedSecretStore {
             SecretError::Other(anyhow::anyhow!("invalid UTF-8 in secrets file: {e}"))
         })?)
         .map_err(|e| SecretError::Other(anyhow::anyhow!("secrets TOML parse error: {e}")))?;
-        *guard = Some(file.secrets);
-        Ok(guard)
+        Ok(file.secrets)
     }
 
-    /// Serialize the current cache and re-encrypt to disk using an atomic rename.
+    /// Serialize the given map and re-encrypt to disk using an atomic rename.
     fn flush(&self, map: &HashMap<String, String>) -> anyhow::Result<()> {
         let file = SecretsFile {
             secrets: map.clone(),
@@ -235,8 +225,8 @@ impl EncryptedSecretStore {
 
 impl SecretStore for EncryptedSecretStore {
     fn get(&self, key: &str) -> Option<String> {
-        match self.unlock() {
-            Ok(guard) => guard.as_ref()?.get(key).cloned(),
+        match self.read_from_disk() {
+            Ok(map) => map.get(key).cloned(),
             Err(e) => {
                 tracing::error!("secrets store locked, returning None for '{}': {e}", key);
                 None
@@ -245,11 +235,8 @@ impl SecretStore for EncryptedSecretStore {
     }
 
     fn list(&self) -> Vec<String> {
-        match self.unlock() {
-            Ok(guard) => {
-                let Some(map) = guard.as_ref() else {
-                    return vec![];
-                };
+        match self.read_from_disk() {
+            Ok(map) => {
                 let mut keys: Vec<String> = map.keys().cloned().collect();
                 keys.sort();
                 keys
@@ -262,25 +249,21 @@ impl SecretStore for EncryptedSecretStore {
     }
 
     fn set(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let mut guard = self.unlock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let map = guard.get_or_insert_with(HashMap::new);
+        let _guard = self.write_lock.lock().expect("write lock poisoned");
+        let mut map = self.read_from_disk().map_err(|e| anyhow::anyhow!("{e}"))?;
         map.insert(key.to_string(), value.to_string());
-        self.flush(map)
+        self.flush(&map)
     }
 
     fn delete(&self, key: &str) -> anyhow::Result<()> {
-        let mut guard = self.unlock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let map = guard.get_or_insert_with(HashMap::new);
+        let _guard = self.write_lock.lock().expect("write lock poisoned");
+        let mut map = self.read_from_disk().map_err(|e| anyhow::anyhow!("{e}"))?;
         map.remove(key);
-        self.flush(map)
+        self.flush(&map)
     }
 
     fn resolve(&self, names: &[String]) -> Result<Vec<(String, String)>, SecretError> {
-        // Unlock once, then resolve all names from the cache.
-        let guard = self.unlock()?;
-        let map = guard
-            .as_ref()
-            .ok_or_else(|| SecretError::Locked("empty cache".into()))?;
+        let map = self.read_from_disk()?;
         names
             .iter()
             .map(|name| {
@@ -411,6 +394,56 @@ mod tests {
         // THEN
         assert!(err.to_string().contains("MISSING"));
         assert!(matches!(err, SecretError::NotFound(_)));
+    }
+
+    #[test]
+    fn get_reflects_writes_from_another_store_instance() {
+        // GIVEN a store that has already been read (so a stale cache would survive)
+        let dir = tempfile::tempdir().unwrap();
+        let store1 = store_in(dir.path());
+        store1.set("KEY", "v1").unwrap();
+        assert_eq!(store1.get("KEY").as_deref(), Some("v1"));
+
+        // WHEN a second store instance (e.g. the `otter secret set` CLI) overwrites the value
+        let store2 = store_in(dir.path());
+        store2.set("KEY", "v2").unwrap();
+
+        // THEN store1 sees the updated value rather than its previously cached copy
+        assert_eq!(store1.get("KEY").as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn resolve_reflects_writes_from_another_store_instance() {
+        // GIVEN a store that has already resolved at least once
+        let dir = tempfile::tempdir().unwrap();
+        let store1 = store_in(dir.path());
+        store1.set("KEY", "v1").unwrap();
+        let _ = store1.resolve(&["KEY".to_string()]).unwrap();
+
+        // WHEN a second instance updates the same key
+        let store2 = store_in(dir.path());
+        store2.set("KEY", "v2").unwrap();
+
+        // THEN resolve() on store1 returns the fresh value
+        let pairs = store1.resolve(&["KEY".to_string()]).unwrap();
+        assert_eq!(pairs, vec![("KEY".to_string(), "v2".to_string())]);
+    }
+
+    #[test]
+    fn resolve_picks_up_keys_added_after_first_read() {
+        // GIVEN a store that has already been read once (priming any cache)
+        let dir = tempfile::tempdir().unwrap();
+        let store1 = store_in(dir.path());
+        store1.set("EXISTING", "v").unwrap();
+        let _ = store1.list();
+
+        // WHEN a second instance adds a new key
+        let store2 = store_in(dir.path());
+        store2.set("NEW_KEY", "value").unwrap();
+
+        // THEN resolve() on store1 finds the new key
+        let pairs = store1.resolve(&["NEW_KEY".to_string()]).unwrap();
+        assert_eq!(pairs, vec![("NEW_KEY".to_string(), "value".to_string())]);
     }
 
     #[test]
