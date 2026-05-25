@@ -2,7 +2,7 @@ name = "hello-agent"
 type = "triggered"
 schema = 1
 version = "0.1.0"
-description = "Minimal agent step using a custom CLI command (claude --print) instead of a built-in provider."
+description = "Minimal custom agent step using a custom CLI command (claude --print) instead of a built-in provider."
 
 [trigger]
 type = "manual"
