@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, CursorTarget, Focus};
-use crate::scroll::scroll_spans;
+use crate::scroll::{scroll_spans, truncate_spans};
 use crate::status_bar::PanelHint;
 use crate::styles::{panel, panel_focused, spinner_frame};
 use crate::theme;
@@ -67,12 +67,13 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     .bg(theme::current().background)
             };
 
-            let scrolled = scroll_spans(
-                vec![Span::styled(content.to_string(), content_style)],
-                available_for_content,
-                tick,
-            );
-            let displayed_len: usize = scrolled.iter().map(|s| s.content.chars().count()).sum();
+            let content_spans = vec![Span::styled(content.to_string(), content_style)];
+            let rendered = if is_selected {
+                scroll_spans(content_spans, available_for_content, tick)
+            } else {
+                truncate_spans(content_spans, available_for_content)
+            };
+            let displayed_len: usize = rendered.iter().map(|s| s.content.chars().count()).sum();
             let padding = " ".repeat(available_for_content.saturating_sub(displayed_len));
 
             let mut spans = vec![Span::styled(
@@ -81,7 +82,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     .fg(theme::current().foreground)
                     .bg(theme::current().background),
             )];
-            spans.extend(scrolled);
+            spans.extend(rendered);
             spans.push(Span::styled(
                 padding,
                 Style::default()

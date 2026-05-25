@@ -74,6 +74,37 @@ pub fn scroll_spans(spans: Vec<Span<'static>>, width: usize, tick: u64) -> Vec<S
     result
 }
 
+pub fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let text_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if text_len <= width {
+        return spans;
+    }
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let visible = width - 1;
+    let mut result: Vec<Span<'static>> = Vec::new();
+    let mut char_pos: usize = 0;
+
+    for span in spans {
+        if char_pos >= visible {
+            break;
+        }
+        let span_len = span.content.chars().count();
+        let take = (visible - char_pos).min(span_len);
+        let sliced: String = span.content.chars().take(take).collect();
+        if !sliced.is_empty() {
+            result.push(Span::styled(sliced, span.style));
+        }
+        char_pos += take;
+    }
+
+    let style = result.last().map(|s| s.style).unwrap_or_default();
+    result.push(Span::styled("…", style));
+    result
+}
+
 fn scroll_window_with_config(
     text_len: usize,
     width: usize,
@@ -145,6 +176,25 @@ mod tests {
     fn scroll_spans_preserves_span_styles() {
         let style = Style::default().fg(ratatui::style::Color::Red);
         let spans = scroll_spans(vec![Span::styled("FooBarBazQux".to_string(), style)], 10, 0);
+        assert!(spans.iter().any(|s| s.style == style));
+    }
+
+    #[test]
+    fn truncate_spans_fits_without_truncating() {
+        let spans = truncate_spans(vec![Span::raw("short")], 10);
+        assert_eq!(spans_text(&spans), "short");
+    }
+
+    #[test]
+    fn truncate_spans_appends_ellipsis_when_overflowing() {
+        let spans = truncate_spans(vec![Span::raw("FooBarBazQux")], 10);
+        assert_eq!(spans_text(&spans), "FooBarBaz…");
+    }
+
+    #[test]
+    fn truncate_spans_preserves_styles() {
+        let style = Style::default().fg(ratatui::style::Color::Red);
+        let spans = truncate_spans(vec![Span::styled("FooBarBazQux".to_string(), style)], 10);
         assert!(spans.iter().any(|s| s.style == style));
     }
 
