@@ -1,4 +1,4 @@
-# Otter light theme — Solarized Light — schema v1
+# Otter light theme: Solarized Light
 #
 # This file is a schema reference; otter seeds it on first launch and never
 # overwrites it. Edits made here are IGNORED when mode = "light" (otter uses

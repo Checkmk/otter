@@ -38,4 +38,4 @@ command = ["bash", "-c", "echo undeclared=${TEST_API_KEY:-not-visible}"]
 
 [[steps]]
 type = "notify"
-message = "secrets-test completed — check logs for key= and undeclared= lines."
+message = "secrets-test completed: check logs for key= and undeclared= lines."

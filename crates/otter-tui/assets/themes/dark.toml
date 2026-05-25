@@ -1,4 +1,4 @@
-# Otter dark theme — schema v1
+# Otter dark theme
 #
 # This file is a schema reference; otter seeds it on first launch and never
 # overwrites it. Edits made here are IGNORED when mode = "dark" (otter uses
