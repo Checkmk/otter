@@ -656,8 +656,8 @@ async fn build_workflow_snapshot(
     statuses
 }
 
-/// Build a snapshot annotated with `update_available` and `origin_dangling` by
-/// joining the workflow manager's view with marketplace state on disk.
+/// Build a snapshot annotated with `update_available` and `origin` by joining
+/// the workflow manager's view with marketplace state on disk.
 async fn build_workflow_snapshot_with_origin(
     manager: &Mutex<WorkflowManager>,
     config_dir: &Path,
@@ -671,14 +671,18 @@ async fn build_workflow_snapshot_with_origin(
         .into_iter()
         .map(|m| m.name)
         .collect();
-    let dangling = marketplace::dangling_origins(&workflows_dir, &registered);
 
     for s in &mut statuses {
         if let Some(u) = updates.iter().find(|u| u.workflow_name == s.name) {
             s.update_available = u.latest.clone();
         }
-        if dangling.iter().any(|(name, _)| name == &s.name) {
-            s.origin_dangling = true;
+        let pkg_dir = workflows_dir.join(&s.name);
+        if let Ok(Some(origin)) = marketplace::load_origin(&pkg_dir) {
+            let dangling = !registered.iter().any(|n| n == &origin.marketplace);
+            s.origin = Some(otter_core::types::MarketplaceOrigin {
+                marketplace: origin.marketplace,
+                dangling,
+            });
         }
     }
     statuses
@@ -720,13 +724,41 @@ fn build_marketplace_snapshot(config_dir: &Path, data_dir: &Path) -> Vec<Marketp
     let mut out = Vec::with_capacity(mps.len());
     for m in mps {
         let state = marketplace::load_state(data_dir, &m.name).unwrap_or_default();
+        let workflows = list_marketplace_workflows(data_dir, &m.name);
         out.push(MarketplaceStatus {
             name: m.name,
             url: m.url,
             workflow_count: state.known_versions.len(),
             last_fetched_at: state.last_fetched_at,
+            workflows,
         });
     }
+    out
+}
+
+fn list_marketplace_workflows(
+    data_dir: &Path,
+    name: &str,
+) -> Vec<otter_core::types::MarketplaceWorkflowEntry> {
+    let clone = marketplace::clone_dir(data_dir, name);
+    let Ok(index) = marketplace::load_index(&clone) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(index.workflows.len());
+    for entry in &index.workflows {
+        if entry.wip {
+            continue;
+        }
+        let Ok(def) = marketplace::read_package_def(&clone, &entry.path) else {
+            continue;
+        };
+        out.push(otter_core::types::MarketplaceWorkflowEntry {
+            name: def.name,
+            version: def.version,
+            description: def.description,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 

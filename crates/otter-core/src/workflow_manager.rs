@@ -284,7 +284,7 @@ impl WorkflowManager {
                 toml_content: Some(h.toml_content.clone()),
                 enabled: false,
                 update_available: None,
-                origin_dangling: false,
+                origin: None,
             })
             .collect();
         statuses.sort_by(|a, b| a.name.cmp(&b.name));

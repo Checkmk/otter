@@ -442,8 +442,15 @@ pub struct WorkflowStatus {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_available: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MarketplaceOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketplaceOrigin {
+    pub marketplace: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub origin_dangling: bool,
+    pub dangling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,6 +459,15 @@ pub struct MarketplaceStatus {
     pub url: String,
     pub workflow_count: usize,
     pub last_fetched_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub workflows: Vec<MarketplaceWorkflowEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceWorkflowEntry {
+    pub name: String,
+    pub version: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

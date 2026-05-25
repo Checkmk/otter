@@ -146,16 +146,22 @@ fn print_workflows(workflows: &[WorkflowStatus]) {
     println!("{:<30} {:<12} {:<14} NOTES", "NAME", "KIND", "STATE");
     println!("{}", "-".repeat(74));
     for wf in workflows {
+        let display_name = match &wf.origin {
+            Some(o) => format!("{}@{}", wf.name, o.marketplace),
+            None => wf.name.clone(),
+        };
         let mut notes: Vec<String> = Vec::new();
+        if let Some(o) = &wf.origin {
+            if o.dangling {
+                notes.push(format!("'{}' removed", o.marketplace));
+            }
+        }
         if let Some(v) = &wf.update_available {
             notes.push(format!("update available: {v}"));
         }
-        if wf.origin_dangling {
-            notes.push("origin marketplace removed".to_string());
-        }
         println!(
             "{:<30} {:<12} {:<14} {}",
-            wf.name,
+            display_name,
             format!("{:?}", wf.kind),
             format!("{:?}", wf.state),
             notes.join(", "),
@@ -165,17 +171,45 @@ fn print_workflows(workflows: &[WorkflowStatus]) {
 
 fn print_marketplaces(marketplaces: &[MarketplaceStatus]) {
     println!("marketplaces:");
-    println!("  {:<20} {:<5} {:<20} URL", "NAME", "WFS", "LAST FETCH");
-    println!("  {}", "-".repeat(80));
-    for m in marketplaces {
+    for (i, m) in marketplaces.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
         let fetched = match m.last_fetched_at {
             None => "never".to_string(),
             Some(t) => format_relative(t),
         };
         println!(
-            "  {:<20} {:<5} {:<20} {}",
-            m.name, m.workflow_count, fetched, m.url
+            "  {} ({} workflow{}, last fetch {}) {}",
+            m.name,
+            m.workflows.len(),
+            if m.workflows.len() == 1 { "" } else { "s" },
+            fetched,
+            m.url,
         );
+        if m.workflows.is_empty() {
+            continue;
+        }
+        println!("    {:<24} {:<10} DESCRIPTION", "NAME", "VERSION");
+        for wf in &m.workflows {
+            let desc = wf.description.as_deref().unwrap_or("");
+            let desc = truncate(desc, 60);
+            println!(
+                "    {:<24} {:<10} {}",
+                wf.name,
+                wf.version.as_deref().unwrap_or("-"),
+                desc,
+            );
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
     }
 }
 
