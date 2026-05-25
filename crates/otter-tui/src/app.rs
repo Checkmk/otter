@@ -74,6 +74,7 @@ pub struct App {
     pub right_panel_height: usize,
     pub consumed_triggers: HashMap<String, Vec<String>>,
     pub progress: HashMap<Uuid, Vec<(usize, ProgressChunk)>>,
+    pub update_available: Option<String>,
 }
 
 impl App {
@@ -97,6 +98,7 @@ impl App {
             right_panel_height: 0,
             consumed_triggers: HashMap::new(),
             progress: HashMap::new(),
+            update_available: None,
         }
     }
 
@@ -224,6 +226,9 @@ impl App {
                 } else {
                     self.right_cursor = self.right_cursor.min(len - 1);
                 }
+            }
+            DaemonEvent::UpdateAvailable { latest, .. } => {
+                self.update_available = Some(latest);
             }
         }
     }

@@ -29,7 +29,10 @@ chrono = { workspace = true }
 serde_json         = { workspace = true }
 uuid               = { workspace = true }
 serde              = { workspace = true }
+semver             = { workspace = true }
+reqwest            = { workspace = true }
+self_update        = { workspace = true }
+async-trait        = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 tempfile = { workspace = true }

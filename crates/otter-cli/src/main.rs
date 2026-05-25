@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod daemon;
 mod service;
+mod updater;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,11 @@ use otter_storage::SqliteStorage;
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(about = "Workflow automation dashboard — connects to the running daemon")]
+#[command(
+    name = "otter",
+    version,
+    about = "Workflow automation dashboard — connects to the running daemon"
+)]
 struct Cli {
     /// Increase log verbosity (-v = debug, -vv = trace)
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -75,6 +80,15 @@ enum Commands {
     },
     /// Follow the daemon log
     Log,
+    /// Check for and install a newer otter release from GitHub
+    Update {
+        /// Only check for a newer release; do not download or install
+        #[arg(long)]
+        check: bool,
+        /// Reinstall the latest release even if it matches the current version
+        #[arg(long)]
+        force: bool,
+    },
     /// Run the daemon process (used internally by the service unit)
     #[command(hide = true, name = "_daemon")]
     #[allow(non_camel_case_types)]
@@ -235,6 +249,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Secret { command }) => handle_secret_command(command),
         Some(Commands::Service { command }) => handle_service_command(command),
         Some(Commands::Log) => handle_log_command(),
+        Some(Commands::Update { check, force }) => updater::cli::run(check, force).await,
     }
 }
 
@@ -1067,7 +1082,7 @@ async fn handle_workflow_configure(name: String, reset_secrets: bool) -> anyhow:
 
 /// Write `bytes` to `path` via a sibling temp file + rename so concurrent
 /// daemon reloads can never observe a partial file.
-fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", path.display()))?;

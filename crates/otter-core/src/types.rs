@@ -504,6 +504,10 @@ pub enum DaemonEvent {
         step_index: usize,
         chunk: ProgressChunk,
     },
+    UpdateAvailable {
+        current: String,
+        latest: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

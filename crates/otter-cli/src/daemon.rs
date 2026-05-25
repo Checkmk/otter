@@ -24,10 +24,11 @@ use otter_core::types::{
     MarketplaceStatus, RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
 };
 use otter_core::WorkflowManager;
-use otter_notify::{DesktopNotifier, Notification, Notifier};
+use otter_notify::{DesktopNotifier, NoOpNotifier, Notification, Notifier};
 use otter_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use otter_storage::SqliteStorage;
 
+use crate::updater::{check_latest, read_cache, write_cache, GithubReleaseFetcher};
 use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path, write_enabled};
 
 struct PendingEntry {
@@ -35,6 +36,14 @@ struct PendingEntry {
     step_index: usize,
     message: String,
     feedback_available: bool,
+}
+
+fn build_notifier() -> Arc<dyn Notifier> {
+    if std::env::var_os("OTTER_NO_DESKTOP_NOTIFY").is_some() {
+        Arc::new(NoOpNotifier)
+    } else {
+        Arc::new(DesktopNotifier)
+    }
 }
 
 /// Returns a key provider for daemon use.
@@ -89,7 +98,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     let storage: Arc<dyn StorageBackend> =
         Arc::new(SqliteStorage::open(&data_dir.join("state.db")).context("open storage")?);
-    let notifier: Arc<dyn Notifier> = Arc::new(DesktopNotifier);
+    let notifier: Arc<dyn Notifier> = build_notifier();
     let secret_store: std::sync::Arc<dyn SecretStore> = std::sync::Arc::new(
         EncryptedSecretStore::new(config_dir.join("secrets.age"), build_daemon_key_provider()),
     );
@@ -101,7 +110,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         storage.clone(),
         data_dir.clone(),
         event_tx,
-        notifier,
+        notifier.clone(),
         secret_store,
     )));
 
@@ -193,6 +202,44 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     let data_dir_fetch = data_dir.clone();
     tokio::spawn(async move {
         run_marketplace_fetch(&config_dir_fetch, &data_dir_fetch).await;
+    });
+
+    // Self-update probe: hits the GitHub Releases API once on startup, writes
+    // the result to `<data-dir>/update.json`, broadcasts to current subscribers
+    // and fires a desktop notification (via the injected notifier) when a
+    // newer release exists.
+    let data_dir_update = data_dir.clone();
+    let subscribers_update = subscribers.clone();
+    let notifier_update = notifier.clone();
+    tokio::spawn(async move {
+        let current = env!("CARGO_PKG_VERSION");
+        let fetcher = GithubReleaseFetcher::new();
+        let info = match check_latest(&fetcher, current).await {
+            Ok(info) => info,
+            Err(e) => {
+                tracing::debug!("update probe failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = write_cache(&data_dir_update, info.as_ref()) {
+            tracing::debug!("update cache write failed: {e}");
+        }
+        if let Some(u) = info {
+            info!(current = %u.current, latest = %u.latest, "otter update available");
+            broadcast_event(
+                &subscribers_update,
+                DaemonEvent::UpdateAvailable {
+                    current: u.current.clone(),
+                    latest: u.latest.clone(),
+                },
+            );
+            let _ = notifier_update
+                .send(&Notification {
+                    summary: format!("otter update available: v{}", u.latest),
+                    body: format!("Run `otter update` to install (you're on v{}).", u.current),
+                })
+                .await;
+        }
     });
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -338,6 +385,17 @@ async fn handle_connection<S>(
                     }
                 }
             }
+            if let Some(u) = read_cache(&dirs_data_dir()) {
+                let _ = write_json(
+                    &mut writer,
+                    &DaemonEvent::UpdateAvailable {
+                        current: u.current,
+                        latest: u.latest,
+                    },
+                )
+                .await;
+            }
+
             // Replay any pending checkpoints so the UI can display a prompt
             let checkpoints: Vec<(Uuid, usize, String, bool)> = pending_checkpoints
                 .lock()

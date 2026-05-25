@@ -110,6 +110,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 panel_hints: right_panel_hints(app),
                 other_checkpoints: 0,
                 tick: app.tick,
+                update_available: app.update_available.as_deref(),
             },
             Mode::Normal => match app.active_checkpoint() {
                 Some(cp) => StatusBarMode::Action {
@@ -119,6 +120,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     panel_hints: left_panel_hints(app),
                     other_checkpoints: app.other_checkpoint_count(),
                     tick: app.tick,
+                    update_available: app.update_available.as_deref(),
                 },
             },
         }

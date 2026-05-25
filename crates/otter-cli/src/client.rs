@@ -122,7 +122,9 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
             } else {
                 "session only"
             };
-            println!("Service: running ({mode})\n");
+            println!("Service: running ({mode})");
+            print_update_line();
+            println!();
             print_workflows(&workflows);
             if !marketplaces.is_empty() {
                 println!();
@@ -136,10 +138,20 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
         Ok(_) => {}
         Err(_) => {
             println!("Service: stopped");
+            print_update_line();
             println!("Run `otter service start` to start the service.");
         }
     }
     Ok(())
+}
+
+fn print_update_line() {
+    if let Some(u) = crate::updater::read_cache(&crate::dirs_data_dir()) {
+        println!(
+            "Update: v{} → v{} available (run `otter update`)",
+            u.current, u.latest
+        );
+    }
 }
 
 fn print_workflows(workflows: &[WorkflowStatus]) {

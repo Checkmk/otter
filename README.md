@@ -61,6 +61,7 @@ See [USAGE.md](USAGE.md#marketplaces) for details.
 otter                                     # open the TUI dashboard
 otter help                                # show all commands
 otter status                              # list service, workflow, and marketplace state
+otter update                              # install a newer otter release
 otter service start                       # start background service for this session
 otter service stop                        # stop background service
 otter workflow install <path>             # install a workflow from disk

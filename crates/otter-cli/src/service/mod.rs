@@ -61,7 +61,7 @@ pub(super) fn stop_session_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_service_running() -> bool {
+pub(crate) fn is_service_running() -> bool {
     let path = crate::socket_path();
     #[cfg(not(target_os = "windows"))]
     return std::os::unix::net::UnixStream::connect(&path).is_ok();

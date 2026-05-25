@@ -35,6 +35,7 @@ pub enum StatusBarMode<'a> {
         panel_hints: Vec<PanelHint>,
         other_checkpoints: usize,
         tick: u64,
+        update_available: Option<&'a str>,
     },
     /// Checkpoint active: show only checkpoint actions (continue/stop/feedback).
     Action { feedback_available: bool },
@@ -72,9 +73,13 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
             panel_hints,
             other_checkpoints,
             tick,
+            update_available,
         } => {
-            let [left_area, right_area] = Layout::horizontal([
+            let update_label = update_available.map(|v| format!(" ▲ v{} available ", v));
+            let update_width = update_label.as_ref().map(|s| s.len() as u16).unwrap_or(0);
+            let [left_area, update_area, right_area] = Layout::horizontal([
                 Constraint::Min(0),
+                Constraint::Length(update_width),
                 Constraint::Length(10), // " [?] Help "
             ])
             .areas(inner);
@@ -105,6 +110,19 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
                 Paragraph::new(vec![Line::from(left_spans)]).style(base_style()),
                 left_area,
             );
+            if let Some(label) = update_label {
+                f.render_widget(
+                    Paragraph::new(vec![Line::from(vec![Span::styled(
+                        label,
+                        Style::default()
+                            .fg(theme::current().notice_waiting)
+                            .bg(theme::current().background)
+                            .add_modifier(Modifier::BOLD),
+                    )])])
+                    .style(base_style()),
+                    update_area,
+                );
+            }
             f.render_widget(
                 Paragraph::new(vec![Line::from(vec![
                     Span::styled(" ", base_style()),
