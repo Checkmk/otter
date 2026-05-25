@@ -67,7 +67,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(30), Constraint::Min(1)])
+        .constraints([Constraint::Length(35), Constraint::Min(1)])
         .split(inner[0]);
 
     render_runs(f, app, main[0]);
