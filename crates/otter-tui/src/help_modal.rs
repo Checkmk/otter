@@ -48,6 +48,7 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
         Line::from(""),
         section("Navigation", ""),
         Line::from(""),
+        row("[?]", "Help"),
         row("[q]", "Quit"),
         row("[↑↓] / [jk]", "Move cursor / scroll"),
         row("[Tab] / [←→]", "Switch panel focus"),
@@ -65,13 +66,15 @@ pub fn render_help_modal(f: &mut Frame, area: Rect, scroll: &mut usize) {
         Line::from(""),
     ];
 
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let block = panel_focused(" Otter ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let inner_height = inner.height as usize;
     let max_scroll = lines.len().saturating_sub(inner_height);
     *scroll = (*scroll).min(max_scroll);
 
     let visible = with_scroll_indicators(lines, *scroll, inner_height);
-    let para = Paragraph::new(visible)
-        .block(panel_focused(" Help "))
-        .style(base_style());
-    f.render_widget(para, area);
+    let para = Paragraph::new(visible).style(base_style());
+    f.render_widget(para, inner);
 }

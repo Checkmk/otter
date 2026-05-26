@@ -123,7 +123,7 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
         false
     };
     if !handled {
-        app.modal = None;
+        app.dismiss_modal();
     }
 }
 

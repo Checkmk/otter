@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use chrono::Utc;
@@ -9,15 +9,27 @@ use otter_core::types::{
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::first_launch::FirstLaunchState;
+
 #[derive(Debug, PartialEq)]
 pub enum Mode {
     Normal,
     FeedbackInput,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Modal {
     Help { scroll: usize },
+}
+
+impl Modal {
+    /// Stable identifier used by [[FirstLaunchState]] to remember whether
+    /// the user has already seen this modal on a prior launch.
+    pub fn first_launch_id(&self) -> &'static str {
+        match self {
+            Modal::Help { .. } => "help",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -87,6 +99,12 @@ pub struct App {
     /// Configuration root (`~/.config/otter/`); used to locate installed
     /// workflow packages for the rich preview.
     pub config_dir: PathBuf,
+    /// Modals queued to be shown automatically on TUI launch — one at a
+    /// time, popped from the front when the current modal is dismissed.
+    /// New entries can be added by [[App::queue_first_launch_modal]].
+    pub first_launch_queue: VecDeque<Modal>,
+    /// Persisted record of which one-time modals the user has already seen.
+    pub first_launch: FirstLaunchState,
 }
 
 impl App {
@@ -95,7 +113,8 @@ impl App {
         data_dir: PathBuf,
         config_dir: PathBuf,
     ) -> Self {
-        Self {
+        let first_launch = FirstLaunchState::load(&config_dir);
+        let mut app = Self {
             workflows: Vec::new(),
             marketplaces: Vec::new(),
             marketplace_expanded: HashMap::new(),
@@ -119,7 +138,36 @@ impl App {
             update_available: None,
             data_dir,
             config_dir,
+            first_launch_queue: VecDeque::new(),
+            first_launch,
+        };
+
+        // Register one-time modals here. Order is the order they will be
+        // shown to the user (one at a time, advancing on dismissal).
+        app.queue_first_launch_modal(Modal::Help { scroll: 0 });
+
+        // Pop the first modal so something is visible on the initial draw.
+        app.modal = app.first_launch_queue.pop_front();
+
+        app
+    }
+
+    /// Push `modal` onto the first-launch queue if the user hasn't already
+    /// seen it. Marks the id as seen immediately so subsequent launches
+    /// don't replay it, even if this session never displays the modal.
+    pub fn queue_first_launch_modal(&mut self, modal: Modal) {
+        let id = modal.first_launch_id();
+        if self.first_launch.has_seen(id) {
+            return;
         }
+        self.first_launch.mark_seen(id);
+        self.first_launch_queue.push_back(modal);
+    }
+
+    /// Close the current modal and advance to the next first-launch modal,
+    /// if any. Called by the input handler when the user dismisses a modal.
+    pub fn dismiss_modal(&mut self) {
+        self.modal = self.first_launch_queue.pop_front();
     }
 
     pub fn active_checkpoint(&self) -> Option<&PendingCheckpoint> {
@@ -754,12 +802,12 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn make_test_app() -> App {
+        // Use a fresh tempdir for config so [[FirstLaunchState]] starts clean
+        // each test run; leak the TempDir to keep the path alive for the test.
+        let cfg = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let data = Box::leak(Box::new(tempfile::tempdir().unwrap()));
         let (tx, _rx) = mpsc::channel(32);
-        App::new(
-            tx,
-            PathBuf::from("/tmp/otter-tui-test"),
-            PathBuf::from("/tmp/otter-tui-test-config"),
-        )
+        App::new(tx, data.path().to_path_buf(), cfg.path().to_path_buf())
     }
 
     #[test]
@@ -1453,12 +1501,10 @@ mod tests {
     #[test]
     fn toggle_enable_selected_enables_workflow() {
         // GIVEN a disabled workflow
+        let cfg = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let mut app = App::new(
-            tx,
-            PathBuf::from("/tmp/otter-tui-test"),
-            PathBuf::from("/tmp/otter-tui-test-config"),
-        );
+        let mut app = App::new(tx, data.path().into(), cfg.path().into());
         app.workflows.push(WorkflowEntry {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
@@ -1486,12 +1532,10 @@ mod tests {
     #[test]
     fn toggle_enable_selected_disables_workflow() {
         // GIVEN an enabled workflow
+        let cfg = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let mut app = App::new(
-            tx,
-            PathBuf::from("/tmp/otter-tui-test"),
-            PathBuf::from("/tmp/otter-tui-test-config"),
-        );
+        let mut app = App::new(tx, data.path().into(), cfg.path().into());
         app.workflows.push(WorkflowEntry {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
@@ -1623,6 +1667,65 @@ mod tests {
         // WHEN/THEN
         assert!(app.is_workflow_installed("polling-simple"));
         assert!(!app.is_workflow_installed("other"));
+    }
+
+    #[test]
+    fn first_launch_shows_help_modal_on_initial_construction() {
+        // GIVEN a fresh config dir (no prior tui-state.toml)
+        let cfg = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+
+        // WHEN constructing the app
+        let app = App::new(tx, data.path().into(), cfg.path().into());
+
+        // THEN the help modal is open and the queue is empty
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        assert!(app.first_launch_queue.is_empty());
+    }
+
+    #[test]
+    fn first_launch_does_not_re_show_help_on_second_construction() {
+        // GIVEN a config dir where the user has already seen the help modal
+        let cfg = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        {
+            let (tx, _rx) = mpsc::channel(32);
+            let _first = App::new(tx, data.path().into(), cfg.path().into());
+        }
+
+        // WHEN constructing the app again with the same config dir
+        let (tx, _rx) = mpsc::channel(32);
+        let app = App::new(tx, data.path().into(), cfg.path().into());
+
+        // THEN no modal is auto-opened
+        assert!(app.modal.is_none());
+        assert!(app.first_launch_queue.is_empty());
+    }
+
+    #[test]
+    fn dismiss_modal_advances_to_next_first_launch_entry() {
+        // GIVEN an app with two queued first-launch modals
+        let cfg = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let mut app = App::new(tx, data.path().into(), cfg.path().into());
+        // Reset "help" so we can re-queue and add a second entry behind it
+        // simulating the future changelog modal.
+        app.modal = None;
+        app.first_launch_queue.push_back(Modal::Help { scroll: 0 });
+        app.first_launch_queue.push_back(Modal::Help { scroll: 5 });
+        app.modal = app.first_launch_queue.pop_front();
+
+        // WHEN dismissing the first modal
+        app.dismiss_modal();
+
+        // THEN the second one becomes active
+        assert!(matches!(app.modal, Some(Modal::Help { scroll: 5 })));
+
+        // AND dismissing again closes everything
+        app.dismiss_modal();
+        assert!(app.modal.is_none());
     }
 
     #[test]

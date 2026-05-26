@@ -1,4 +1,5 @@
 mod app;
+mod first_launch;
 mod help_modal;
 mod input;
 mod input_field;
