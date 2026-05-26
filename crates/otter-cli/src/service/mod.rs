@@ -12,6 +12,8 @@ pub trait ServiceManager {
     fn start(&self) -> anyhow::Result<()>;
     /// Stop the running daemon.
     fn stop(&self) -> anyhow::Result<()>;
+    /// Stop the daemon (if running) and start it again.
+    fn restart(&self) -> anyhow::Result<()>;
     /// Returns true if the service is configured for automatic startup (e.g. systemd enabled).
     fn is_enabled(&self) -> bool;
 }
@@ -59,6 +61,27 @@ pub(super) fn stop_session_daemon() -> anyhow::Result<()> {
     kill_by_pid(&pid)?;
     println!("Service stopped.");
     Ok(())
+}
+
+/// Stop the session daemon (if running), wait for the socket to disappear, and start it again.
+pub(super) fn restart_session_daemon() -> anyhow::Result<()> {
+    if is_service_running() {
+        stop_session_daemon()?;
+        // Wait for the daemon to actually exit so the subsequent start does not
+        // short-circuit on `is_service_running()` and return without restarting.
+        let mut down = false;
+        for _ in 0..50 {
+            if !is_service_running() {
+                down = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !down {
+            anyhow::bail!("service did not stop within 5 seconds");
+        }
+    }
+    start_session_daemon()
 }
 
 pub(crate) fn is_service_running() -> bool {

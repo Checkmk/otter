@@ -19,6 +19,10 @@ impl ServiceManager for SessionServiceManager {
         super::stop_session_daemon()
     }
 
+    fn restart(&self) -> anyhow::Result<()> {
+        super::restart_session_daemon()
+    }
+
     fn is_enabled(&self) -> bool {
         false
     }

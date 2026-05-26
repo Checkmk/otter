@@ -139,6 +139,13 @@ impl ServiceManager for SystemdServiceManager {
         super::stop_session_daemon()
     }
 
+    fn restart(&self) -> anyhow::Result<()> {
+        if self.service_unit_path().exists() {
+            return self.systemctl(&["restart", "otter.service"]);
+        }
+        super::restart_session_daemon()
+    }
+
     fn is_enabled(&self) -> bool {
         self.service_unit_path().exists()
     }

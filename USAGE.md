@@ -747,6 +747,7 @@ For boot-time persistence (start on login), enable the platform service:
 otter status            # show (service) status
 otter service start     # start the service for this session only
 otter service stop      # stop the running service
+otter service restart   # stop (if running) and start the service again
 otter service enable    # start service and register start-on-boot
 otter service disable   # disable automatic startup and stop the service
 ```

@@ -105,6 +105,8 @@ enum ServiceCommands {
     Start,
     /// Stop the running daemon
     Stop,
+    /// Stop the running daemon (if any) and start it again
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -1266,6 +1268,7 @@ fn handle_service_command(command: ServiceCommands) -> anyhow::Result<()> {
         ServiceCommands::Disable => mgr.disable(),
         ServiceCommands::Start => mgr.start(),
         ServiceCommands::Stop => mgr.stop(),
+        ServiceCommands::Restart => mgr.restart(),
     }
 }
 
