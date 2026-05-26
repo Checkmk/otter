@@ -674,6 +674,7 @@ otter workflow install ./my-workflow.toml         # local .toml file (no compani
 otter workflow install jira-sync@acme             # from a registered marketplace
 otter workflow install jira-sync                  # refresh from origin marketplace
 otter workflow install jira-sync --force          # discard saved values and reinstall fresh
+otter workflow list                               # list installed workflows
 ```
 
 The installed workflow lives at `~/.config/otter/workflows/<name>/`.

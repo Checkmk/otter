@@ -169,6 +169,8 @@ enum WorkflowCommands {
         #[arg(long)]
         reset_secrets: bool,
     },
+    /// List installed workflows and their auto-start state.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -356,6 +358,113 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
             name,
             reset_secrets,
         } => handle_workflow_configure(name, reset_secrets).await,
+        WorkflowCommands::List => handle_workflow_list(),
+    }
+}
+
+fn handle_workflow_list() -> anyhow::Result<()> {
+    let config_dir = dirs_config_dir();
+    let workflows_dir = config_dir.join("workflows");
+    let enabled = read_enabled(&config_dir)?;
+    let rows = collect_installed_workflows(&workflows_dir, &enabled);
+
+    if rows.is_empty() {
+        println!("No workflows installed.");
+        return Ok(());
+    }
+
+    print_workflow_list(&rows);
+    Ok(())
+}
+
+struct InstalledWorkflowRow {
+    name: String,
+    marketplace: Option<String>,
+    kind: String,
+    autostart: bool,
+}
+
+impl InstalledWorkflowRow {
+    fn display_name(&self) -> String {
+        match &self.marketplace {
+            Some(m) => format!("{}@{}", self.name, m),
+            None => self.name.clone(),
+        }
+    }
+}
+
+fn collect_installed_workflows(
+    workflows_dir: &Path,
+    enabled: &HashSet<String>,
+) -> Vec<InstalledWorkflowRow> {
+    let Ok(entries) = std::fs::read_dir(workflows_dir) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<InstalledWorkflowRow> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        // Skip the upgrade-staging / backup dirs created by `workflow install`.
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let (toml_path, pkg_dir) = if path.is_dir() {
+            (path.join("workflow.toml"), Some(path.clone()))
+        } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            (path.clone(), None)
+        } else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&toml_path) else {
+            continue;
+        };
+        let Ok(def) = toml::from_str::<otter_core::types::WorkflowDef>(&content) else {
+            continue;
+        };
+        let kind = match def.workflow_type {
+            otter_core::types::WorkflowType::Looping => "looping",
+            otter_core::types::WorkflowType::Triggered => "triggered",
+        };
+        let marketplace = pkg_dir.as_deref().and_then(|d| {
+            otter_core::marketplace::load_origin(d)
+                .ok()
+                .flatten()
+                .map(|o| o.marketplace)
+        });
+        rows.push(InstalledWorkflowRow {
+            autostart: enabled.contains(&def.name),
+            name: def.name,
+            marketplace,
+            kind: kind.to_string(),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+fn print_workflow_list(rows: &[InstalledWorkflowRow]) {
+    let display_names: Vec<String> = rows.iter().map(|r| r.display_name()).collect();
+    let name_w = display_names
+        .iter()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("NAME".len());
+    let kind_w = rows
+        .iter()
+        .map(|r| r.kind.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("KIND".len());
+    let auto_w = "AUTO-START".len();
+    let total_w = name_w + kind_w + auto_w + 2;
+
+    println!("{:<name_w$} {:<kind_w$} AUTO-START", "NAME", "KIND");
+    println!("{}", "-".repeat(total_w));
+    for (r, name) in rows.iter().zip(display_names.iter()) {
+        let autostart = if r.autostart { "enabled" } else { "disabled" };
+        println!("{:<name_w$} {:<kind_w$} {}", name, r.kind, autostart);
     }
 }
 
@@ -1448,6 +1557,71 @@ mod tests {
         let loaded = read_enabled(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(loaded.contains("my-workflow"));
+    }
+
+    #[test]
+    fn collect_installed_workflows_lists_packages_and_marks_autostart() {
+        // GIVEN a workflows dir with a marketplace-installed package, a bare .toml,
+        //       a leftover upgrade-staging dir, and one autostart entry
+        let dir = TempDir::new().unwrap();
+        let workflows_dir = dir.path().join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        let pkg = workflows_dir.join("alpha");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("workflow.toml"),
+            "name = \"alpha\"\ntype = \"triggered\"\nschema = 1\n\n\
+             [trigger]\ntype = \"manual\"\n\n\
+             [[steps]]\ntype = \"shell\"\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+        otter_core::marketplace::save_origin(
+            &pkg,
+            &otter_core::marketplace::Origin {
+                marketplace: "acme".to_string(),
+                path: "workflows/alpha".to_string(),
+                installed_version: Some("1.0.0".to_string()),
+            },
+        )
+        .unwrap();
+
+        std::fs::write(
+            workflows_dir.join("beta.toml"),
+            "name = \"beta\"\ntype = \"looping\"\nschema = 1\n\n\
+             [[steps]]\ntype = \"shell\"\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+
+        let staging = workflows_dir.join(".alpha.upgrade");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(
+            staging.join("workflow.toml"),
+            "name = \"alpha\"\ntype = \"triggered\"\nschema = 1\n\n\
+             [trigger]\ntype = \"manual\"\n\n\
+             [[steps]]\ntype = \"shell\"\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+
+        let mut enabled = HashSet::new();
+        enabled.insert("alpha".to_string());
+
+        // WHEN collecting installed workflows
+        let rows = collect_installed_workflows(&workflows_dir, &enabled);
+
+        // THEN both real workflows appear sorted with correct kind/autostart;
+        //      alpha is tagged with its marketplace; the staging dir is skipped.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "alpha");
+        assert_eq!(rows[0].marketplace.as_deref(), Some("acme"));
+        assert_eq!(rows[0].display_name(), "alpha@acme");
+        assert_eq!(rows[0].kind, "triggered");
+        assert!(rows[0].autostart);
+        assert_eq!(rows[1].name, "beta");
+        assert_eq!(rows[1].marketplace, None);
+        assert_eq!(rows[1].display_name(), "beta");
+        assert_eq!(rows[1].kind, "looping");
+        assert!(!rows[1].autostart);
     }
 
     #[test]
