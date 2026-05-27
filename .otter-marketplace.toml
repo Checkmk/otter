@@ -8,9 +8,6 @@ path = "examples/hello-world"
 path = "examples/hello-agent"
 
 [[workflow]]
-path = "examples/arch-sync"
-
-[[workflow]]
 path = "examples/one-shot-impl-otter"
 
 [[workflow]]
