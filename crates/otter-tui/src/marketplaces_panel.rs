@@ -16,7 +16,7 @@ pub fn footer_height(app: &App, panel_height: u16) -> u16 {
     if app.marketplaces.is_empty() {
         return 0;
     }
-    let natural = visible_rows(app).len() as u16 + 1; // +1 divider line
+    let natural = visible_rows(app).len() as u16 + 2; // +1 divider line, +1 trailing blank
     let cap = (panel_height / 3).max(3);
     natural.min(cap)
 }
@@ -167,6 +167,8 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    items.push(ListItem::new(""));
+
     let mut state = ListState::default();
     if let Some(idx) = selected_index {
         state.select(Some(idx));
@@ -271,8 +273,8 @@ mod tests {
         app.marketplaces = vec![make_marketplace("acme", vec!["a", "b"])];
         // WHEN
         let h = footer_height(&app, 30);
-        // THEN one divider line + one row = 2
-        assert_eq!(h, 2);
+        // THEN one divider line + one row + one trailing blank = 3
+        assert_eq!(h, 3);
     }
 
     #[test]
