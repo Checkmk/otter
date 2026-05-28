@@ -202,8 +202,8 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
             enter_hints.push(PanelHint::new("[Enter]", "Stop"));
         }
         hints.push(PanelHint::new("[Del]", "Delete"));
-    } else if let Some(state) = app.selected_workflow_state() {
-        match state {
+    } else if let Some(entry) = app.selected_workflow() {
+        match entry.state {
             WorkflowState::Dormant => {
                 enter_hints.push(PanelHint::new("[Enter]", "Start"));
             }

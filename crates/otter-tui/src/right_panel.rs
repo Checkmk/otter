@@ -9,7 +9,7 @@ use ratatui::{
 
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
-use crate::app::{App, CursorTarget, Focus};
+use crate::app::{App, Focus, Selection};
 use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
@@ -30,7 +30,7 @@ pub enum DefinitionView {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum RightPanelRender {
+pub enum RenderMode {
     Logs,
     Definition(DefinitionView),
     ConsumedTriggers,
@@ -60,16 +60,15 @@ impl Default for RightPanel {
 }
 
 impl RightPanel {
-    pub fn render_mode(&self, cursor: CursorTarget) -> RightPanelRender {
+    pub fn render_mode(&self, selection: Selection<'_>) -> RenderMode {
         match self.content {
-            RightPanelContent::ConsumedTriggers => RightPanelRender::ConsumedTriggers,
-            RightPanelContent::Contextual => match cursor {
-                CursorTarget::Run(_, _) => RightPanelRender::Logs,
-                CursorTarget::Workflow(_)
-                | CursorTarget::Marketplace(_)
-                | CursorTarget::MarketplaceWorkflow(_, _) => {
-                    RightPanelRender::Definition(self.definition_view)
-                }
+            RightPanelContent::ConsumedTriggers => RenderMode::ConsumedTriggers,
+            RightPanelContent::Contextual => match selection {
+                Selection::Run(_, _) => RenderMode::Logs,
+                Selection::Workflow(_)
+                | Selection::Marketplace(_)
+                | Selection::MarketplaceWorkflow(_, _)
+                | Selection::None => RenderMode::Definition(self.definition_view),
             },
         }
     }
@@ -84,8 +83,8 @@ impl RightPanel {
         self.cursor = 0;
     }
 
-    pub fn toggle_definition_view(&mut self, cursor: CursorTarget) {
-        if !matches!(self.render_mode(cursor), RightPanelRender::Definition(_)) {
+    pub fn toggle_definition_view(&mut self, mode: RenderMode) {
+        if !matches!(mode, RenderMode::Definition(_)) {
             return;
         }
         self.definition_view = match self.definition_view {
@@ -95,50 +94,50 @@ impl RightPanel {
         self.scroll = 0;
     }
 
-    pub fn move_up(&mut self, cursor: CursorTarget, consumed_len: usize) {
-        match self.render_mode(cursor) {
-            RightPanelRender::ConsumedTriggers => self.consumed_cursor_step(consumed_len, -1),
-            RightPanelRender::Logs => self.scroll += 1,
-            RightPanelRender::Definition(_) => self.scroll = self.scroll.saturating_sub(1),
+    pub fn move_up(&mut self, mode: RenderMode, consumed_len: usize) {
+        match mode {
+            RenderMode::ConsumedTriggers => self.consumed_cursor_step(consumed_len, -1),
+            RenderMode::Logs => self.scroll += 1,
+            RenderMode::Definition(_) => self.scroll = self.scroll.saturating_sub(1),
         }
     }
 
-    pub fn move_down(&mut self, cursor: CursorTarget, consumed_len: usize) {
-        match self.render_mode(cursor) {
-            RightPanelRender::ConsumedTriggers => self.consumed_cursor_step(consumed_len, 1),
-            RightPanelRender::Logs => self.scroll = self.scroll.saturating_sub(1),
-            RightPanelRender::Definition(_) => self.scroll += 1,
+    pub fn move_down(&mut self, mode: RenderMode, consumed_len: usize) {
+        match mode {
+            RenderMode::ConsumedTriggers => self.consumed_cursor_step(consumed_len, 1),
+            RenderMode::Logs => self.scroll = self.scroll.saturating_sub(1),
+            RenderMode::Definition(_) => self.scroll += 1,
         }
     }
 
-    pub fn page_up(&mut self, cursor: CursorTarget) {
-        self.scroll_by(cursor, self.height, ScrollDir::Up);
+    pub fn page_up(&mut self, mode: RenderMode) {
+        self.scroll_by(mode, self.height, ScrollDir::Up);
     }
 
-    pub fn page_down(&mut self, cursor: CursorTarget) {
-        self.scroll_by(cursor, self.height, ScrollDir::Down);
+    pub fn page_down(&mut self, mode: RenderMode) {
+        self.scroll_by(mode, self.height, ScrollDir::Down);
     }
 
-    pub fn half_page_up(&mut self, cursor: CursorTarget) {
-        self.scroll_by(cursor, (self.height / 2).max(1), ScrollDir::Up);
+    pub fn half_page_up(&mut self, mode: RenderMode) {
+        self.scroll_by(mode, (self.height / 2).max(1), ScrollDir::Up);
     }
 
-    pub fn half_page_down(&mut self, cursor: CursorTarget) {
-        self.scroll_by(cursor, (self.height / 2).max(1), ScrollDir::Down);
+    pub fn half_page_down(&mut self, mode: RenderMode) {
+        self.scroll_by(mode, (self.height / 2).max(1), ScrollDir::Down);
     }
 
-    pub fn scroll_top(&mut self, cursor: CursorTarget) {
+    pub fn scroll_top(&mut self, mode: RenderMode) {
         // Logs scroll lines-from-bottom: top of history is usize::MAX
         // (the renderer clamps it to auto_bottom).
-        self.scroll = if self.scrolls_top_down(cursor) {
+        self.scroll = if Self::scrolls_top_down(mode) {
             0
         } else {
             usize::MAX
         };
     }
 
-    pub fn scroll_bottom(&mut self, cursor: CursorTarget) {
-        self.scroll = if self.scrolls_top_down(cursor) {
+    pub fn scroll_bottom(&mut self, mode: RenderMode) {
+        self.scroll = if Self::scrolls_top_down(mode) {
             usize::MAX
         } else {
             0
@@ -162,8 +161,8 @@ impl RightPanel {
         self.cursor = (self.cursor + delta) % len;
     }
 
-    fn scroll_by(&mut self, cursor: CursorTarget, amount: usize, dir: ScrollDir) {
-        let top_down = self.scrolls_top_down(cursor);
+    fn scroll_by(&mut self, mode: RenderMode, amount: usize, dir: ScrollDir) {
+        let top_down = Self::scrolls_top_down(mode);
         let forward = matches!(dir, ScrollDir::Down) == top_down;
         if forward {
             self.scroll += amount;
@@ -172,8 +171,8 @@ impl RightPanel {
         }
     }
 
-    fn scrolls_top_down(&self, cursor: CursorTarget) -> bool {
-        !matches!(self.render_mode(cursor), RightPanelRender::Logs)
+    fn scrolls_top_down(mode: RenderMode) -> bool {
+        !matches!(mode, RenderMode::Logs)
     }
 }
 
@@ -279,12 +278,11 @@ pub fn with_scroll_indicators(
 
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Right;
-    match app.ui.right.render_mode(app.ui.cursor) {
-        RightPanelRender::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
-        RightPanelRender::Logs => render_logs(f, app, area, is_focused),
-        RightPanelRender::Definition(view) => {
-            render_definition_preview(f, app, area, is_focused, view)
-        }
+    let mode = app.ui.right.render_mode(app.selection());
+    match mode {
+        RenderMode::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
+        RenderMode::Logs => render_logs(f, app, area, is_focused),
+        RenderMode::Definition(view) => render_definition_preview(f, app, area, is_focused, view),
     }
 }
 
@@ -809,14 +807,14 @@ fn render_definition_preview(
 
     let lines: Vec<Line> = match view {
         DefinitionView::Raw => build_raw_lines(app, inner_width),
-        DefinitionView::Preview => match app.ui.cursor {
-            CursorTarget::Workflow(_) => build_installed_preview(app, inner_width),
-            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
+        DefinitionView::Preview => match app.selection() {
+            Selection::Workflow(_) => build_installed_preview(app, inner_width),
+            Selection::Marketplace(_) | Selection::MarketplaceWorkflow(_, _) => {
                 build_marketplace_preview(app, inner_width)
             }
             // The render dispatcher routes Run cursors to logs, so this arm
             // is unreachable in practice.
-            CursorTarget::Run(_, _) => Vec::new(),
+            Selection::Run(_, _) | Selection::None => Vec::new(),
         },
     };
 
@@ -845,12 +843,12 @@ fn build_raw_lines<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
         .fg(theme::current().dim)
         .bg(theme::current().background);
 
-    let toml = match app.ui.cursor {
-        CursorTarget::Workflow(_) => app.selected_workflow().and_then(|e| e.toml_content.clone()),
-        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => app
+    let toml = match app.selection() {
+        Selection::Workflow(e) => e.toml_content.clone(),
+        Selection::Marketplace(_) | Selection::MarketplaceWorkflow(_, _) => app
             .selected_marketplace_pkg_dir()
             .and_then(|d| std::fs::read_to_string(d.join("workflow.toml")).ok()),
-        CursorTarget::Run(_, _) => None,
+        Selection::Run(_, _) | Selection::None => None,
     };
 
     let Some(toml) = toml else {
@@ -914,83 +912,86 @@ fn build_marketplace_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>>
     let dim = Style::default()
         .fg(theme::current().dim)
         .bg(theme::current().background);
-    if let Some((m, w)) = app.selected_marketplace_workflow() {
-        let pkg_dir = app.selected_marketplace_pkg_dir();
-        let pkg_dir_missing = pkg_dir.is_none();
-        let def = pkg_dir.as_ref().and_then(|d| {
-            let toml = std::fs::read_to_string(d.join("workflow.toml")).ok()?;
-            toml::from_str::<WorkflowDef>(&toml).ok()
-        });
-        let readme = pkg_dir
-            .as_ref()
-            .and_then(|d| std::fs::read_to_string(d.join("README.md")).ok());
-        let installed = app.is_workflow_installed(&w.name);
+    match app.selection() {
+        Selection::MarketplaceWorkflow(m, w) => {
+            let pkg_dir = app.selected_marketplace_pkg_dir();
+            let pkg_dir_missing = pkg_dir.is_none();
+            let def = pkg_dir.as_ref().and_then(|d| {
+                let toml = std::fs::read_to_string(d.join("workflow.toml")).ok()?;
+                toml::from_str::<WorkflowDef>(&toml).ok()
+            });
+            let readme = pkg_dir
+                .as_ref()
+                .and_then(|d| std::fs::read_to_string(d.join("README.md")).ok());
+            let installed = app.is_workflow_installed(&w.name);
 
-        build_workflow_preview_lines(
-            PreviewSource::Marketplace {
-                marketplace_name: &m.name,
-                installed,
-                pkg_dir_missing,
-            },
-            &w.name,
-            w.version.as_deref(),
-            w.description.as_deref(),
-            def.as_ref(),
-            readme.as_deref(),
-            inner_width,
-            |rel| {
-                pkg_dir
-                    .as_ref()
-                    .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
-            },
-        )
-    } else if let Some(m) = app.selected_marketplace() {
-        let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
-        let installed = m
-            .workflows
-            .iter()
-            .filter(|w| app.is_workflow_installed(&w.name))
-            .count();
-        let updates = m
-            .workflows
-            .iter()
-            .filter(|w| app.workflow_update_available(&w.name).is_some())
-            .count();
-
-        let mut workflows_value = format!("{} published · {installed} installed", m.workflow_count);
-        if updates > 0 {
-            workflows_value.push_str(&format!(" · {updates} update"));
-            if updates > 1 {
-                workflows_value.push('s');
-            }
+            build_workflow_preview_lines(
+                PreviewSource::Marketplace {
+                    marketplace_name: &m.name,
+                    installed,
+                    pkg_dir_missing,
+                },
+                &w.name,
+                w.version.as_deref(),
+                w.description.as_deref(),
+                def.as_ref(),
+                readme.as_deref(),
+                inner_width,
+                |rel| {
+                    pkg_dir
+                        .as_ref()
+                        .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+                },
+            )
         }
-        let last_fetched = m
-            .last_fetched_at
-            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| "never".to_string());
+        Selection::Marketplace(m) => {
+            let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
+            let installed = m
+                .workflows
+                .iter()
+                .filter(|w| app.is_workflow_installed(&w.name))
+                .count();
+            let updates = m
+                .workflows
+                .iter()
+                .filter(|w| app.workflow_update_available(&w.name).is_some())
+                .count();
 
-        let label = |text: &str| Span::styled(format!("  {text:<13}"), dim);
-        vec![
-            Line::from(Span::styled(m.name.clone(), bold)),
-            Line::from(""),
-            Line::from(vec![
-                label("URL"),
-                Span::styled(m.url.clone(), base_style()),
-            ]),
-            Line::from(vec![
-                label("Workflows"),
-                Span::styled(workflows_value, base_style()),
-            ]),
-            Line::from(vec![
-                label("Last fetched"),
-                Span::styled(last_fetched, base_style()),
-            ]),
-        ]
-    } else {
-        vec![Line::from(Span::styled(
+            let mut workflows_value =
+                format!("{} published · {installed} installed", m.workflow_count);
+            if updates > 0 {
+                workflows_value.push_str(&format!(" · {updates} update"));
+                if updates > 1 {
+                    workflows_value.push('s');
+                }
+            }
+            let last_fetched = m
+                .last_fetched_at
+                .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "never".to_string());
+
+            let label = |text: &str| Span::styled(format!("  {text:<13}"), dim);
+            vec![
+                Line::from(Span::styled(m.name.clone(), bold)),
+                Line::from(""),
+                Line::from(vec![
+                    label("URL"),
+                    Span::styled(m.url.clone(), base_style()),
+                ]),
+                Line::from(vec![
+                    label("Workflows"),
+                    Span::styled(workflows_value, base_style()),
+                ]),
+                Line::from(vec![
+                    label("Last fetched"),
+                    Span::styled(last_fetched, base_style()),
+                ]),
+            ]
+        }
+        _ => vec![Line::from(Span::styled(
             "No marketplace selected".to_string(),
             dim,
-        ))]
+        ))],
     }
 }
 
@@ -1048,12 +1049,12 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
-    match app.ui.right.render_mode(app.ui.cursor) {
-        RightPanelRender::Logs => vec![
+    match app.ui.right.render_mode(app.selection()) {
+        RenderMode::Logs => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
         ],
-        RightPanelRender::Definition(view) => vec![
+        RenderMode::Definition(view) => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
             match view {
@@ -1061,7 +1062,7 @@ pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
                 DefinitionView::Raw => PanelHint::new("[W]", "Show workflow preview"),
             },
         ],
-        RightPanelRender::ConsumedTriggers => vec![
+        RenderMode::ConsumedTriggers => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Del]", "Delete trigger"),
             PanelHint::new("[Esc]", "Close"),

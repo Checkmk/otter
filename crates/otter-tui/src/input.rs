@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use otter_core::types::{CheckpointAction, RunStatus, WorkflowState};
 
-use crate::app::{App, CursorTarget, Focus, Modal, Mode};
+use crate::app::{App, Focus, Modal, Mode, Selection};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {
@@ -70,32 +70,14 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             app.ui.feedback_input.clear();
         }
         // Enter: context-sensitive — run row stops active run, workflow row starts/stops workflow
-        KeyCode::Enter if !has_checkpoint => match app.ui.cursor {
-            CursorTarget::Run(wi, ri) => {
-                let is_active = app
-                    .workflows
-                    .get(wi)
-                    .and_then(|e| e.runs.get(ri))
-                    .map(|r| matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint))
-                    .unwrap_or(false);
-                if is_active {
-                    app.stop_selected_run();
-                }
-            }
-            CursorTarget::Workflow(_) => match app.selected_workflow_state() {
-                Some(WorkflowState::Dormant) => app.start_selected(),
-                Some(WorkflowState::Running) => app.stop_selected(),
-                _ => {}
-            },
-            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {}
-        },
+        KeyCode::Enter if !has_checkpoint => enter_action(app),
         // When checkpoint is active, 's' stops the checkpoint
         KeyCode::Char('s') if has_checkpoint => app.respond_checkpoint(CheckpointAction::Stop),
         KeyCode::Char('t') if !has_checkpoint => {
             app.open_consumed_triggers();
         }
         KeyCode::Char('a') if !has_checkpoint => {
-            if matches!(app.ui.cursor, CursorTarget::Workflow(_)) {
+            if matches!(app.selection(), Selection::Workflow(_)) {
                 app.toggle_enable_selected();
             }
         }
@@ -103,6 +85,33 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             app.ui.enter_right_panel();
         }
         _ => {}
+    }
+}
+
+fn enter_action(app: &mut App) {
+    enum Verdict {
+        StopRun,
+        StartWorkflow,
+        StopWorkflow,
+        Noop,
+    }
+    let verdict = match app.selection() {
+        Selection::Run(_, r)
+            if matches!(r.status, RunStatus::Running | RunStatus::WaitingCheckpoint) =>
+        {
+            Verdict::StopRun
+        }
+        Selection::Workflow(e) => match e.state {
+            WorkflowState::Dormant => Verdict::StartWorkflow,
+            WorkflowState::Running => Verdict::StopWorkflow,
+        },
+        _ => Verdict::Noop,
+    };
+    match verdict {
+        Verdict::StopRun => app.stop_selected_run(),
+        Verdict::StartWorkflow => app.start_selected(),
+        Verdict::StopWorkflow => app.stop_selected(),
+        Verdict::Noop => {}
     }
 }
 
@@ -129,22 +138,22 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
 
 fn handle_right_panel(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let cursor = app.ui.cursor;
     let consumed_len = app.selected_consumed_triggers().len();
+    let mode = app.ui.right.render_mode(app.selection());
     match key.code {
         KeyCode::Esc | KeyCode::Tab | KeyCode::Left => app.ui.close_right_panel(),
-        KeyCode::Up | KeyCode::Char('k') => app.ui.right.move_up(cursor, consumed_len),
-        KeyCode::Down | KeyCode::Char('j') => app.ui.right.move_down(cursor, consumed_len),
-        KeyCode::PageUp => app.ui.right.page_up(cursor),
-        KeyCode::PageDown => app.ui.right.page_down(cursor),
-        KeyCode::Char('b') if ctrl => app.ui.right.page_up(cursor),
-        KeyCode::Char('f') if ctrl => app.ui.right.page_down(cursor),
-        KeyCode::Char('u') if ctrl => app.ui.right.half_page_up(cursor),
-        KeyCode::Char('d') if ctrl => app.ui.right.half_page_down(cursor),
-        KeyCode::Home | KeyCode::Char('g') => app.ui.right.scroll_top(cursor),
-        KeyCode::End | KeyCode::Char('G') => app.ui.right.scroll_bottom(cursor),
+        KeyCode::Up | KeyCode::Char('k') => app.ui.right.move_up(mode, consumed_len),
+        KeyCode::Down | KeyCode::Char('j') => app.ui.right.move_down(mode, consumed_len),
+        KeyCode::PageUp => app.ui.right.page_up(mode),
+        KeyCode::PageDown => app.ui.right.page_down(mode),
+        KeyCode::Char('b') if ctrl => app.ui.right.page_up(mode),
+        KeyCode::Char('f') if ctrl => app.ui.right.page_down(mode),
+        KeyCode::Char('u') if ctrl => app.ui.right.half_page_up(mode),
+        KeyCode::Char('d') if ctrl => app.ui.right.half_page_down(mode),
+        KeyCode::Home | KeyCode::Char('g') => app.ui.right.scroll_top(mode),
+        KeyCode::End | KeyCode::Char('G') => app.ui.right.scroll_bottom(mode),
         KeyCode::Delete => app.delete_selected_consumed_trigger(),
-        KeyCode::Char('w') => app.ui.right.toggle_definition_view(cursor),
+        KeyCode::Char('w') => app.ui.right.toggle_definition_view(mode),
         _ => {}
     }
 }

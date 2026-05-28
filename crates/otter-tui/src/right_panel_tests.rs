@@ -2,43 +2,82 @@ use ratatui::{style::Style, text::Line};
 
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, WorkflowDef};
 
-use crate::app::{App, CursorTarget};
+use crate::app::{App, CursorTarget, Selection, WorkflowEntry};
 
 use crate::right_panel::{
     build_log_lines, build_marketplace_preview, build_workflow_preview_lines, format_log_entry,
     render_progress_lines, right_panel_hints, with_scroll_indicators, DefinitionView,
-    PreviewSource, RightPanel, RightPanelContent, RightPanelRender, WrappedLogLine,
+    PreviewSource, RenderMode, RightPanel, RightPanelContent, WrappedLogLine,
 };
 use chrono::Utc;
-use otter_core::types::LogEntry;
+use otter_core::types::{LogEntry, MarketplaceStatus, WorkflowRun, WorkflowState, WorkflowType};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-fn workflow_cursor() -> CursorTarget {
-    CursorTarget::Workflow(0)
+struct SelectionFixture {
+    entry: WorkflowEntry,
+    run: WorkflowRun,
+    marketplace: MarketplaceStatus,
 }
 
-fn run_cursor() -> CursorTarget {
-    CursorTarget::Run(0, 0)
+impl SelectionFixture {
+    fn new() -> Self {
+        Self {
+            entry: WorkflowEntry {
+                name: "wf".to_string(),
+                kind: WorkflowType::Looping,
+                state: WorkflowState::Dormant,
+                runs: Vec::new(),
+                expanded: false,
+                trigger: None,
+                toml_content: None,
+                autostart: false,
+                update_available: None,
+                origin: None,
+            },
+            run: WorkflowRun::new("wf".to_string()),
+            marketplace: MarketplaceStatus {
+                name: "acme".to_string(),
+                url: "https://example.com/acme".to_string(),
+                workflow_count: 0,
+                last_fetched_at: None,
+                workflows: Vec::new(),
+            },
+        }
+    }
+
+    fn workflow_selection(&self) -> Selection<'_> {
+        Selection::Workflow(&self.entry)
+    }
+
+    fn run_selection(&self) -> Selection<'_> {
+        Selection::Run(&self.entry, &self.run)
+    }
+
+    fn marketplace_selection(&self) -> Selection<'_> {
+        Selection::Marketplace(&self.marketplace)
+    }
 }
 
 #[test]
 fn render_mode_routes_run_cursor_to_logs() {
     let p = RightPanel::default();
-    assert_eq!(p.render_mode(run_cursor()), RightPanelRender::Logs);
+    let fx = SelectionFixture::new();
+    assert_eq!(p.render_mode(fx.run_selection()), RenderMode::Logs);
 }
 
 #[test]
 fn render_mode_routes_non_run_cursors_to_definition() {
     let p = RightPanel::default();
+    let fx = SelectionFixture::new();
     assert_eq!(
-        p.render_mode(workflow_cursor()),
-        RightPanelRender::Definition(DefinitionView::Preview)
+        p.render_mode(fx.workflow_selection()),
+        RenderMode::Definition(DefinitionView::Preview)
     );
     assert_eq!(
-        p.render_mode(CursorTarget::Marketplace(0)),
-        RightPanelRender::Definition(DefinitionView::Preview)
+        p.render_mode(fx.marketplace_selection()),
+        RenderMode::Definition(DefinitionView::Preview)
     );
 }
 
@@ -46,14 +85,27 @@ fn render_mode_routes_non_run_cursors_to_definition() {
 fn render_mode_consumed_triggers_overrides_cursor() {
     let mut p = RightPanel::default();
     p.content = RightPanelContent::ConsumedTriggers;
+    let fx = SelectionFixture::new();
     assert_eq!(
-        p.render_mode(run_cursor()),
-        RightPanelRender::ConsumedTriggers
+        p.render_mode(fx.run_selection()),
+        RenderMode::ConsumedTriggers
     );
     assert_eq!(
-        p.render_mode(workflow_cursor()),
-        RightPanelRender::ConsumedTriggers
+        p.render_mode(fx.workflow_selection()),
+        RenderMode::ConsumedTriggers
     );
+}
+
+fn workflow_mode() -> RenderMode {
+    RenderMode::Definition(DefinitionView::Preview)
+}
+
+fn run_mode() -> RenderMode {
+    RenderMode::Logs
+}
+
+fn consumed_mode() -> RenderMode {
+    RenderMode::ConsumedTriggers
 }
 
 #[test]
@@ -90,14 +142,14 @@ fn toggle_definition_view_flips_between_preview_and_raw_and_resets_scroll() {
     p.scroll = 12;
 
     // WHEN toggled
-    p.toggle_definition_view(workflow_cursor());
+    p.toggle_definition_view(workflow_mode());
 
     // THEN it flips to raw and scroll returns to the top
     assert_eq!(p.definition_view, DefinitionView::Raw);
     assert_eq!(p.scroll, 0);
 
     // AND a second toggle flips back
-    p.toggle_definition_view(workflow_cursor());
+    p.toggle_definition_view(workflow_mode());
     assert_eq!(p.definition_view, DefinitionView::Preview);
 }
 
@@ -106,10 +158,11 @@ fn toggle_definition_view_is_no_op_when_showing_logs() {
     // GIVEN cursor on a run (logs mode) with scroll set
     let mut p = RightPanel::default();
     p.scroll = 5;
-    assert_eq!(p.render_mode(run_cursor()), RightPanelRender::Logs);
+    let fx = SelectionFixture::new();
+    assert_eq!(p.render_mode(fx.run_selection()), RenderMode::Logs);
 
     // WHEN toggle is invoked
-    p.toggle_definition_view(run_cursor());
+    p.toggle_definition_view(run_mode());
 
     // THEN preference is unchanged and scroll is preserved
     assert_eq!(p.definition_view, DefinitionView::Preview);
@@ -121,13 +174,13 @@ fn move_consumed_cursor_wraps_in_both_directions() {
     let mut p = RightPanel::default();
     p.content = RightPanelContent::ConsumedTriggers;
 
-    p.move_down(run_cursor(), 3);
+    p.move_down(consumed_mode(), 3);
     assert_eq!(p.cursor, 1);
-    p.move_down(run_cursor(), 3);
-    p.move_down(run_cursor(), 3);
+    p.move_down(consumed_mode(), 3);
+    p.move_down(consumed_mode(), 3);
     assert_eq!(p.cursor, 0, "wrap forward");
 
-    p.move_up(run_cursor(), 3);
+    p.move_up(consumed_mode(), 3);
     assert_eq!(p.cursor, 2, "wrap backward");
 }
 
@@ -135,8 +188,8 @@ fn move_consumed_cursor_wraps_in_both_directions() {
 fn move_consumed_cursor_is_noop_on_empty_list() {
     let mut p = RightPanel::default();
     p.content = RightPanelContent::ConsumedTriggers;
-    p.move_down(workflow_cursor(), 0);
-    p.move_up(workflow_cursor(), 0);
+    p.move_down(consumed_mode(), 0);
+    p.move_up(consumed_mode(), 0);
     assert_eq!(p.cursor, 0);
 }
 
@@ -144,16 +197,16 @@ fn move_consumed_cursor_is_noop_on_empty_list() {
 fn logs_scroll_is_inverted_relative_to_definition() {
     // Logs are bottom-up: ↑ steps into history (scroll += 1)
     let mut p = RightPanel::default();
-    p.move_up(run_cursor(), 0);
+    p.move_up(run_mode(), 0);
     assert_eq!(p.scroll, 1);
-    p.move_down(run_cursor(), 0);
+    p.move_down(run_mode(), 0);
     assert_eq!(p.scroll, 0);
 
     // Definition is top-down: ↓ steps forward (scroll += 1)
     let mut p = RightPanel::default();
-    p.move_down(workflow_cursor(), 0);
+    p.move_down(workflow_mode(), 0);
     assert_eq!(p.scroll, 1);
-    p.move_up(workflow_cursor(), 0);
+    p.move_up(workflow_mode(), 0);
     assert_eq!(p.scroll, 0);
 }
 
@@ -163,16 +216,16 @@ fn page_scroll_uses_panel_height_and_respects_mode_direction() {
     p.height = 20;
 
     // Definition mode (top-down): page_down increases scroll
-    p.page_down(workflow_cursor());
+    p.page_down(workflow_mode());
     assert_eq!(p.scroll, 20);
-    p.page_up(workflow_cursor());
+    p.page_up(workflow_mode());
     assert_eq!(p.scroll, 0);
 
     // Logs mode (bottom-up): page_down decreases scroll
     p.scroll = 30;
-    p.page_down(run_cursor());
+    p.page_down(run_mode());
     assert_eq!(p.scroll, 10);
-    p.page_up(run_cursor());
+    p.page_up(run_mode());
     assert_eq!(p.scroll, 30);
 }
 
@@ -180,13 +233,13 @@ fn page_scroll_uses_panel_height_and_respects_mode_direction() {
 fn half_page_scroll_uses_half_panel_height_minimum_one() {
     let mut p = RightPanel::default();
     // Height = 0 → half = max(0, 1) = 1
-    p.half_page_down(workflow_cursor());
+    p.half_page_down(workflow_mode());
     assert_eq!(p.scroll, 1);
 
     p.height = 20;
-    p.half_page_down(workflow_cursor());
+    p.half_page_down(workflow_mode());
     assert_eq!(p.scroll, 11);
-    p.half_page_up(workflow_cursor());
+    p.half_page_up(workflow_mode());
     assert_eq!(p.scroll, 1);
 }
 
@@ -194,17 +247,17 @@ fn half_page_scroll_uses_half_panel_height_minimum_one() {
 fn scroll_top_and_bottom_invert_between_modes() {
     // Definition mode: top = 0, bottom = MAX
     let mut p = RightPanel::default();
-    p.scroll_top(workflow_cursor());
+    p.scroll_top(workflow_mode());
     assert_eq!(p.scroll, 0);
-    p.scroll_bottom(workflow_cursor());
+    p.scroll_bottom(workflow_mode());
     assert_eq!(p.scroll, usize::MAX);
 
     // Logs mode: top of history = MAX (renderer clamps to auto_bottom),
     // bottom = 0 (latest)
     let mut p = RightPanel::default();
-    p.scroll_top(run_cursor());
+    p.scroll_top(run_mode());
     assert_eq!(p.scroll, usize::MAX);
-    p.scroll_bottom(run_cursor());
+    p.scroll_bottom(run_mode());
     assert_eq!(p.scroll, 0);
 }
 

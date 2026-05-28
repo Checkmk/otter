@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use otter_core::types::{
     CheckpointAction, DaemonCommand, DaemonEvent, LogEntry, MarketplaceOrigin, MarketplaceStatus,
-    ProgressChunk, TriggerDef, WorkflowRun, WorkflowState, WorkflowStatus, WorkflowType,
+    MarketplaceWorkflowEntry, ProgressChunk, TriggerDef, WorkflowRun, WorkflowState,
+    WorkflowStatus, WorkflowType,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -64,6 +65,15 @@ pub enum CursorTarget {
     Run(usize, usize),                 // workflow_idx, run_idx
     Marketplace(usize),                // index into marketplaces vec
     MarketplaceWorkflow(usize, usize), // marketplace_idx, workflow_idx
+}
+
+/// Typed view of what the cursor currently points at.
+pub enum Selection<'a> {
+    Workflow(&'a WorkflowEntry),
+    Run(&'a WorkflowEntry, &'a WorkflowRun),
+    Marketplace(&'a MarketplaceStatus),
+    MarketplaceWorkflow(&'a MarketplaceStatus, &'a MarketplaceWorkflowEntry),
+    None,
 }
 
 pub struct Ui {
@@ -212,33 +222,42 @@ impl App {
             .count()
     }
 
+    pub fn selection(&self) -> Selection<'_> {
+        match self.ui.cursor {
+            CursorTarget::Workflow(wi) => self
+                .workflows
+                .get(wi)
+                .map(Selection::Workflow)
+                .unwrap_or(Selection::None),
+            CursorTarget::Run(wi, ri) => self
+                .workflows
+                .get(wi)
+                .and_then(|e| e.runs.get(ri).map(|r| Selection::Run(e, r)))
+                .unwrap_or(Selection::None),
+            CursorTarget::Marketplace(mi) => self
+                .marketplaces
+                .get(mi)
+                .map(Selection::Marketplace)
+                .unwrap_or(Selection::None),
+            CursorTarget::MarketplaceWorkflow(mi, wi) => self
+                .marketplaces
+                .get(mi)
+                .and_then(|m| {
+                    m.workflows
+                        .get(wi)
+                        .map(|w| Selection::MarketplaceWorkflow(m, w))
+                })
+                .unwrap_or(Selection::None),
+        }
+    }
+
     pub fn selected_workflow(&self) -> Option<&WorkflowEntry> {
-        match self.ui.cursor {
-            CursorTarget::Workflow(wi) | CursorTarget::Run(wi, _) => self.workflows.get(wi),
-            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => None,
-        }
-    }
-
-    pub fn selected_marketplace(&self) -> Option<&MarketplaceStatus> {
-        match self.ui.cursor {
-            CursorTarget::Marketplace(mi) | CursorTarget::MarketplaceWorkflow(mi, _) => {
-                self.marketplaces.get(mi)
+        match self.selection() {
+            Selection::Workflow(e) | Selection::Run(e, _) => Some(e),
+            Selection::Marketplace(_) | Selection::MarketplaceWorkflow(_, _) | Selection::None => {
+                None
             }
-            _ => None,
         }
-    }
-
-    pub fn selected_marketplace_workflow(
-        &self,
-    ) -> Option<(
-        &MarketplaceStatus,
-        &otter_core::types::MarketplaceWorkflowEntry,
-    )> {
-        let CursorTarget::MarketplaceWorkflow(mi, wi) = self.ui.cursor else {
-            return None;
-        };
-        let m = self.marketplaces.get(mi)?;
-        Some((m, m.workflows.get(wi)?))
     }
 
     /// Returns true if a workflow with `name` is already installed locally.
@@ -439,10 +458,8 @@ impl App {
     }
 
     pub fn stop_selected_run(&mut self) {
-        if let CursorTarget::Run(_, _) = self.ui.cursor {
-            if let Some(run_id) = self.selected_run_id() {
-                let _ = self.cmd_tx.try_send(DaemonCommand::StopRun { run_id });
-            }
+        if let Some(run_id) = self.selected_run_id() {
+            let _ = self.cmd_tx.try_send(DaemonCommand::StopRun { run_id });
         }
     }
 
@@ -454,20 +471,26 @@ impl App {
     }
 
     pub fn toggle_enable_selected(&mut self) {
-        if let CursorTarget::Workflow(wi) = self.ui.cursor {
-            if let Some(entry) = self.workflows.get_mut(wi) {
-                let name = entry.name.clone();
-                if entry.autostart {
-                    entry.autostart = false;
-                    let _ = self
-                        .cmd_tx
-                        .try_send(DaemonCommand::DisableWorkflow { name });
-                } else {
-                    entry.autostart = true;
-                    self.ui.pending_workflow_start = Some(name.clone());
-                    let _ = self.cmd_tx.try_send(DaemonCommand::EnableWorkflow { name });
-                }
-            }
+        // Only the workflow row itself toggles auto-start; a Run cursor would
+        // otherwise resolve back to the parent workflow via selected_workflow()
+        // and silently flip it from a run row, which is not what the keybinding
+        // means.
+        let CursorTarget::Workflow(wi) = self.ui.cursor else {
+            return;
+        };
+        let Some(entry) = self.workflows.get_mut(wi) else {
+            return;
+        };
+        let name = entry.name.clone();
+        if entry.autostart {
+            entry.autostart = false;
+            let _ = self
+                .cmd_tx
+                .try_send(DaemonCommand::DisableWorkflow { name });
+        } else {
+            entry.autostart = true;
+            self.ui.pending_workflow_start = Some(name.clone());
+            let _ = self.cmd_tx.try_send(DaemonCommand::EnableWorkflow { name });
         }
     }
 
@@ -494,14 +517,10 @@ impl App {
     }
 
     pub fn selected_run_id(&self) -> Option<Uuid> {
-        match self.ui.cursor {
-            CursorTarget::Run(wi, ri) => self.workflows.get(wi)?.runs.get(ri).map(|r| r.id),
+        match self.selection() {
+            Selection::Run(_, r) => Some(r.id),
             _ => None,
         }
-    }
-
-    pub fn selected_workflow_state(&self) -> Option<WorkflowState> {
-        self.selected_workflow().map(|e| e.state.clone())
     }
 
     pub fn selected_logs(&self) -> &[LogEntry] {
@@ -522,8 +541,8 @@ impl App {
     /// installed workflow, if any. Used by the rich preview to surface README
     /// and inlined message-file contents.
     pub fn selected_workflow_pkg_dir(&self) -> Option<PathBuf> {
-        let entry = match self.ui.cursor {
-            CursorTarget::Workflow(wi) => self.workflows.get(wi)?,
+        let entry = match self.selection() {
+            Selection::Workflow(e) => e,
             _ => return None,
         };
         let dir = self.config_dir.join("workflows").join(&entry.name);
@@ -671,7 +690,9 @@ impl App {
     /// Returns the on-disk package directory for the selected marketplace
     /// workflow, if the cursor is on one and the clone exists.
     pub fn selected_marketplace_pkg_dir(&self) -> Option<PathBuf> {
-        let (m, w) = self.selected_marketplace_workflow()?;
+        let Selection::MarketplaceWorkflow(m, w) = self.selection() else {
+            return None;
+        };
         let dir = self
             .data_dir
             .join("marketplaces")
@@ -686,10 +707,8 @@ impl App {
 
     /// Delete the currently selected run (only if cursor is on a run)
     pub fn delete_selected_run(&mut self) {
-        if let CursorTarget::Run(_, _) = self.ui.cursor {
-            if let Some(run_id) = self.selected_run_id() {
-                let _ = self.cmd_tx.try_send(DaemonCommand::DeleteRun { run_id });
-            }
+        if let Some(run_id) = self.selected_run_id() {
+            let _ = self.cmd_tx.try_send(DaemonCommand::DeleteRun { run_id });
         }
     }
 }
