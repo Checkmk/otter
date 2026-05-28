@@ -155,7 +155,7 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
                     trailing.push((format!(" ▲ {v}"), badge_style));
                 }
                 items.push(list_row(
-                    "    ",
+                    "   ",
                     &w.name,
                     &trailing,
                     name_style,
