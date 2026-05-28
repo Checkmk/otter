@@ -606,25 +606,14 @@ where
         )));
     }
 
-    // Call-to-action section: INSTALL for marketplace advertisements, UPDATE
-    // when an installed workflow has a newer upstream version. Installed
-    // workflows that are current (or have no origin) get nothing — the header
-    // already conveys their status.
-    match &source {
-        PreviewSource::Marketplace {
-            marketplace_name, ..
-        } => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("INSTALL".to_string(), bold)));
-            lines.push(Line::from(Span::styled(
-                format!("  otter workflow install {workflow_name}@{marketplace_name}"),
-                base_style(),
-            )));
-        }
-        PreviewSource::Installed {
-            origin: Some(o),
-            update_available: Some(latest),
-        } if !o.dangling => {
+    // Call-to-action: UPDATE AVAILABLE when an installed workflow has a newer
+    // upstream version.
+    if let PreviewSource::Installed {
+        origin: Some(o),
+        update_available: Some(latest),
+    } = &source
+    {
+        if !o.dangling {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("UPDATE AVAILABLE".to_string(), bold),
@@ -635,7 +624,6 @@ where
                 base_style(),
             )));
         }
-        PreviewSource::Installed { .. } => {}
     }
 
     let pkg_dir_missing = matches!(
@@ -658,18 +646,20 @@ where
     };
 
     // REQUIRES
-    if let Some(req) = def.require.as_ref() {
-        if !req.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("REQUIRES".to_string(), bold)));
-            for (name, entry) in req.iter() {
-                let kind = if entry.sensitive { "secret" } else { "param" };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {name} "), base_style()),
-                    Span::styled(format!("({kind})"), dim),
-                    Span::styled(" — ".to_string(), dim),
-                    Span::styled(entry.description.clone(), base_style()),
-                ]));
+    if matches!(source, PreviewSource::Marketplace { .. }) {
+        if let Some(req) = def.require.as_ref() {
+            if !req.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("REQUIRES".to_string(), bold)));
+                for (name, entry) in req.iter() {
+                    let kind = if entry.sensitive { "secret" } else { "param" };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {name} "), base_style()),
+                        Span::styled(format!("({kind})"), dim),
+                        Span::styled(" — ".to_string(), dim),
+                        Span::styled(entry.description.clone(), base_style()),
+                    ]));
+                }
             }
         }
     }

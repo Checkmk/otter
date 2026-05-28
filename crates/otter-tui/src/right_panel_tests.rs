@@ -625,8 +625,8 @@ fn collect_text(lines: &[Line]) -> String {
 }
 
 #[test]
-fn preview_includes_install_command_and_requires() {
-    // GIVEN a workflow with a [require] entry
+fn marketplace_preview_includes_requires_but_not_install_command() {
+    // GIVEN a marketplace workflow with a [require] entry
     let def = parse_def(
         r#"
 name = "polling-simple"
@@ -662,11 +662,56 @@ command = ["echo", "hi"]
         |_| None,
     );
 
-    // THEN it shows the install command and the require entry
+    // THEN it shows the require entry but not the install command
+    // (the install command is shown in the status bar instead)
     let text = collect_text(&lines);
-    assert!(text.contains("otter workflow install polling-simple@acme"));
+    assert!(!text.contains("otter workflow install"));
+    assert!(!text.contains("INSTALL"));
     assert!(text.contains("JIRA_PAT"));
     assert!(text.contains("(secret)"));
+}
+
+#[test]
+fn installed_preview_omits_requires_section() {
+    // GIVEN an installed workflow with a [require] entry
+    let def = parse_def(
+        r#"
+name = "polling-simple"
+type = "triggered"
+schema = 1
+
+[require.JIRA_PAT]
+description = "Jira PAT"
+sensitive = true
+
+[trigger]
+type = "manual"
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+    );
+
+    // WHEN
+    let lines = build_workflow_preview_lines(
+        PreviewSource::Installed {
+            origin: None,
+            update_available: None,
+        },
+        "polling-simple",
+        Some("1.0.0"),
+        None,
+        Some(&def),
+        None,
+        80,
+        |_| None,
+    );
+
+    // THEN the REQUIRES section is omitted (values are already configured)
+    let text = collect_text(&lines);
+    assert!(!text.contains("REQUIRES"));
+    assert!(!text.contains("JIRA_PAT"));
 }
 
 #[test]
@@ -770,9 +815,9 @@ fn preview_handles_missing_clone() {
         |_| None,
     );
 
-    // THEN it shows install command + clone-missing hint, no crash
+    // THEN the clone-missing hint is shown, no crash
     let text = collect_text(&lines);
-    assert!(text.contains("otter workflow install wf@acme"));
+    assert!(!text.contains("INSTALL"));
     assert!(text.contains("marketplace clone missing"));
 }
 

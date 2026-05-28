@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -13,13 +15,22 @@ use crate::theme;
 
 /// A single keybinding hint to display in the status bar.
 pub struct PanelHint {
-    pub key: &'static str,
-    pub label: &'static str,
+    pub key: Cow<'static, str>,
+    pub label: Cow<'static, str>,
 }
 
 impl PanelHint {
     pub const fn new(key: &'static str, label: &'static str) -> Self {
-        Self { key, label }
+        Self {
+            key: Cow::Borrowed(key),
+            label: Cow::Borrowed(label),
+        }
+    }
+    pub fn owned(key: impl Into<String>) -> Self {
+        Self {
+            key: Cow::Owned(key.into()),
+            label: Cow::Borrowed(""),
+        }
     }
 }
 
@@ -86,11 +97,12 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
 
             let mut left_spans: Vec<Span<'static>> = vec![];
             for (i, hint) in panel_hints.iter().enumerate() {
-                if i > 0 {
-                    left_spans.push(Span::styled("  ", base_style()));
+                let spacer = if i > 0 { "  " } else { " " };
+                left_spans.push(Span::styled(spacer, base_style()));
+                left_spans.push(Span::styled(hint.key.clone(), key));
+                if !hint.label.is_empty() {
+                    left_spans.push(Span::styled(format!(" {}", hint.label), dim));
                 }
-                left_spans.push(Span::styled(hint.key, key));
-                left_spans.push(Span::styled(format!(" {}", hint.label), dim));
             }
             if other_checkpoints > 0 {
                 let msg = if other_checkpoints == 1 {
@@ -142,11 +154,12 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
 
             let mut left_spans: Vec<Span<'static>> = vec![];
             for (i, hint) in hints.iter().enumerate() {
-                if i > 0 {
-                    left_spans.push(Span::styled("  ", base_style()));
+                let spacer = if i > 0 { "  " } else { " " };
+                left_spans.push(Span::styled(spacer, base_style()));
+                left_spans.push(Span::styled(hint.key.clone(), key));
+                if !hint.label.is_empty() {
+                    left_spans.push(Span::styled(format!(" {}", hint.label), dim));
                 }
-                left_spans.push(Span::styled(hint.key, key));
-                left_spans.push(Span::styled(format!(" {}", hint.label), dim));
             }
             let left_spans = scroll_spans(left_spans, left_area.width as usize, tick);
             f.render_widget(
@@ -155,7 +168,7 @@ pub fn render_status_bar(f: &mut Frame, mode: StatusBarMode<'_>, area: Rect) {
             );
             f.render_widget(
                 Paragraph::new(vec![Line::from(vec![
-                    Span::styled(close.key, key),
+                    Span::styled(close.key.clone(), key),
                     Span::styled(format!(" {}", close.label), dim),
                 ])])
                 .style(base_style()),

@@ -80,7 +80,16 @@ impl Panel for MarketplacesPanel {
                     }
                 }
             }
-            CursorTarget::MarketplaceWorkflow(_, _) => {}
+            CursorTarget::MarketplaceWorkflow(mi, wi) => {
+                if let Some(m) = app.marketplaces.get(mi) {
+                    if let Some(w) = m.workflows.get(wi) {
+                        hints.push(PanelHint::owned(format!(
+                            "Install via `otter workflow install {}@{}`",
+                            w.name, m.name
+                        )));
+                    }
+                }
+            }
             _ => {}
         }
         hints
@@ -407,5 +416,22 @@ mod tests {
             hints.iter().find(|h| h.key == "[Space]").unwrap().label,
             "Hide workflows"
         );
+    }
+
+    #[test]
+    fn marketplaces_hints_for_workflow_cursor_shows_install_command() {
+        // GIVEN cursor on a marketplace workflow
+        let mut app = make_app();
+        let panel = MarketplacesPanel::default();
+        app.marketplaces = vec![make_marketplace("acme", vec!["fresh-wf"])];
+        app.ui.cursor = CursorTarget::MarketplaceWorkflow(0, 0);
+        // WHEN
+        let hints = panel.hints(&app);
+        // THEN
+        let install = hints
+            .iter()
+            .find(|h| h.key.contains("otter workflow install"))
+            .expect("install hint present");
+        assert!(install.key.contains("fresh-wf@acme"));
     }
 }

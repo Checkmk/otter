@@ -418,7 +418,7 @@ mod tests {
     }
 
     fn hint_keys(hints: &[PanelHint]) -> Vec<&str> {
-        hints.iter().map(|h| h.key).collect()
+        hints.iter().map(|h| h.key.as_ref()).collect()
     }
 
     #[test]
