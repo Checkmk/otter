@@ -288,7 +288,7 @@ fn marketplace_preview_shows_stats_when_marketplace_selected() {
         update_available: None,
         origin: None,
     });
-    app.cursor = CursorTarget::Marketplace(0);
+    app.ui.cursor = CursorTarget::Marketplace(0);
 
     // WHEN the marketplace row (not a workflow) is selected
     let lines = build_marketplace_preview(&app, 80);
@@ -487,7 +487,7 @@ fn scroll_indicators_both_sides() {
 fn right_panel_hints_consumed_triggers_shows_delete() {
     // GIVEN consumed triggers panel content
     let mut app = make_app();
-    app.right.content = RightPanelContent::ConsumedTriggers;
+    app.ui.right.content = RightPanelContent::ConsumedTriggers;
 
     // WHEN
     let hints = right_panel_hints(&app);

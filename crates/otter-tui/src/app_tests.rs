@@ -42,19 +42,19 @@ fn cursor_navigation_moves_through_workflows_only_when_collapsed() {
     });
 
     // Start at first workflow
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // Move down
     app.move_cursor_down();
-    assert_eq!(app.cursor, CursorTarget::Workflow(1));
+    assert_eq!(app.ui.cursor, CursorTarget::Workflow(1));
 
     // Move down again (wraps to first)
     app.move_cursor_down();
-    assert_eq!(app.cursor, CursorTarget::Workflow(0));
+    assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
 
     // Move up (wraps to last)
     app.move_cursor_up();
-    assert_eq!(app.cursor, CursorTarget::Workflow(1));
+    assert_eq!(app.ui.cursor, CursorTarget::Workflow(1));
 }
 
 #[test]
@@ -83,24 +83,24 @@ fn cursor_navigation_includes_runs_when_expanded() {
 
     // Navigate through expanded workflow
     // Flat list should be: Workflow(0), Run(0, 0), Run(0, 1)
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     app.move_cursor_down();
-    assert_eq!(app.cursor, CursorTarget::Run(0, 0));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
 
     app.move_cursor_down();
-    assert_eq!(app.cursor, CursorTarget::Run(0, 1));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 1));
 
     // Move down from last wraps to first
     app.move_cursor_down();
-    assert_eq!(app.cursor, CursorTarget::Workflow(0));
+    assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
 
     // Move up from first wraps to last
     app.move_cursor_up();
-    assert_eq!(app.cursor, CursorTarget::Run(0, 1));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 1));
 
     app.move_cursor_up();
-    assert_eq!(app.cursor, CursorTarget::Run(0, 0));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn toggle_expanded_expands_and_collapses_workflow() {
     });
 
     // Select the workflow
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // Toggle to expand
     app.toggle_expanded();
@@ -153,10 +153,10 @@ fn selected_run_id_reflects_cursor_target() {
         origin: None,
     });
 
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
     assert!(app.selected_run_id().is_none());
 
-    app.cursor = CursorTarget::Run(0, 0);
+    app.ui.cursor = CursorTarget::Run(0, 0);
     assert_eq!(app.selected_run_id(), Some(run_id));
 }
 
@@ -249,14 +249,14 @@ fn deleting_selected_run_snaps_cursor_to_previous_run() {
     });
 
     // Cursor on the last run (index 1)
-    app.cursor = CursorTarget::Run(0, 1);
+    app.ui.cursor = CursorTarget::Run(0, 1);
     assert_eq!(app.selected_run_id(), Some(run1_id));
 
     // Delete the selected run
     app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run1_id });
 
     // Cursor should snap to the previous run (index 0), not jump to another workflow
-    assert_eq!(app.cursor, CursorTarget::Run(0, 0));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
     assert_eq!(app.selected_run_id(), Some(run2_id));
 }
 
@@ -299,13 +299,13 @@ fn deleting_run_does_not_jump_to_another_workflow() {
     });
 
     // Cursor on the second run of wf-b (the older one)
-    app.cursor = CursorTarget::Run(1, 1);
+    app.ui.cursor = CursorTarget::Run(1, 1);
 
     // Delete that run
     app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run_b0.id });
 
     // Should snap to Run(1, 0) — the first run of wf-b — NOT to wf-a or run_b1_id accidentally
-    assert_eq!(app.cursor, CursorTarget::Run(1, 0));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(1, 0));
     assert_eq!(app.selected_run_id(), Some(run_b1_id));
 }
 
@@ -330,14 +330,14 @@ fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
     });
 
     // Cursor on the only run
-    app.cursor = CursorTarget::Run(0, 0);
+    app.ui.cursor = CursorTarget::Run(0, 0);
     assert_eq!(app.selected_run_id(), Some(run_id));
 
     // Delete the run
     app.handle_daemon_event(DaemonEvent::RunDeleted { run_id });
 
     // Cursor should snap to the workflow row
-    assert_eq!(app.cursor, CursorTarget::Workflow(0));
+    assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
     assert_eq!(app.selected_run_id(), None);
 }
 
@@ -358,14 +358,14 @@ fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
         origin: None,
     });
 
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
     app.start_selected();
 
     let run = WorkflowRun::new("wf".to_string());
     app.handle_daemon_event(DaemonEvent::RunUpdated(run));
 
     // Cursor should move to the new run, not stay on the workflow row
-    assert_eq!(app.cursor, CursorTarget::Run(0, 0));
+    assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
     });
 
     // Start the workflow
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
     app.start_selected();
 
     // Add a new run
@@ -421,7 +421,7 @@ fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
     // Workflow should be expanded
     assert!(app.workflows[0].expanded);
     // pending_workflow_start should be cleared
-    assert!(app.pending_workflow_start.is_none());
+    assert!(app.ui.pending_workflow_start.is_none());
 }
 
 #[test]
@@ -446,7 +446,7 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
         update_available: None,
         origin: None,
     });
-    app.cursor = CursorTarget::Run(0, 0);
+    app.ui.cursor = CursorTarget::Run(0, 0);
 
     // Simulate checkpoint pending
     app.handle_daemon_event(DaemonEvent::CheckpointPending {
@@ -649,14 +649,14 @@ fn toggle_enable_selected_enables_workflow() {
         update_available: None,
         origin: None,
     });
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN toggled
     app.toggle_enable_selected();
 
     // THEN enabled flips to true, pending_workflow_start set, EnableWorkflow sent
     assert!(app.workflows[0].autostart);
-    assert_eq!(app.pending_workflow_start.as_deref(), Some("wf"));
+    assert_eq!(app.ui.pending_workflow_start.as_deref(), Some("wf"));
     let cmd = rx.try_recv().expect("command sent");
     assert!(matches!(cmd, DaemonCommand::EnableWorkflow { name } if name == "wf"));
 }
@@ -680,7 +680,7 @@ fn toggle_enable_selected_disables_workflow() {
         update_available: None,
         origin: None,
     });
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN toggled
     app.toggle_enable_selected();
@@ -738,13 +738,13 @@ fn cursor_flows_from_runs_into_marketplaces() {
         origin: None,
     });
     app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN moving down
     app.move_cursor_down();
 
     // THEN cursor lands on the marketplace
-    assert_eq!(app.cursor, CursorTarget::Marketplace(0));
+    assert_eq!(app.ui.cursor, CursorTarget::Marketplace(0));
 }
 
 #[test]
@@ -752,13 +752,13 @@ fn toggle_expanded_expands_marketplace() {
     // GIVEN a marketplace with workflows, cursor on it
     let mut app = make_test_app();
     app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a", "b"])]);
-    app.cursor = CursorTarget::Marketplace(0);
+    app.ui.cursor = CursorTarget::Marketplace(0);
 
     // WHEN toggling
     app.toggle_expanded();
 
     // THEN it expands and the workflow rows show up in the flat list
-    assert!(app.is_marketplace_expanded("acme"));
+    assert!(app.ui.is_marketplace_expanded("acme"));
     let flat = app.build_flat_list();
     assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 0)));
     assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 1)));
@@ -769,15 +769,15 @@ fn apply_marketplaces_snapshot_drops_stale_expand_state() {
     // GIVEN an expanded marketplace
     let mut app = make_test_app();
     app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
-    app.marketplace_expanded.insert("acme".to_string(), true);
-    app.marketplace_expanded.insert("gone".to_string(), true);
+    app.ui.marketplace_expanded.insert("acme".to_string(), true);
+    app.ui.marketplace_expanded.insert("gone".to_string(), true);
 
     // WHEN a new snapshot arrives without 'gone'
     app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
 
     // THEN stale expand state is removed
-    assert!(app.is_marketplace_expanded("acme"));
-    assert!(!app.marketplace_expanded.contains_key("gone"));
+    assert!(app.ui.is_marketplace_expanded("acme"));
+    assert!(!app.ui.marketplace_expanded.contains_key("gone"));
 }
 
 #[test]
@@ -791,8 +791,8 @@ fn first_launch_shows_help_modal_on_initial_construction() {
     let app = App::new(tx, data.path().into(), cfg.path().into());
 
     // THEN the help modal is open and the queue is empty
-    assert!(matches!(app.modal, Some(Modal::Help { .. })));
-    assert!(app.first_launch_queue.is_empty());
+    assert!(matches!(app.ui.modal, Some(Modal::Help { .. })));
+    assert!(app.ui.first_launch_queue.is_empty());
 }
 
 #[test]
@@ -810,8 +810,8 @@ fn first_launch_does_not_re_show_help_on_second_construction() {
     let app = App::new(tx, data.path().into(), cfg.path().into());
 
     // THEN no modal is auto-opened
-    assert!(app.modal.is_none());
-    assert!(app.first_launch_queue.is_empty());
+    assert!(app.ui.modal.is_none());
+    assert!(app.ui.first_launch_queue.is_empty());
 }
 
 #[test]
@@ -823,20 +823,24 @@ fn dismiss_modal_advances_to_next_first_launch_entry() {
     let mut app = App::new(tx, data.path().into(), cfg.path().into());
     // Reset "help" so we can re-queue and add a second entry behind it
     // simulating the future changelog modal.
-    app.modal = None;
-    app.first_launch_queue.push_back(Modal::Help { scroll: 0 });
-    app.first_launch_queue.push_back(Modal::Help { scroll: 5 });
-    app.modal = app.first_launch_queue.pop_front();
+    app.ui.modal = None;
+    app.ui
+        .first_launch_queue
+        .push_back(Modal::Help { scroll: 0 });
+    app.ui
+        .first_launch_queue
+        .push_back(Modal::Help { scroll: 5 });
+    app.ui.modal = app.ui.first_launch_queue.pop_front();
 
     // WHEN dismissing the first modal
-    app.dismiss_modal();
+    app.ui.dismiss_modal();
 
     // THEN the second one becomes active
-    assert!(matches!(app.modal, Some(Modal::Help { scroll: 5 })));
+    assert!(matches!(app.ui.modal, Some(Modal::Help { scroll: 5 })));
 
     // AND dismissing again closes everything
-    app.dismiss_modal();
-    assert!(app.modal.is_none());
+    app.ui.dismiss_modal();
+    assert!(app.ui.modal.is_none());
 }
 
 #[test]
@@ -855,7 +859,7 @@ fn toggle_expanded_is_noop_on_workflow_without_runs() {
         update_available: None,
         origin: None,
     });
-    app.cursor = CursorTarget::Workflow(0);
+    app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN toggle_expanded is called
     app.toggle_expanded();

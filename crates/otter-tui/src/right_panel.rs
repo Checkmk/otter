@@ -278,8 +278,8 @@ pub fn with_scroll_indicators(
 }
 
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let is_focused = app.modal.is_none() && app.focus == Focus::Right;
-    match app.right.render_mode(app.cursor) {
+    let is_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Right;
+    match app.ui.right.render_mode(app.ui.cursor) {
         RightPanelRender::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
         RightPanelRender::Logs => render_logs(f, app, area, is_focused),
         RightPanelRender::Definition(view) => {
@@ -435,7 +435,7 @@ fn build_log_lines<'a>(
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.right.height = inner_height;
+    app.ui.right.height = inner_height;
     let logs = app.selected_logs();
 
     let progress = app.selected_progress();
@@ -450,9 +450,9 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
     // Clamp app state so pressing ↓ always has a visible effect after scrolling up.
-    app.right.scroll = app.right.scroll.min(auto_bottom);
+    app.ui.right.scroll = app.ui.right.scroll.min(auto_bottom);
     let scroll_offset = if is_focused {
-        auto_bottom - app.right.scroll
+        auto_bottom - app.ui.right.scroll
     } else {
         auto_bottom
     } as u16;
@@ -805,11 +805,11 @@ fn render_definition_preview(
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.right.height = inner_height;
+    app.ui.right.height = inner_height;
 
     let lines: Vec<Line> = match view {
         DefinitionView::Raw => build_raw_lines(app, inner_width),
-        DefinitionView::Preview => match app.cursor {
+        DefinitionView::Preview => match app.ui.cursor {
             CursorTarget::Workflow(_) => build_installed_preview(app, inner_width),
             CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
                 build_marketplace_preview(app, inner_width)
@@ -822,8 +822,8 @@ fn render_definition_preview(
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
     // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
-    app.right.scroll = app.right.scroll.min(auto_bottom);
-    let scroll_offset = if is_focused { app.right.scroll } else { 0 };
+    app.ui.right.scroll = app.ui.right.scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { app.ui.right.scroll } else { 0 };
 
     let title = match view {
         DefinitionView::Preview => "Definition (preview)",
@@ -845,7 +845,7 @@ fn build_raw_lines<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
         .fg(theme::current().dim)
         .bg(theme::current().background);
 
-    let toml = match app.cursor {
+    let toml = match app.ui.cursor {
         CursorTarget::Workflow(_) => app.selected_workflow().and_then(|e| e.toml_content.clone()),
         CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => app
             .selected_marketplace_pkg_dir()
@@ -1014,7 +1014,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
             .iter()
             .enumerate()
             .map(|(i, hash)| {
-                if is_focused && i == app.right.cursor {
+                if is_focused && i == app.ui.right.cursor {
                     Line::from(Span::styled(
                         hash.clone(),
                         Style::default()
@@ -1033,7 +1033,8 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     let scroll_offset = if triggers.is_empty() || !is_focused {
         0
     } else {
-        app.right
+        app.ui
+            .right
             .cursor
             .saturating_sub(inner_height.saturating_sub(1)) as u16
     };
@@ -1047,7 +1048,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
-    match app.right.render_mode(app.cursor) {
+    match app.ui.right.render_mode(app.ui.cursor) {
         RightPanelRender::Logs => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),

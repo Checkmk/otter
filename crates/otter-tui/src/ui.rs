@@ -46,15 +46,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let content = cols[1];
 
-    let status_bar_height = if app.mode == Mode::FeedbackInput {
+    let status_bar_height = if app.ui.mode == Mode::FeedbackInput {
         let panel_width = content.width as usize;
         let overhead = 15;
         let available_width = panel_width.saturating_sub(overhead);
         let actual_width = available_width.max(20);
-        let input_lines = if app.feedback_input.is_empty() {
+        let input_lines = if app.ui.feedback_input.is_empty() {
             1
         } else {
-            let wrapped = wrap_into_chunks(&app.feedback_input, actual_width);
+            let wrapped = wrap_into_chunks(&app.ui.feedback_input, actual_width);
             wrapped.len()
         };
         (2 + input_lines).min(7) as u16
@@ -73,7 +73,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .split(inner[0]);
 
     let left_panel = main[0];
-    let left_focused = app.modal.is_none() && app.focus == Focus::Left;
+    let left_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Left;
     let left_block = if left_focused {
         panel_focused("Workflows")
     } else {
@@ -94,7 +94,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     render_right_panel(f, app, main[1]);
 
-    if let Some(modal) = &mut app.modal {
+    if let Some(modal) = &mut app.ui.modal {
         match modal {
             Modal::Help { scroll } => {
                 let popup_area = centered_rect(
@@ -108,29 +108,29 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
-    let status_mode = if let Some(modal) = &app.modal {
+    let status_mode = if let Some(modal) = &app.ui.modal {
         match modal {
             Modal::Help { .. } => StatusBarMode::Modal {
                 hints: vec![PanelHint::new("[↑↓]", "Scroll")],
                 close: PanelHint::new("[Any]", "Close help"),
-                tick: app.tick,
+                tick: app.ui.tick,
             },
         }
     } else {
-        match app.mode {
+        match app.ui.mode {
             Mode::FeedbackInput => {
                 let overhead = 15;
                 let available_width = (inner[1].width as usize).saturating_sub(overhead);
                 StatusBarMode::Prompt {
-                    input: &app.feedback_input,
+                    input: &app.ui.feedback_input,
                     available_width,
-                    tick: app.tick,
+                    tick: app.ui.tick,
                 }
             }
-            Mode::Normal if app.focus == Focus::Right => StatusBarMode::Normal {
+            Mode::Normal if app.ui.focus == Focus::Right => StatusBarMode::Normal {
                 panel_hints: right_panel_hints(app),
                 other_checkpoints: 0,
-                tick: app.tick,
+                tick: app.ui.tick,
                 update_available: app.update_available.as_deref(),
             },
             Mode::Normal => match app.active_checkpoint() {
@@ -138,14 +138,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     feedback_available: cp.feedback_available,
                 },
                 None => StatusBarMode::Normal {
-                    panel_hints: match app.cursor {
+                    panel_hints: match app.ui.cursor {
                         CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
                             marketplaces_hints(app)
                         }
                         _ => left_panel_hints(app),
                     },
                     other_checkpoints: app.other_checkpoint_count(),
-                    tick: app.tick,
+                    tick: app.ui.tick,
                     update_available: app.update_available.as_deref(),
                 },
             },

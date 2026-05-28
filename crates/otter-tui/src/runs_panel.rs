@@ -47,7 +47,7 @@ fn workflow_state_color(
 
 pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width as usize;
-    let tick = app.tick;
+    let tick = app.ui.tick;
 
     let make_item =
         |prefix: &str, content: &str, icon: String, icon_color: Color, is_selected: bool| {
@@ -74,7 +74,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     for (wi, entry) in app.workflows.iter().enumerate() {
         let current_index = items.len();
 
-        let is_workflow_selected = app.cursor == CursorTarget::Workflow(wi);
+        let is_workflow_selected = app.ui.cursor == CursorTarget::Workflow(wi);
         if is_workflow_selected {
             selected_index = Some(current_index);
         }
@@ -105,7 +105,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
             first_run_status,
             Some(&entry.kind),
             entry.trigger.as_ref(),
-            app.tick,
+            app.ui.tick,
         );
         let name_content = entry.name.clone();
         let prefixed_icon = if entry.autostart {
@@ -123,7 +123,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 
         if entry.expanded {
             for (ri, run) in entry.runs.iter().enumerate() {
-                let is_run_selected = app.cursor == CursorTarget::Run(wi, ri);
+                let is_run_selected = app.ui.cursor == CursorTarget::Run(wi, ri);
                 if is_run_selected {
                     selected_index = Some(items.len());
                 }
@@ -152,7 +152,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
                     Some(effective_run_status),
                     None,
                     None,
-                    app.tick,
+                    app.ui.tick,
                 );
                 items.push(make_item(
                     "   ",
@@ -178,7 +178,7 @@ pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
     let mut hints: Vec<PanelHint> = vec![];
 
-    if let CursorTarget::Workflow(wi) = app.cursor {
+    if let CursorTarget::Workflow(wi) = app.ui.cursor {
         if let Some(entry) = app.workflows.get(wi) {
             if entry.expanded && !entry.runs.is_empty() {
                 hints.push(PanelHint::new("[Space]", "Hide runs"));
@@ -189,7 +189,7 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
     }
 
     let mut enter_hints: Vec<PanelHint> = vec![];
-    if let CursorTarget::Run(wi, ri) = app.cursor {
+    if let CursorTarget::Run(wi, ri) = app.ui.cursor {
         let run_status = app
             .workflows
             .get(wi)
@@ -217,7 +217,7 @@ pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
         hints.push(PanelHint::new("[T]", "Consumed triggers"));
     }
 
-    if let CursorTarget::Workflow(wi) = app.cursor {
+    if let CursorTarget::Workflow(wi) = app.ui.cursor {
         if let Some(entry) = app.workflows.get(wi) {
             if entry.autostart {
                 hints.push(PanelHint::new("[A]", "Disable auto-start"));
@@ -284,7 +284,7 @@ mod tests {
             vec![],
             false,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -305,7 +305,7 @@ mod tests {
             vec![run],
             false,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -328,7 +328,7 @@ mod tests {
             vec![run],
             true,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -350,7 +350,7 @@ mod tests {
             vec![],
             true,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -371,7 +371,7 @@ mod tests {
             vec![run],
             true,
         ));
-        app.cursor = CursorTarget::Run(0, 0);
+        app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -391,7 +391,7 @@ mod tests {
             vec![],
             false,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -413,7 +413,7 @@ mod tests {
             vec![],
             false,
         ));
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -439,7 +439,7 @@ mod tests {
             vec![run],
             true,
         ));
-        app.cursor = CursorTarget::Run(0, 0);
+        app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -472,7 +472,7 @@ mod tests {
         );
         entry.autostart = false;
         app.workflows.push(entry);
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -496,7 +496,7 @@ mod tests {
         );
         entry.autostart = true;
         app.workflows.push(entry);
-        app.cursor = CursorTarget::Workflow(0);
+        app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
         let hints = left_panel_hints(&app);
@@ -520,7 +520,7 @@ mod tests {
             vec![run],
             true,
         ));
-        app.cursor = CursorTarget::Run(0, 0);
+        app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
         let hints = left_panel_hints(&app);

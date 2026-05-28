@@ -36,7 +36,7 @@ fn visible_rows(app: &App) -> Vec<(CursorTarget, RowKind)> {
     let mut rows = Vec::new();
     for (mi, m) in app.marketplaces.iter().enumerate() {
         rows.push((CursorTarget::Marketplace(mi), RowKind::Marketplace));
-        if app.is_marketplace_expanded(&m.name) {
+        if app.ui.is_marketplace_expanded(&m.name) {
             for (wi, w) in m.workflows.iter().enumerate() {
                 if !workflow_is_visible(app, w) {
                     continue;
@@ -63,14 +63,14 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
     let [divider_area, list_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let inner_width = area.width as usize;
-    let tick = app.tick;
+    let tick = app.ui.tick;
 
     // Inline section divider: `── Marketplaces ──────` — colored to match
     // the surrounding panel border (which itself swaps style on focus).
     let label = "─ Marketplaces ";
     let trailing = inner_width.saturating_sub(label.chars().count());
     let divider = format!("{label}{}", "─".repeat(trailing));
-    let left_focused = app.modal.is_none() && app.focus == Focus::Left;
+    let left_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Left;
     let divider_style = if left_focused {
         Style::default()
             .fg(theme::current().foreground)
@@ -96,11 +96,11 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
     let mut selected_index: Option<usize> = None;
 
     for (mi, m) in app.marketplaces.iter().enumerate() {
-        let is_selected = app.cursor == CursorTarget::Marketplace(mi);
+        let is_selected = app.ui.cursor == CursorTarget::Marketplace(mi);
         if is_selected {
             selected_index = Some(items.len());
         }
-        let expanded = app.is_marketplace_expanded(&m.name);
+        let expanded = app.ui.is_marketplace_expanded(&m.name);
         let visible_count = m
             .workflows
             .iter()
@@ -139,7 +139,7 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
                 if !workflow_is_visible(app, w) {
                     continue;
                 }
-                let is_wf_selected = app.cursor == CursorTarget::MarketplaceWorkflow(mi, wi);
+                let is_wf_selected = app.ui.cursor == CursorTarget::MarketplaceWorkflow(mi, wi);
                 if is_wf_selected {
                     selected_index = Some(items.len());
                 }
@@ -181,11 +181,11 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
 /// Hints for the status bar when the cursor is in the marketplaces footer.
 pub fn marketplaces_hints(app: &App) -> Vec<PanelHint> {
     let mut hints = Vec::new();
-    match app.cursor {
+    match app.ui.cursor {
         CursorTarget::Marketplace(mi) => {
             if let Some(m) = app.marketplaces.get(mi) {
                 if !m.workflows.is_empty() {
-                    let label = if app.is_marketplace_expanded(&m.name) {
+                    let label = if app.ui.is_marketplace_expanded(&m.name) {
                         "Hide workflows"
                     } else {
                         "Show workflows"
@@ -258,7 +258,7 @@ mod tests {
         }
         app.marketplaces = ms;
         for m in &app.marketplaces {
-            app.marketplace_expanded.insert(m.name.clone(), true);
+            app.ui.marketplace_expanded.insert(m.name.clone(), true);
         }
         // WHEN panel is 30 lines
         let h = footer_height(&app, 30);
@@ -328,7 +328,7 @@ mod tests {
         // GIVEN cursor on a collapsed marketplace with workflows
         let mut app = make_app();
         app.marketplaces = vec![make_marketplace("acme", vec!["a"])];
-        app.cursor = CursorTarget::Marketplace(0);
+        app.ui.cursor = CursorTarget::Marketplace(0);
         // WHEN
         let hints = marketplaces_hints(&app);
         // THEN
@@ -342,8 +342,8 @@ mod tests {
         // GIVEN expanded marketplace
         let mut app = make_app();
         app.marketplaces = vec![make_marketplace("acme", vec!["a"])];
-        app.marketplace_expanded.insert("acme".to_string(), true);
-        app.cursor = CursorTarget::Marketplace(0);
+        app.ui.marketplace_expanded.insert("acme".to_string(), true);
+        app.ui.cursor = CursorTarget::Marketplace(0);
         // WHEN
         let hints = marketplaces_hints(&app);
         // THEN
