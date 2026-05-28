@@ -44,6 +44,19 @@ pub enum RightPanelContent {
     ConsumedTriggers,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DefinitionView {
+    Preview,
+    Raw,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RightPanelRender {
+    Logs,
+    Definition(DefinitionView),
+    ConsumedTriggers,
+}
+
 pub struct PendingCheckpoint {
     pub run_id: Uuid,
     pub feedback_available: bool,
@@ -88,6 +101,7 @@ pub struct App {
     pub pending_workflow_start: Option<String>,
     pub focus: Focus,
     pub right_panel_content: RightPanelContent,
+    pub definition_view: DefinitionView,
     pub right_cursor: usize,
     pub right_scroll: usize,
     pub right_panel_height: usize,
@@ -130,6 +144,7 @@ impl App {
             pending_workflow_start: None,
             focus: Focus::Left,
             right_panel_content: RightPanelContent::Contextual,
+            definition_view: DefinitionView::Preview,
             right_cursor: 0,
             right_scroll: 0,
             right_panel_height: 0,
@@ -636,40 +651,51 @@ impl App {
         self.right_scroll = 0;
     }
 
-    /// True when the right panel uses absolute (top-down) scroll semantics
-    /// rather than "lines from bottom" (used by the log view).
-    fn right_panel_is_top_down(&self) -> bool {
-        !matches!(self.cursor, CursorTarget::Run(_, _))
+    pub fn right_panel_render(&self) -> RightPanelRender {
+        match self.right_panel_content {
+            RightPanelContent::ConsumedTriggers => RightPanelRender::ConsumedTriggers,
+            RightPanelContent::Contextual => match self.cursor {
+                CursorTarget::Run(_, _) => RightPanelRender::Logs,
+                CursorTarget::Workflow(_)
+                | CursorTarget::Marketplace(_)
+                | CursorTarget::MarketplaceWorkflow(_, _) => {
+                    RightPanelRender::Definition(self.definition_view)
+                }
+            },
+        }
+    }
+
+    pub fn toggle_definition_view(&mut self) {
+        if !matches!(self.right_panel_render(), RightPanelRender::Definition(_)) {
+            return;
+        }
+        self.definition_view = match self.definition_view {
+            DefinitionView::Preview => DefinitionView::Raw,
+            DefinitionView::Raw => DefinitionView::Preview,
+        };
+        self.right_scroll = 0;
     }
 
     pub fn move_right_up(&mut self) {
-        match self.right_panel_content {
-            RightPanelContent::ConsumedTriggers => self.move_right_cursor_up(),
-            RightPanelContent::Contextual => {
-                if self.right_panel_is_top_down() {
-                    self.right_scroll = self.right_scroll.saturating_sub(1);
-                } else {
-                    self.right_scroll += 1;
-                }
+        match self.right_panel_render() {
+            RightPanelRender::ConsumedTriggers => self.move_right_cursor_up(),
+            RightPanelRender::Logs => self.right_scroll += 1,
+            RightPanelRender::Definition(_) => {
+                self.right_scroll = self.right_scroll.saturating_sub(1)
             }
         }
     }
 
     pub fn move_right_down(&mut self) {
-        match self.right_panel_content {
-            RightPanelContent::ConsumedTriggers => self.move_right_cursor_down(),
-            RightPanelContent::Contextual => {
-                if self.right_panel_is_top_down() {
-                    self.right_scroll += 1;
-                } else {
-                    self.right_scroll = self.right_scroll.saturating_sub(1);
-                }
-            }
+        match self.right_panel_render() {
+            RightPanelRender::ConsumedTriggers => self.move_right_cursor_down(),
+            RightPanelRender::Logs => self.right_scroll = self.right_scroll.saturating_sub(1),
+            RightPanelRender::Definition(_) => self.right_scroll += 1,
         }
     }
 
     pub fn scroll_right_page_up(&mut self) {
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height);
         } else {
             self.right_scroll += self.right_panel_height;
@@ -677,7 +703,7 @@ impl App {
     }
 
     pub fn scroll_right_page_down(&mut self) {
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll += self.right_panel_height;
         } else {
             self.right_scroll = self.right_scroll.saturating_sub(self.right_panel_height);
@@ -686,7 +712,7 @@ impl App {
 
     pub fn scroll_right_half_page_up(&mut self) {
         let half = (self.right_panel_height / 2).max(1);
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll = self.right_scroll.saturating_sub(half);
         } else {
             self.right_scroll += half;
@@ -695,7 +721,7 @@ impl App {
 
     pub fn scroll_right_half_page_down(&mut self) {
         let half = (self.right_panel_height / 2).max(1);
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll += half;
         } else {
             self.right_scroll = self.right_scroll.saturating_sub(half);
@@ -703,7 +729,7 @@ impl App {
     }
 
     pub fn scroll_right_top(&mut self) {
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll = 0;
         } else {
             // Logs: lines-from-bottom — top is usize::MAX (clamped to auto_bottom on render)
@@ -712,11 +738,15 @@ impl App {
     }
 
     pub fn scroll_right_bottom(&mut self) {
-        if self.right_panel_is_top_down() {
+        if self.right_panel_scrolls_top_down() {
             self.right_scroll = usize::MAX;
         } else {
             self.right_scroll = 0;
         }
+    }
+
+    fn right_panel_scrolls_top_down(&self) -> bool {
+        !matches!(self.right_panel_render(), RightPanelRender::Logs)
     }
 
     pub fn selected_consumed_triggers(&self) -> &[String] {
@@ -1751,5 +1781,61 @@ mod tests {
 
         // THEN expanded stays false
         assert!(!app.workflows[0].expanded);
+    }
+
+    #[test]
+    fn toggle_definition_view_flips_between_preview_and_raw() {
+        // GIVEN an app showing the structured preview
+        let mut app = make_test_app();
+        assert_eq!(app.definition_view, DefinitionView::Preview);
+
+        // WHEN the definition view is toggled
+        app.toggle_definition_view();
+
+        // THEN it shows the raw workflow, and back again on a second toggle
+        assert_eq!(app.definition_view, DefinitionView::Raw);
+        app.toggle_definition_view();
+        assert_eq!(app.definition_view, DefinitionView::Preview);
+    }
+
+    #[test]
+    fn toggle_definition_view_is_no_op_when_not_showing_definition() {
+        // GIVEN the right panel shows logs (cursor on a run)
+        let mut app = make_test_app();
+        app.workflows.push(WorkflowEntry {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Dormant,
+            runs: vec![WorkflowRun::new("wf".to_string())],
+            expanded: true,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+            update_available: None,
+            origin: None,
+        });
+        app.cursor = CursorTarget::Run(0, 0);
+        assert_eq!(app.right_panel_render(), RightPanelRender::Logs);
+        app.right_scroll = 5;
+
+        // WHEN the definition toggle key is pressed
+        app.toggle_definition_view();
+
+        // THEN the preference is unchanged and scroll is preserved
+        assert_eq!(app.definition_view, DefinitionView::Preview);
+        assert_eq!(app.right_scroll, 5);
+    }
+
+    #[test]
+    fn toggle_definition_view_resets_scroll() {
+        // GIVEN a panel scrolled away from the top
+        let mut app = make_test_app();
+        app.right_scroll = 12;
+
+        // WHEN the definition view is toggled
+        app.toggle_definition_view();
+
+        // THEN scroll returns to the top, since the two views differ in length
+        assert_eq!(app.right_scroll, 0);
     }
 }

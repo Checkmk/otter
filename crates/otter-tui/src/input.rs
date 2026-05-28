@@ -142,6 +142,7 @@ fn handle_right_panel(app: &mut App, key: KeyEvent) {
         KeyCode::Home | KeyCode::Char('g') => app.scroll_right_top(),
         KeyCode::End | KeyCode::Char('G') => app.scroll_right_bottom(),
         KeyCode::Delete => app.delete_selected_consumed_trigger(),
+        KeyCode::Char('w') => app.toggle_definition_view(),
         _ => {}
     }
 }

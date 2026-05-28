@@ -9,7 +9,7 @@ use ratatui::{
 
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
-use crate::app::{App, CursorTarget, Focus, RightPanelContent};
+use crate::app::{App, CursorTarget, DefinitionView, Focus, RightPanelRender};
 use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
@@ -111,21 +111,12 @@ pub fn with_scroll_indicators(
 }
 
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    match &app.right_panel_content {
-        RightPanelContent::ConsumedTriggers => {
-            let is_focused = app.modal.is_none() && app.focus == Focus::Right;
-            render_consumed_triggers(f, app, area, is_focused);
-        }
-        RightPanelContent::Contextual => {
-            let is_focused = app.modal.is_none() && app.focus == Focus::Right;
-            match app.cursor {
-                CursorTarget::Run(_, _) => render_logs(f, app, area, is_focused),
-                CursorTarget::Workflow(_)
-                | CursorTarget::Marketplace(_)
-                | CursorTarget::MarketplaceWorkflow(_, _) => {
-                    render_definition_preview(f, app, area, is_focused)
-                }
-            }
+    let is_focused = app.modal.is_none() && app.focus == Focus::Right;
+    match app.right_panel_render() {
+        RightPanelRender::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
+        RightPanelRender::Logs => render_logs(f, app, area, is_focused),
+        RightPanelRender::Definition(view) => {
+            render_definition_preview(f, app, area, is_focused, view)
         }
     }
 }
@@ -638,17 +629,28 @@ fn append_step_lines<'a, F>(
     }
 }
 
-fn render_definition_preview(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
+fn render_definition_preview(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    is_focused: bool,
+    view: DefinitionView,
+) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
     app.right_panel_height = inner_height;
 
-    let lines: Vec<Line> = match app.cursor {
-        CursorTarget::Workflow(_) => build_installed_preview(app, inner_width),
-        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
-            build_marketplace_preview(app, inner_width)
-        }
-        CursorTarget::Run(_, _) => Vec::new(),
+    let lines: Vec<Line> = match view {
+        DefinitionView::Raw => build_raw_lines(app, inner_width),
+        DefinitionView::Preview => match app.cursor {
+            CursorTarget::Workflow(_) => build_installed_preview(app, inner_width),
+            CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
+                build_marketplace_preview(app, inner_width)
+            }
+            // The render dispatcher routes Run cursors to logs, so this arm
+            // is unreachable in practice.
+            CursorTarget::Run(_, _) => Vec::new(),
+        },
     };
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
@@ -656,14 +658,51 @@ fn render_definition_preview(f: &mut Frame, app: &mut App, area: Rect, is_focuse
     app.right_scroll = app.right_scroll.min(auto_bottom);
     let scroll_offset = if is_focused { app.right_scroll } else { 0 };
 
+    let title = match view {
+        DefinitionView::Preview => "Definition (preview)",
+        DefinitionView::Raw => "Definition (raw)",
+    };
     let visible = with_scroll_indicators(lines, scroll_offset, inner_height);
     let block = if is_focused {
-        panel_focused("Definition")
+        panel_focused(title)
     } else {
-        panel("Definition")
+        panel(title)
     };
     let para = Paragraph::new(visible).block(block);
     f.render_widget(para, area);
+}
+
+/// Renders the unparsed workflow TOML
+fn build_raw_lines<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
+    let dim = Style::default()
+        .fg(theme::current().dim)
+        .bg(theme::current().background);
+
+    let toml = match app.cursor {
+        CursorTarget::Workflow(_) => app.selected_workflow().and_then(|e| e.toml_content.clone()),
+        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => app
+            .selected_marketplace_pkg_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("workflow.toml")).ok()),
+        CursorTarget::Run(_, _) => None,
+    };
+
+    let Some(toml) = toml else {
+        return vec![Line::from(Span::styled("No config available", dim))];
+    };
+
+    toml.lines()
+        .flat_map(|raw_line| {
+            let line = raw_line.replace('\r', "");
+            if inner_width == 0 || line.len() <= inner_width {
+                vec![Line::from(Span::styled(line, base_style()))]
+            } else {
+                wrap_into_chunks(&line, inner_width)
+                    .into_iter()
+                    .map(|chunk| Line::from(Span::styled(chunk, base_style())))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 fn build_installed_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
@@ -738,8 +777,48 @@ fn build_marketplace_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>>
                     .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
             },
         )
-    } else if app.selected_marketplace().is_some() {
-        Vec::new()
+    } else if let Some(m) = app.selected_marketplace() {
+        let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
+        let installed = m
+            .workflows
+            .iter()
+            .filter(|w| app.is_workflow_installed(&w.name))
+            .count();
+        let updates = m
+            .workflows
+            .iter()
+            .filter(|w| app.workflow_update_available(&w.name).is_some())
+            .count();
+
+        let mut workflows_value = format!("{} published · {installed} installed", m.workflow_count);
+        if updates > 0 {
+            workflows_value.push_str(&format!(" · {updates} update"));
+            if updates > 1 {
+                workflows_value.push('s');
+            }
+        }
+        let last_fetched = m
+            .last_fetched_at
+            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "never".to_string());
+
+        let label = |text: &str| Span::styled(format!("  {text:<13}"), dim);
+        vec![
+            Line::from(Span::styled(m.name.clone(), bold)),
+            Line::from(""),
+            Line::from(vec![
+                label("URL"),
+                Span::styled(m.url.clone(), base_style()),
+            ]),
+            Line::from(vec![
+                label("Workflows"),
+                Span::styled(workflows_value, base_style()),
+            ]),
+            Line::from(vec![
+                label("Last fetched"),
+                Span::styled(last_fetched, base_style()),
+            ]),
+        ]
     } else {
         vec![Line::from(Span::styled(
             "No marketplace selected".to_string(),
@@ -800,12 +879,20 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
-    match app.right_panel_content {
-        RightPanelContent::Contextual => vec![
+    match app.right_panel_render() {
+        RightPanelRender::Logs => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
         ],
-        RightPanelContent::ConsumedTriggers => vec![
+        RightPanelRender::Definition(view) => vec![
+            PanelHint::new("[↑↓]", "Scroll"),
+            PanelHint::new("[Home/End]", "Top/Bottom"),
+            match view {
+                DefinitionView::Preview => PanelHint::new("[W]", "Show raw workflow"),
+                DefinitionView::Raw => PanelHint::new("[W]", "Show workflow preview"),
+            },
+        ],
+        RightPanelRender::ConsumedTriggers => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Del]", "Delete trigger"),
             PanelHint::new("[Esc]", "Close"),
@@ -816,6 +903,7 @@ pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::RightPanelContent;
     use chrono::Utc;
     use otter_core::types::LogEntry;
     use std::path::PathBuf;
@@ -848,6 +936,55 @@ mod tests {
 
     fn line_text(line: &Line) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn marketplace_preview_shows_stats_when_marketplace_selected() {
+        // GIVEN a marketplace with two workflows, one of them installed
+        let mut app = make_app();
+        app.marketplaces = vec![otter_core::types::MarketplaceStatus {
+            name: "acme".to_string(),
+            url: "/home/user/acme".to_string(),
+            workflow_count: 2,
+            last_fetched_at: None,
+            workflows: vec![
+                otter_core::types::MarketplaceWorkflowEntry {
+                    name: "installed-wf".to_string(),
+                    version: Some("1.0.0".to_string()),
+                    description: None,
+                    path: "installed-wf".to_string(),
+                },
+                otter_core::types::MarketplaceWorkflowEntry {
+                    name: "fresh-wf".to_string(),
+                    version: Some("1.0.0".to_string()),
+                    description: None,
+                    path: "fresh-wf".to_string(),
+                },
+            ],
+        }];
+        app.workflows.push(crate::app::WorkflowEntry {
+            name: "installed-wf".to_string(),
+            kind: otter_core::types::WorkflowType::Looping,
+            state: otter_core::types::WorkflowState::Dormant,
+            runs: Vec::new(),
+            expanded: false,
+            trigger: None,
+            toml_content: None,
+            autostart: false,
+            update_available: None,
+            origin: None,
+        });
+        app.cursor = CursorTarget::Marketplace(0);
+
+        // WHEN the marketplace row (not a workflow) is selected
+        let lines = build_marketplace_preview(&app, 80);
+
+        // THEN the panel shows the marketplace stats
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("acme"));
+        assert!(text.contains("/home/user/acme"));
+        assert!(text.contains("2 published · 1 installed"));
+        assert!(text.contains("never"));
     }
 
     fn is_progress_line(line: &Line) -> bool {
