@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use otter_core::types::{RunStatus, TriggerDef, WorkflowState, WorkflowType};
@@ -15,10 +17,76 @@ use crate::status_bar::PanelHint;
 use crate::styles::{base_style, spinner_frame};
 use crate::theme;
 
-/// Top "Workflows" panel — lists installed workflows and their runs. Stateless
-/// for now.
 #[derive(Default)]
-pub struct RunsPanel;
+pub struct RunsPanel {
+    expanded: HashSet<String>,
+    pending_start: Option<String>,
+}
+
+impl RunsPanel {
+    pub fn is_expanded(&self, name: &str) -> bool {
+        self.expanded.contains(name)
+    }
+
+    pub fn toggle(&mut self, name: &str) -> bool {
+        if self.expanded.remove(name) {
+            false
+        } else {
+            self.expanded.insert(name.to_string());
+            true
+        }
+    }
+
+    pub fn retain<F: Fn(&str) -> bool>(&mut self, keep: F) {
+        self.expanded.retain(|k| keep(k));
+    }
+
+    /// Called when a new run is inserted for `workflow_name`. If we just
+    /// started this workflow ourselves, expand it; returns true when an
+    /// auto-expand happened so the caller can move the cursor to the new run.
+    pub fn on_run_added(&mut self, workflow_name: &str) -> bool {
+        if self.pending_start.as_deref() == Some(workflow_name) {
+            self.expanded.insert(workflow_name.to_string());
+            self.pending_start = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Toggle `autostart` on the currently-selected workflow row. Returns the
+    /// new autostart value, or `None` when the cursor isn't on a workflow row.
+    pub fn toggle_autostart_for_selected(&mut self, app: &mut App) -> Option<bool> {
+        use otter_core::types::DaemonCommand;
+
+        let CursorTarget::Workflow(wi) = app.ui.cursor else {
+            return None;
+        };
+        let entry = app.workflows.get_mut(wi)?;
+        let name = entry.name.clone();
+        entry.autostart = !entry.autostart;
+        let autostart = entry.autostart;
+        if autostart {
+            self.pending_start = Some(name.clone());
+            let _ = app.cmd_tx.try_send(DaemonCommand::EnableWorkflow { name });
+        } else {
+            let _ = app.cmd_tx.try_send(DaemonCommand::DisableWorkflow { name });
+        }
+        Some(autostart)
+    }
+
+    /// Start the currently-selected workflow (Enter on a Dormant workflow row).
+    pub fn start_selected(&mut self, app: &mut App) {
+        use otter_core::types::DaemonCommand;
+
+        let Some(entry) = app.selected_workflow() else {
+            return;
+        };
+        let name = entry.name.clone();
+        self.pending_start = Some(name.clone());
+        let _ = app.cmd_tx.try_send(DaemonCommand::Start { name });
+    }
+}
 
 fn workflow_state_color(
     state: &WorkflowState,
@@ -54,15 +122,27 @@ fn workflow_state_color(
 
 impl Panel for RunsPanel {
     fn render(&mut self, f: &mut Frame, app: &App, area: Rect, _focused: bool) {
-        render_runs(f, app, area);
+        render_runs(f, app, self, area);
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
-        use otter_core::types::RunStatus;
+        use otter_core::types::{DaemonCommand, RunStatus};
 
         match key.code {
             KeyCode::Char(' ') => {
-                app.toggle_expanded();
+                let CursorTarget::Workflow(wi) = app.ui.cursor else {
+                    return true;
+                };
+                let Some(entry) = app.workflows.get(wi) else {
+                    return true;
+                };
+                if entry.runs.is_empty() {
+                    return true;
+                }
+                if !self.toggle(&entry.name) {
+                    // Collapsed: snap cursor back to the workflow row.
+                    app.ui.cursor = CursorTarget::Workflow(wi);
+                }
                 true
             }
             KeyCode::Delete => {
@@ -70,16 +150,14 @@ impl Panel for RunsPanel {
                 true
             }
             KeyCode::Char('a') => {
-                if matches!(app.selection(), Selection::Workflow(_)) {
-                    app.toggle_enable_selected();
-                }
+                self.toggle_autostart_for_selected(app);
                 true
             }
             KeyCode::Enter => {
                 enum Verdict {
                     StopRun,
                     StartWorkflow,
-                    StopWorkflow,
+                    StopWorkflow(String),
                     Noop,
                 }
                 let verdict = match app.selection() {
@@ -93,14 +171,16 @@ impl Panel for RunsPanel {
                     }
                     Selection::Workflow(e) => match e.state {
                         WorkflowState::Dormant => Verdict::StartWorkflow,
-                        WorkflowState::Running => Verdict::StopWorkflow,
+                        WorkflowState::Running => Verdict::StopWorkflow(e.name.clone()),
                     },
                     _ => Verdict::Noop,
                 };
                 match verdict {
                     Verdict::StopRun => app.stop_selected_run(),
-                    Verdict::StartWorkflow => app.start_selected(),
-                    Verdict::StopWorkflow => app.stop_selected(),
+                    Verdict::StartWorkflow => self.start_selected(app),
+                    Verdict::StopWorkflow(name) => {
+                        let _ = app.cmd_tx.try_send(DaemonCommand::Stop { name });
+                    }
                     Verdict::Noop => {}
                 }
                 true
@@ -110,11 +190,11 @@ impl Panel for RunsPanel {
     }
 
     fn hints(&self, app: &App) -> Vec<PanelHint> {
-        left_panel_hints(app)
+        left_panel_hints(app, self)
     }
 }
 
-pub(crate) fn render_runs(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn render_runs(f: &mut Frame, app: &App, panel: &RunsPanel, area: Rect) {
     let inner_width = area.width as usize;
     let tick = app.ui.tick;
 
@@ -149,7 +229,7 @@ pub(crate) fn render_runs(f: &mut Frame, app: &App, area: Rect) {
         }
 
         let expand_char = if !entry.runs.is_empty() {
-            if entry.expanded {
+            if panel.is_expanded(&entry.name) {
                 "▼ "
             } else {
                 "▶ "
@@ -190,7 +270,7 @@ pub(crate) fn render_runs(f: &mut Frame, app: &App, area: Rect) {
             is_workflow_selected,
         ));
 
-        if entry.expanded {
+        if panel.is_expanded(&entry.name) {
             for (ri, run) in entry.runs.iter().enumerate() {
                 let is_run_selected = app.ui.cursor == CursorTarget::Run(wi, ri);
                 if is_run_selected {
@@ -244,12 +324,13 @@ pub(crate) fn render_runs(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Returns the keybinding hints this panel contributes to the status bar.
-pub fn left_panel_hints(app: &App) -> Vec<PanelHint> {
+pub fn left_panel_hints(app: &App, panel: &RunsPanel) -> Vec<PanelHint> {
     let mut hints: Vec<PanelHint> = vec![];
 
     if let CursorTarget::Workflow(wi) = app.ui.cursor {
         if let Some(entry) = app.workflows.get(wi) {
-            if entry.expanded && !entry.runs.is_empty() {
+            let expanded = panel.is_expanded(&entry.name);
+            if expanded && !entry.runs.is_empty() {
                 hints.push(PanelHint::new("[Space]", "Hide runs"));
             } else if !entry.runs.is_empty() {
                 hints.push(PanelHint::new("[Space]", "Show runs"));
@@ -322,14 +403,12 @@ mod tests {
         kind: WorkflowType,
         state: WorkflowState,
         runs: Vec<WorkflowRun>,
-        expanded: bool,
     ) -> WorkflowEntry {
         WorkflowEntry {
             name: name.to_string(),
             kind,
             state,
             runs,
-            expanded,
             trigger: None,
             toml_content: None,
             autostart: false,
@@ -346,17 +425,17 @@ mod tests {
     fn left_panel_hints_empty_workflow_has_no_space_hint() {
         // GIVEN a workflow with no runs
         let mut app = make_app();
+        let panel = RunsPanel::default();
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![],
-            false,
         ));
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN no [Space] hint
         assert!(!hint_keys(&hints).contains(&"[Space]"));
@@ -366,18 +445,18 @@ mod tests {
     fn left_panel_hints_collapsed_workflow_with_runs_shows_show_hint() {
         // GIVEN a collapsed workflow with runs
         let mut app = make_app();
+        let panel = RunsPanel::default();
         let run = WorkflowRun::new("wf".to_string());
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![run],
-            false,
         ));
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [Space] Show runs is present
         let space = hints.iter().find(|h| h.key == "[Space]");
@@ -389,18 +468,19 @@ mod tests {
     fn left_panel_hints_expanded_workflow_shows_hide_hint() {
         // GIVEN an expanded workflow
         let mut app = make_app();
+        let mut panel = RunsPanel::default();
         let run = WorkflowRun::new("wf".to_string());
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![run],
-            true,
         ));
+        panel.expanded.insert("wf".into());
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [Space] Hide runs is present
         let space = hints.iter().find(|h| h.key == "[Space]");
@@ -412,17 +492,18 @@ mod tests {
     fn left_panel_hints_expanded_workflow_no_runs_shows_no_space_hint() {
         // GIVEN an expanded workflow with no runs
         let mut app = make_app();
+        let mut panel = RunsPanel::default();
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![],
-            true,
         ));
+        panel.expanded.insert("wf".into());
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN no [Space] hint
         assert!(!hint_keys(&hints).contains(&"[Space]"));
@@ -432,18 +513,19 @@ mod tests {
     fn left_panel_hints_run_cursor_shows_delete_hint() {
         // GIVEN cursor on a run
         let mut app = make_app();
+        let mut panel = RunsPanel::default();
         let run = WorkflowRun::new("wf".to_string());
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![run],
-            true,
         ));
+        panel.expanded.insert("wf".into());
         app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [Del] Delete run hint present
         assert!(hint_keys(&hints).contains(&"[Del]"));
@@ -453,17 +535,17 @@ mod tests {
     fn left_panel_hints_dormant_workflow_shows_start() {
         // GIVEN a dormant workflow
         let mut app = make_app();
+        let panel = RunsPanel::default();
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![],
-            false,
         ));
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [Enter] Start
         let enter = hints.iter().find(|h| h.key == "[Enter]");
@@ -475,17 +557,17 @@ mod tests {
     fn left_panel_hints_running_shows_stop() {
         // GIVEN a running workflow
         let mut app = make_app();
+        let panel = RunsPanel::default();
         app.workflows.push(make_entry(
             "wf",
             WorkflowType::Looping,
             WorkflowState::Running,
             vec![],
-            false,
         ));
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
         let keys = hint_keys(&hints);
 
         // THEN [Enter] Stop, no [p] pause
@@ -499,6 +581,7 @@ mod tests {
     fn left_panel_hints_active_run_shows_stop_and_delete() {
         // GIVEN cursor on a running run
         let mut app = make_app();
+        let mut panel = RunsPanel::default();
         let mut run = WorkflowRun::new("wf".to_string());
         run.status = RunStatus::Running;
         app.workflows.push(make_entry(
@@ -506,12 +589,12 @@ mod tests {
             WorkflowType::Looping,
             WorkflowState::Running,
             vec![run],
-            true,
         ));
+        panel.expanded.insert("wf".into());
         app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
         let keys = hint_keys(&hints);
 
         // THEN [Enter] Stop and [Del] Delete, exactly one Stop (no duplicate workflow-level hint)
@@ -532,19 +615,14 @@ mod tests {
     fn left_panel_hints_shows_enable_hint_for_disabled_workflow() {
         // GIVEN a disabled workflow
         let mut app = make_app();
-        let mut entry = make_entry(
-            "wf",
-            WorkflowType::Looping,
-            WorkflowState::Dormant,
-            vec![],
-            false,
-        );
+        let panel = RunsPanel::default();
+        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![]);
         entry.autostart = false;
         app.workflows.push(entry);
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [A] Enable auto-start
         let e_hint = hints.iter().find(|h| h.key == "[A]");
@@ -556,19 +634,14 @@ mod tests {
     fn left_panel_hints_shows_disable_hint_for_enabled_workflow() {
         // GIVEN an enabled workflow
         let mut app = make_app();
-        let mut entry = make_entry(
-            "wf",
-            WorkflowType::Looping,
-            WorkflowState::Dormant,
-            vec![],
-            false,
-        );
+        let panel = RunsPanel::default();
+        let mut entry = make_entry("wf", WorkflowType::Looping, WorkflowState::Dormant, vec![]);
         entry.autostart = true;
         app.workflows.push(entry);
         app.ui.cursor = CursorTarget::Workflow(0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
 
         // THEN [A] Disable auto-start
         let e_hint = hints.iter().find(|h| h.key == "[A]");
@@ -580,6 +653,7 @@ mod tests {
     fn left_panel_hints_completed_run_shows_only_delete() {
         // GIVEN cursor on a completed run
         let mut app = make_app();
+        let mut panel = RunsPanel::default();
         let mut run = WorkflowRun::new("wf".to_string());
         run.status = RunStatus::Completed;
         app.workflows.push(make_entry(
@@ -587,12 +661,12 @@ mod tests {
             WorkflowType::Looping,
             WorkflowState::Dormant,
             vec![run],
-            true,
         ));
+        panel.expanded.insert("wf".into());
         app.ui.cursor = CursorTarget::Run(0, 0);
 
         // WHEN
-        let hints = left_panel_hints(&app);
+        let hints = left_panel_hints(&app, &panel);
         let keys = hint_keys(&hints);
 
         // THEN [Del] Delete run, no [Enter] Stop run

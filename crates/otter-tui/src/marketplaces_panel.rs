@@ -14,9 +14,29 @@ use crate::status_bar::PanelHint;
 use crate::styles::base_style;
 use crate::theme;
 
-/// Marketplaces footer panel. Stateless for now.
 #[derive(Default)]
-pub struct MarketplacesPanel;
+pub struct MarketplacesPanel {
+    expanded: std::collections::HashSet<String>,
+}
+
+impl MarketplacesPanel {
+    pub fn is_expanded(&self, name: &str) -> bool {
+        self.expanded.contains(name)
+    }
+
+    pub fn toggle_expanded(&mut self, name: &str) -> bool {
+        if self.expanded.remove(name) {
+            false
+        } else {
+            self.expanded.insert(name.to_string());
+            true
+        }
+    }
+
+    pub fn retain_expanded<F: Fn(&str) -> bool>(&mut self, keep: F) {
+        self.expanded.retain(|k| keep(k));
+    }
+}
 
 impl Panel for MarketplacesPanel {
     fn render(&mut self, _f: &mut Frame, _app: &App, _area: Rect, _focused: bool) {
@@ -26,25 +46,52 @@ impl Panel for MarketplacesPanel {
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char(' ') => {
-                app.toggle_expanded();
-                true
-            }
-            _ => false,
+        if !matches!(key.code, KeyCode::Char(' ')) {
+            return false;
         }
+        let CursorTarget::Marketplace(mi) = app.ui.cursor else {
+            return true;
+        };
+        let Some(m) = app.marketplaces.get(mi) else {
+            return true;
+        };
+        if m.workflows.is_empty() {
+            return true;
+        }
+        if !self.toggle_expanded(&m.name) {
+            // Collapsed: snap cursor back to the marketplace row.
+            app.ui.cursor = CursorTarget::Marketplace(mi);
+        }
+        true
     }
 
     fn hints(&self, app: &App) -> Vec<PanelHint> {
-        marketplaces_hints(app)
+        let mut hints = Vec::new();
+        match app.ui.cursor {
+            CursorTarget::Marketplace(mi) => {
+                if let Some(m) = app.marketplaces.get(mi) {
+                    if !m.workflows.is_empty() {
+                        let label = if self.is_expanded(&m.name) {
+                            "Hide workflows"
+                        } else {
+                            "Show workflows"
+                        };
+                        hints.push(PanelHint::new("[Space]", label));
+                    }
+                }
+            }
+            CursorTarget::MarketplaceWorkflow(_, _) => {}
+            _ => {}
+        }
+        hints
     }
 }
 
-pub fn footer_height(app: &App, panel_height: u16) -> u16 {
+pub fn footer_height(app: &App, panel: &MarketplacesPanel, panel_height: u16) -> u16 {
     if app.marketplaces.is_empty() {
         return 0;
     }
-    let natural = visible_rows(app).len() as u16 + 2; // +1 divider line, +1 trailing blank
+    let natural = visible_rows(app, panel).len() as u16 + 2; // +1 divider line, +1 trailing blank
     let cap = (panel_height / 3).max(3);
     natural.min(cap)
 }
@@ -60,11 +107,11 @@ pub(crate) fn workflow_is_visible(
 
 /// Builds the flat list of (CursorTarget, line) rows the panel will render.
 /// Used both for rendering and for the height calculation above.
-fn visible_rows(app: &App) -> Vec<(CursorTarget, RowKind)> {
+fn visible_rows(app: &App, panel: &MarketplacesPanel) -> Vec<(CursorTarget, RowKind)> {
     let mut rows = Vec::new();
     for (mi, m) in app.marketplaces.iter().enumerate() {
         rows.push((CursorTarget::Marketplace(mi), RowKind::Marketplace));
-        if app.ui.is_marketplace_expanded(&m.name) {
+        if panel.is_expanded(&m.name) {
             for (wi, w) in m.workflows.iter().enumerate() {
                 if !workflow_is_visible(app, w) {
                     continue;
@@ -82,7 +129,7 @@ enum RowKind {
     Workflow,
 }
 
-pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
+pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, area: Rect) {
     if app.marketplaces.is_empty() || area.height == 0 {
         return;
     }
@@ -128,7 +175,7 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
         if is_selected {
             selected_index = Some(items.len());
         }
-        let expanded = app.ui.is_marketplace_expanded(&m.name);
+        let expanded = panel.is_expanded(&m.name);
         let visible_count = m
             .workflows
             .iter()
@@ -206,28 +253,6 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, list_area, &mut state);
 }
 
-/// Hints for the status bar when the cursor is in the marketplaces footer.
-pub fn marketplaces_hints(app: &App) -> Vec<PanelHint> {
-    let mut hints = Vec::new();
-    match app.ui.cursor {
-        CursorTarget::Marketplace(mi) => {
-            if let Some(m) = app.marketplaces.get(mi) {
-                if !m.workflows.is_empty() {
-                    let label = if app.ui.is_marketplace_expanded(&m.name) {
-                        "Hide workflows"
-                    } else {
-                        "Show workflows"
-                    };
-                    hints.push(PanelHint::new("[Space]", label));
-                }
-            }
-        }
-        CursorTarget::MarketplaceWorkflow(_, _) => {}
-        _ => {}
-    }
-    hints
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,8 +292,9 @@ mod tests {
     fn footer_height_zero_when_no_marketplaces() {
         // GIVEN no marketplaces
         let app = make_app();
+        let panel = MarketplacesPanel::default();
         // WHEN
-        let h = footer_height(&app, 30);
+        let h = footer_height(&app, &panel, 30);
         // THEN
         assert_eq!(h, 0);
     }
@@ -277,6 +303,7 @@ mod tests {
     fn footer_height_caps_at_panel_third() {
         // GIVEN many marketplaces, all expanded
         let mut app = make_app();
+        let mut panel = MarketplacesPanel::default();
         let mut ms = Vec::new();
         for i in 0..10 {
             ms.push(make_marketplace(
@@ -286,10 +313,10 @@ mod tests {
         }
         app.marketplaces = ms;
         for m in &app.marketplaces {
-            app.ui.marketplace_expanded.insert(m.name.clone(), true);
+            panel.expanded.insert(m.name.clone());
         }
         // WHEN panel is 30 lines
-        let h = footer_height(&app, 30);
+        let h = footer_height(&app, &panel, 30);
         // THEN footer takes at most 1/3 of the panel
         assert!(h <= 10);
     }
@@ -298,9 +325,10 @@ mod tests {
     fn footer_height_uses_natural_size_when_small() {
         // GIVEN one collapsed marketplace
         let mut app = make_app();
+        let panel = MarketplacesPanel::default();
         app.marketplaces = vec![make_marketplace("acme", vec!["a", "b"])];
         // WHEN
-        let h = footer_height(&app, 30);
+        let h = footer_height(&app, &panel, 30);
         // THEN one divider line + one row + one trailing blank = 3
         assert_eq!(h, 3);
     }
@@ -315,7 +343,6 @@ mod tests {
             kind: otter_core::types::WorkflowType::Looping,
             state: otter_core::types::WorkflowState::Dormant,
             runs: Vec::new(),
-            expanded: false,
             trigger: None,
             toml_content: None,
             autostart: false,
@@ -340,7 +367,6 @@ mod tests {
             kind: otter_core::types::WorkflowType::Looping,
             state: otter_core::types::WorkflowState::Dormant,
             runs: Vec::new(),
-            expanded: false,
             trigger: None,
             toml_content: None,
             autostart: false,
@@ -355,10 +381,11 @@ mod tests {
     fn marketplaces_hints_for_collapsed_marketplace_shows_show_workflows() {
         // GIVEN cursor on a collapsed marketplace with workflows
         let mut app = make_app();
+        let panel = MarketplacesPanel::default();
         app.marketplaces = vec![make_marketplace("acme", vec!["a"])];
         app.ui.cursor = CursorTarget::Marketplace(0);
         // WHEN
-        let hints = marketplaces_hints(&app);
+        let hints = panel.hints(&app);
         // THEN
         let space = hints.iter().find(|h| h.key == "[Space]");
         assert!(space.is_some());
@@ -369,11 +396,12 @@ mod tests {
     fn marketplaces_hints_for_expanded_marketplace_shows_hide_workflows() {
         // GIVEN expanded marketplace
         let mut app = make_app();
+        let mut panel = MarketplacesPanel::default();
         app.marketplaces = vec![make_marketplace("acme", vec!["a"])];
-        app.ui.marketplace_expanded.insert("acme".to_string(), true);
+        panel.expanded.insert("acme".into());
         app.ui.cursor = CursorTarget::Marketplace(0);
         // WHEN
-        let hints = marketplaces_hints(&app);
+        let hints = panel.hints(&app);
         // THEN
         assert_eq!(
             hints.iter().find(|h| h.key == "[Space]").unwrap().label,

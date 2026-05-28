@@ -12,13 +12,14 @@ fn make_test_app() -> App {
     App::new(tx, data.path().to_path_buf(), cfg.path().to_path_buf())
 }
 
-fn dispatch(app: &mut App, ev: DaemonEvent) {
-    app.handle_daemon_event(ev, &mut PanelSet::default());
+fn dispatch(app: &mut App, panels: &mut PanelSet, ev: DaemonEvent) {
+    app.handle_daemon_event(ev, panels);
 }
 
 #[test]
 fn cursor_navigation_moves_through_workflows_only_when_collapsed() {
     let mut app = make_test_app();
+    let panels = PanelSet::default();
 
     // Add two workflows
     app.workflows.push(WorkflowEntry {
@@ -26,7 +27,6 @@ fn cursor_navigation_moves_through_workflows_only_when_collapsed() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -38,7 +38,6 @@ fn cursor_navigation_moves_through_workflows_only_when_collapsed() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -50,15 +49,15 @@ fn cursor_navigation_moves_through_workflows_only_when_collapsed() {
     app.ui.cursor = CursorTarget::Workflow(0);
 
     // Move down
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(1));
 
     // Move down again (wraps to first)
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
 
     // Move up (wraps to last)
-    app.move_cursor_up();
+    app.move_cursor_up(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(1));
 }
 
@@ -67,6 +66,7 @@ fn cursor_navigation_includes_runs_when_expanded() {
     use chrono::Duration;
 
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     // Add workflow with runs
     let run1 = WorkflowRun::new("wf1".to_string());
@@ -78,7 +78,6 @@ fn cursor_navigation_includes_runs_when_expanded() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run2.clone(), run1.clone()], // newest first
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -88,29 +87,31 @@ fn cursor_navigation_includes_runs_when_expanded() {
 
     // Navigate through expanded workflow
     // Flat list should be: Workflow(0), Run(0, 0), Run(0, 1)
+    panels.runs.toggle("wf1");
     app.ui.cursor = CursorTarget::Workflow(0);
 
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
 
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 1));
 
     // Move down from last wraps to first
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
 
     // Move up from first wraps to last
-    app.move_cursor_up();
+    app.move_cursor_up(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 1));
 
-    app.move_cursor_up();
+    app.move_cursor_up(&panels);
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
 }
 
 #[test]
 fn toggle_expanded_expands_and_collapses_workflow() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let run = WorkflowRun::new("wf".to_string());
     app.workflows.push(WorkflowEntry {
@@ -118,7 +119,6 @@ fn toggle_expanded_expands_and_collapses_workflow() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -130,12 +130,12 @@ fn toggle_expanded_expands_and_collapses_workflow() {
     app.ui.cursor = CursorTarget::Workflow(0);
 
     // Toggle to expand
-    app.toggle_expanded();
-    assert!(app.workflows[0].expanded);
+    panels.runs.toggle("wf");
+    assert!(panels.runs.is_expanded("wf"));
 
     // Toggle to collapse
-    app.toggle_expanded();
-    assert!(!app.workflows[0].expanded);
+    panels.runs.toggle("wf");
+    assert!(!panels.runs.is_expanded("wf"));
 }
 
 #[test]
@@ -150,7 +150,6 @@ fn selected_run_id_reflects_cursor_target() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -168,6 +167,7 @@ fn selected_run_id_reflects_cursor_target() {
 #[test]
 fn handle_daemon_event_run_deleted_removes_run_from_workflows() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let run1 = WorkflowRun::new("wf".to_string());
     let run2 = WorkflowRun::new("wf".to_string());
@@ -178,7 +178,6 @@ fn handle_daemon_event_run_deleted_removes_run_from_workflows() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run2.clone(), run1.clone()],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -187,7 +186,11 @@ fn handle_daemon_event_run_deleted_removes_run_from_workflows() {
     });
 
     // Handle RunDeleted event
-    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run1_id });
+    dispatch(
+        &mut app,
+        &mut panels,
+        DaemonEvent::RunDeleted { run_id: run1_id },
+    );
 
     // run1 should be removed
     assert_eq!(app.workflows[0].runs.len(), 1);
@@ -197,13 +200,13 @@ fn handle_daemon_event_run_deleted_removes_run_from_workflows() {
 #[test]
 fn handle_daemon_event_run_updated_inserts_and_sorts_by_started_at() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -219,11 +222,11 @@ fn handle_daemon_event_run_updated_inserts_and_sorts_by_started_at() {
     run2.started_at = run1.started_at + chrono::Duration::seconds(10);
 
     // Add run2 first
-    dispatch(&mut app, DaemonEvent::RunUpdated(run2.clone()));
+    dispatch(&mut app, &mut panels, DaemonEvent::RunUpdated(run2.clone()));
     assert_eq!(app.workflows[0].runs.len(), 1);
 
     // Add run1
-    dispatch(&mut app, DaemonEvent::RunUpdated(run1.clone()));
+    dispatch(&mut app, &mut panels, DaemonEvent::RunUpdated(run1.clone()));
     assert_eq!(app.workflows[0].runs.len(), 2);
 
     // Verify sorting: newest first
@@ -234,6 +237,7 @@ fn handle_daemon_event_run_updated_inserts_and_sorts_by_started_at() {
 #[test]
 fn deleting_selected_run_snaps_cursor_to_previous_run() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let run1 = WorkflowRun::new("wf".to_string());
     let run2 = WorkflowRun::new("wf".to_string());
@@ -245,7 +249,6 @@ fn deleting_selected_run_snaps_cursor_to_previous_run() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run2, run1],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -254,11 +257,16 @@ fn deleting_selected_run_snaps_cursor_to_previous_run() {
     });
 
     // Cursor on the last run (index 1)
+    panels.runs.toggle("wf");
     app.ui.cursor = CursorTarget::Run(0, 1);
     assert_eq!(app.selected_run_id(), Some(run1_id));
 
     // Delete the selected run
-    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run1_id });
+    dispatch(
+        &mut app,
+        &mut panels,
+        DaemonEvent::RunDeleted { run_id: run1_id },
+    );
 
     // Cursor should snap to the previous run (index 0), not jump to another workflow
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
@@ -270,6 +278,7 @@ fn deleting_run_does_not_jump_to_another_workflow() {
     use chrono::Duration;
 
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let run_a = WorkflowRun::new("wf-a".to_string());
     let run_b0 = WorkflowRun::new("wf-b".to_string());
@@ -283,7 +292,6 @@ fn deleting_run_does_not_jump_to_another_workflow() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run_a],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -295,7 +303,6 @@ fn deleting_run_does_not_jump_to_another_workflow() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run_b1, run_b0.clone()],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -304,10 +311,16 @@ fn deleting_run_does_not_jump_to_another_workflow() {
     });
 
     // Cursor on the second run of wf-b (the older one)
+    panels.runs.toggle("wf-a");
+    panels.runs.toggle("wf-b");
     app.ui.cursor = CursorTarget::Run(1, 1);
 
     // Delete that run
-    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run_b0.id });
+    dispatch(
+        &mut app,
+        &mut panels,
+        DaemonEvent::RunDeleted { run_id: run_b0.id },
+    );
 
     // Should snap to Run(1, 0) — the first run of wf-b — NOT to wf-a or run_b1_id accidentally
     assert_eq!(app.ui.cursor, CursorTarget::Run(1, 0));
@@ -317,6 +330,7 @@ fn deleting_run_does_not_jump_to_another_workflow() {
 #[test]
 fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let run = WorkflowRun::new("wf".to_string());
     let run_id = run.id;
@@ -326,7 +340,6 @@ fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -339,7 +352,7 @@ fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
     assert_eq!(app.selected_run_id(), Some(run_id));
 
     // Delete the run
-    dispatch(&mut app, DaemonEvent::RunDeleted { run_id });
+    dispatch(&mut app, &mut panels, DaemonEvent::RunDeleted { run_id });
 
     // Cursor should snap to the workflow row
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
@@ -349,13 +362,13 @@ fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
 #[test]
 fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -364,10 +377,10 @@ fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
     });
 
     app.ui.cursor = CursorTarget::Workflow(0);
-    app.start_selected();
+    panels.runs.start_selected(&mut app);
 
     let run = WorkflowRun::new("wf".to_string());
-    dispatch(&mut app, DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, &mut panels, DaemonEvent::RunUpdated(run));
 
     // Cursor should move to the new run, not stay on the workflow row
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
@@ -376,13 +389,13 @@ fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
 #[test]
 fn handle_daemon_event_run_updated_does_not_auto_expand_without_start() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -392,22 +405,22 @@ fn handle_daemon_event_run_updated_does_not_auto_expand_without_start() {
 
     // Add a new run without starting the workflow
     let run = WorkflowRun::new("wf".to_string());
-    dispatch(&mut app, DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, &mut panels, DaemonEvent::RunUpdated(run));
 
     // Workflow should NOT be expanded
-    assert!(!app.workflows[0].expanded);
+    assert!(!panels.runs.is_expanded("wf"));
 }
 
 #[test]
 fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -417,16 +430,14 @@ fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
 
     // Start the workflow
     app.ui.cursor = CursorTarget::Workflow(0);
-    app.start_selected();
+    panels.runs.start_selected(&mut app);
 
     // Add a new run
     let run = WorkflowRun::new("wf".to_string());
-    dispatch(&mut app, DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, &mut panels, DaemonEvent::RunUpdated(run));
 
     // Workflow should be expanded
-    assert!(app.workflows[0].expanded);
-    // pending_workflow_start should be cleared
-    assert!(app.ui.pending_workflow_start.is_none());
+    assert!(panels.runs.is_expanded("wf"));
 }
 
 #[test]
@@ -434,6 +445,7 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
     use otter_core::types::{CheckpointAction, RunStatus};
 
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     let mut run = WorkflowRun::new("wf".to_string());
     run.status = RunStatus::WaitingCheckpoint;
@@ -444,7 +456,6 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Running,
         runs: vec![run],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -456,6 +467,7 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
     // Simulate checkpoint pending
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::CheckpointPending {
             run_id,
             step_index: 0,
@@ -475,6 +487,7 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
     // WHEN agent finishes and checkpoint re-presents
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::CheckpointPending {
             run_id,
             step_index: 0,
@@ -503,9 +516,11 @@ fn snap(name: &str, toml_content: Option<&str>, enabled: bool) -> WorkflowStatus
 #[test]
 fn workflows_snapshot_stores_toml_content() {
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::WorkflowsSnapshot(vec![snap(
             "wf",
             Some("name = \"wf\"\ntype = \"looping\"\n"),
@@ -524,11 +539,13 @@ fn workflows_snapshot_stores_toml_content() {
 fn step_progress_accumulates_and_persists_after_log() {
     // GIVEN
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
     let run_id = Uuid::new_v4();
 
     // WHEN progress arrives
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::StepProgress {
             run_id,
             step_index: 0,
@@ -537,6 +554,7 @@ fn step_progress_accumulates_and_persists_after_log() {
     );
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::StepProgress {
             run_id,
             step_index: 0,
@@ -550,6 +568,7 @@ fn step_progress_accumulates_and_persists_after_log() {
     // WHEN a LogAppended arrives for the same run
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::LogAppended(LogEntry {
             run_id,
             iteration: 0,
@@ -574,6 +593,7 @@ fn step_progress_accumulates_and_persists_after_log() {
 fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
     // GIVEN a workflow with a run and expanded=true
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
     let run = WorkflowRun::new("wf".to_string());
     let run_id = run.id;
     app.workflows.push(WorkflowEntry {
@@ -581,7 +601,6 @@ fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![run],
-        expanded: true,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -592,6 +611,7 @@ fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
     // WHEN a snapshot arrives that still contains wf (with a state change and toml)
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::WorkflowsSnapshot(vec![WorkflowStatus {
             name: "wf".to_string(),
             kind: WorkflowType::Looping,
@@ -604,11 +624,11 @@ fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
         }]),
     );
 
-    // THEN runs and expanded are preserved; state, toml, autostart updated
+    // THEN runs are preserved; state, toml, autostart updated. (Expand state
+    // lives on RunsPanel and is preserved separately by the panel's `retain`.)
     assert_eq!(app.workflows.len(), 1);
     assert_eq!(app.workflows[0].runs.len(), 1);
     assert_eq!(app.workflows[0].runs[0].id, run_id);
-    assert!(app.workflows[0].expanded);
     assert_eq!(app.workflows[0].state, WorkflowState::Running);
     assert_eq!(
         app.workflows[0].toml_content.as_deref(),
@@ -621,12 +641,12 @@ fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
 fn snapshot_removes_workflows_not_in_payload() {
     // GIVEN two workflows
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
     app.workflows.push(WorkflowEntry {
         name: "wf-a".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![WorkflowRun::new("wf-a".to_string())],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -638,7 +658,6 @@ fn snapshot_removes_workflows_not_in_payload() {
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -649,6 +668,7 @@ fn snapshot_removes_workflows_not_in_payload() {
     // WHEN a snapshot arrives that only contains wf-b
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::WorkflowsSnapshot(vec![snap("wf-b", None, false)]),
     );
 
@@ -664,12 +684,12 @@ fn toggle_enable_selected_enables_workflow() {
     let data = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(32);
     let mut app = App::new(tx, data.path().into(), cfg.path().into());
+    let mut panels = PanelSet::default();
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -679,11 +699,10 @@ fn toggle_enable_selected_enables_workflow() {
     app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN toggled
-    app.toggle_enable_selected();
+    panels.runs.toggle_autostart_for_selected(&mut app);
 
-    // THEN enabled flips to true, pending_workflow_start set, EnableWorkflow sent
+    // THEN enabled flips to true, EnableWorkflow sent
     assert!(app.workflows[0].autostart);
-    assert_eq!(app.ui.pending_workflow_start.as_deref(), Some("wf"));
     let cmd = rx.try_recv().expect("command sent");
     assert!(matches!(cmd, DaemonCommand::EnableWorkflow { name } if name == "wf"));
 }
@@ -695,12 +714,12 @@ fn toggle_enable_selected_disables_workflow() {
     let data = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(32);
     let mut app = App::new(tx, data.path().into(), cfg.path().into());
+    let mut panels = PanelSet::default();
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: true,
@@ -710,7 +729,7 @@ fn toggle_enable_selected_disables_workflow() {
     app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN toggled
-    app.toggle_enable_selected();
+    panels.runs.toggle_autostart_for_selected(&mut app);
 
     // THEN enabled flips to false, DisableWorkflow sent
     assert!(!app.workflows[0].autostart);
@@ -722,10 +741,12 @@ fn toggle_enable_selected_disables_workflow() {
 fn snapshot_stores_enabled_flag() {
     // GIVEN an app with no workflows
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
 
     // WHEN a snapshot arrives with enabled=true
     dispatch(
         &mut app,
+        &mut panels,
         DaemonEvent::WorkflowsSnapshot(vec![snap("wf", None, true)]),
     );
 
@@ -755,23 +776,23 @@ fn make_marketplace(name: &str, workflows: Vec<&str>) -> otter_core::types::Mark
 fn cursor_flows_from_runs_into_marketplaces() {
     // GIVEN one collapsed workflow and one collapsed marketplace
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
     app.workflows.push(WorkflowEntry {
         name: "wf".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
         update_available: None,
         origin: None,
     });
-    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
+    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])], &mut panels);
     app.ui.cursor = CursorTarget::Workflow(0);
 
     // WHEN moving down
-    app.move_cursor_down();
+    app.move_cursor_down(&panels);
 
     // THEN cursor lands on the marketplace
     assert_eq!(app.ui.cursor, CursorTarget::Marketplace(0));
@@ -781,15 +802,16 @@ fn cursor_flows_from_runs_into_marketplaces() {
 fn toggle_expanded_expands_marketplace() {
     // GIVEN a marketplace with workflows, cursor on it
     let mut app = make_test_app();
-    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a", "b"])]);
+    let mut panels = PanelSet::default();
+    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a", "b"])], &mut panels);
     app.ui.cursor = CursorTarget::Marketplace(0);
 
     // WHEN toggling
-    app.toggle_expanded();
+    panels.marketplaces.toggle_expanded("acme");
 
     // THEN it expands and the workflow rows show up in the flat list
-    assert!(app.ui.is_marketplace_expanded("acme"));
-    let flat = app.build_flat_list();
+    assert!(panels.marketplaces.is_expanded("acme"));
+    let flat = app.build_flat_list(&panels);
     assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 0)));
     assert!(flat.contains(&CursorTarget::MarketplaceWorkflow(0, 1)));
 }
@@ -798,16 +820,17 @@ fn toggle_expanded_expands_marketplace() {
 fn apply_marketplaces_snapshot_drops_stale_expand_state() {
     // GIVEN an expanded marketplace
     let mut app = make_test_app();
-    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
-    app.ui.marketplace_expanded.insert("acme".to_string(), true);
-    app.ui.marketplace_expanded.insert("gone".to_string(), true);
+    let mut panels = PanelSet::default();
+    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])], &mut panels);
+    panels.marketplaces.toggle_expanded("acme");
+    panels.marketplaces.toggle_expanded("gone");
 
     // WHEN a new snapshot arrives without 'gone'
-    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])]);
+    app.apply_marketplaces_snapshot(vec![make_marketplace("acme", vec!["a"])], &mut panels);
 
     // THEN stale expand state is removed
-    assert!(app.ui.is_marketplace_expanded("acme"));
-    assert!(!app.ui.marketplace_expanded.contains_key("gone"));
+    assert!(panels.marketplaces.is_expanded("acme"));
+    assert!(!panels.marketplaces.is_expanded("gone"));
 }
 
 #[test]
@@ -872,14 +895,17 @@ fn dismiss_modal_advances_to_next_first_launch_entry() {
 
 #[test]
 fn toggle_expanded_is_noop_on_workflow_without_runs() {
+    use crate::panel::Panel;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     // GIVEN a workflow with no runs
     let mut app = make_test_app();
+    let mut panels = PanelSet::default();
     app.workflows.push(WorkflowEntry {
         name: "empty".to_string(),
         kind: WorkflowType::Looping,
         state: WorkflowState::Dormant,
         runs: vec![],
-        expanded: false,
         trigger: None,
         toml_content: None,
         autostart: false,
@@ -888,9 +914,12 @@ fn toggle_expanded_is_noop_on_workflow_without_runs() {
     });
     app.ui.cursor = CursorTarget::Workflow(0);
 
-    // WHEN toggle_expanded is called
-    app.toggle_expanded();
+    // WHEN Space is pressed on the workflow row
+    panels.runs.handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+    );
 
-    // THEN expanded stays false
-    assert!(!app.workflows[0].expanded);
+    // THEN the expand state stays absent
+    assert!(!panels.runs.is_expanded("empty"));
 }

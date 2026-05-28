@@ -12,12 +12,7 @@ use uuid::Uuid;
 
 use crate::first_launch::FirstLaunchState;
 use crate::help_modal::HelpModal;
-
-#[derive(Debug, PartialEq)]
-pub enum Mode {
-    Normal,
-    FeedbackInput,
-}
+use crate::panel::PanelSet;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Modal {
@@ -51,7 +46,6 @@ pub struct WorkflowEntry {
     pub kind: WorkflowType,
     pub state: WorkflowState,
     pub runs: Vec<WorkflowRun>,
-    pub expanded: bool,
     pub trigger: Option<TriggerDef>,
     pub toml_content: Option<String>,
     pub autostart: bool,
@@ -79,19 +73,13 @@ pub enum Selection<'a> {
 pub struct Ui {
     pub cursor: CursorTarget,
     pub focus: Focus,
-    pub mode: Mode,
     pub modal: Option<Modal>,
-    pub feedback_input: String,
-    pub marketplace_expanded: HashMap<String, bool>,
     /// Modals queued to be shown automatically on TUI launch — one at a
     /// time, popped from the front when the current modal is dismissed.
     /// New entries can be added by [`Ui::queue_first_launch_modal`].
     pub first_launch_queue: VecDeque<Modal>,
     /// Persisted record of which one-time modals the user has already seen.
     pub first_launch: FirstLaunchState,
-    /// Name of workflow we just started; when a new run appears for it, auto-expand.
-    /// View intent, not a domain fact — lives here so daemon events can consult it.
-    pub pending_workflow_start: Option<String>,
     pub tick: u64,
 }
 
@@ -101,13 +89,9 @@ impl Ui {
         let mut ui = Self {
             cursor: CursorTarget::Workflow(0),
             focus: Focus::Left,
-            mode: Mode::Normal,
             modal: None,
-            feedback_input: String::new(),
-            marketplace_expanded: HashMap::new(),
             first_launch_queue: VecDeque::new(),
             first_launch,
-            pending_workflow_start: None,
             tick: 0,
         };
 
@@ -136,13 +120,6 @@ impl Ui {
     /// if any. Called by the input handler when the user dismisses a modal.
     pub fn dismiss_modal(&mut self) {
         self.modal = self.first_launch_queue.pop_front();
-    }
-
-    pub fn is_marketplace_expanded(&self, name: &str) -> bool {
-        self.marketplace_expanded
-            .get(name)
-            .copied()
-            .unwrap_or(false)
     }
 }
 
@@ -262,7 +239,7 @@ impl App {
             .and_then(|w| w.update_available.as_deref())
     }
 
-    pub fn handle_daemon_event(&mut self, event: DaemonEvent, panels: &mut crate::panel::PanelSet) {
+    pub fn handle_daemon_event(&mut self, event: DaemonEvent, panels: &mut PanelSet) {
         match event {
             DaemonEvent::RunUpdated(run) => {
                 // Find the workflow by name and upsert the run
@@ -278,10 +255,8 @@ impl App {
                         entry.runs.push(run);
                         // Sort by started_at descending (newest first)
                         entry.runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
-                        // Automatically expand and focus the new run if we just started it
-                        if self.ui.pending_workflow_start.as_ref() == Some(&entry.name) {
-                            entry.expanded = true;
-                            self.ui.pending_workflow_start = None;
+                        // Automatically expand and focus the new run if we just started it.
+                        if panels.runs.on_run_added(&entry.name) {
                             self.ui.cursor = CursorTarget::Run(wi, 0);
                         }
                     }
@@ -290,9 +265,11 @@ impl App {
             DaemonEvent::LogAppended(entry) => {
                 self.logs.entry(entry.run_id).or_default().push(entry);
             }
-            DaemonEvent::WorkflowsSnapshot(snapshot) => self.apply_workflows_snapshot(snapshot),
+            DaemonEvent::WorkflowsSnapshot(snapshot) => {
+                self.apply_workflows_snapshot(snapshot, panels)
+            }
             DaemonEvent::MarketplacesSnapshot(snapshot) => {
-                self.apply_marketplaces_snapshot(snapshot)
+                self.apply_marketplaces_snapshot(snapshot, panels)
             }
             DaemonEvent::CheckpointPending {
                 run_id,
@@ -334,7 +311,7 @@ impl App {
             }
             DaemonEvent::RunDeleted { run_id } => {
                 let old_pos = self
-                    .build_flat_list()
+                    .build_flat_list(panels)
                     .iter()
                     .position(|t| *t == self.ui.cursor);
                 for entry in &mut self.workflows {
@@ -343,7 +320,7 @@ impl App {
                 self.logs.remove(&run_id);
                 self.progress.remove(&run_id);
                 self.pending_checkpoints.remove(&run_id);
-                self.ensure_cursor_valid(old_pos);
+                self.ensure_cursor_valid(panels, old_pos);
             }
             DaemonEvent::StepProgress {
                 run_id,
@@ -366,9 +343,9 @@ impl App {
         }
     }
 
-    fn apply_workflows_snapshot(&mut self, snapshot: Vec<WorkflowStatus>) {
+    fn apply_workflows_snapshot(&mut self, snapshot: Vec<WorkflowStatus>, panels: &mut PanelSet) {
         let old_pos = self
-            .build_flat_list()
+            .build_flat_list(panels)
             .iter()
             .position(|t| *t == self.ui.cursor);
         let snapshot_names: std::collections::HashSet<&str> =
@@ -376,6 +353,7 @@ impl App {
 
         self.workflows
             .retain(|e| snapshot_names.contains(e.name.as_str()));
+        panels.runs.retain(|name| snapshot_names.contains(name));
 
         for incoming in snapshot {
             match self.workflows.iter_mut().find(|e| e.name == incoming.name) {
@@ -394,7 +372,6 @@ impl App {
                         kind: incoming.kind,
                         state: incoming.state,
                         runs: Vec::new(),
-                        expanded: false,
                         trigger: incoming.trigger,
                         toml_content: incoming.toml_content,
                         autostart: incoming.enabled,
@@ -405,26 +382,28 @@ impl App {
             }
         }
 
-        self.ensure_cursor_valid(old_pos);
+        self.ensure_cursor_valid(panels, old_pos);
     }
 
-    pub(crate) fn apply_marketplaces_snapshot(&mut self, snapshot: Vec<MarketplaceStatus>) {
+    pub(crate) fn apply_marketplaces_snapshot(
+        &mut self,
+        snapshot: Vec<MarketplaceStatus>,
+        panels: &mut PanelSet,
+    ) {
         let old_pos = self
-            .build_flat_list()
+            .build_flat_list(panels)
             .iter()
             .position(|t| *t == self.ui.cursor);
         // Drop expand state for marketplaces that disappeared.
         let names: std::collections::HashSet<&str> =
             snapshot.iter().map(|m| m.name.as_str()).collect();
-        self.ui
-            .marketplace_expanded
-            .retain(|k, _| names.contains(k.as_str()));
+        panels.marketplaces.retain_expanded(|k| names.contains(k));
         self.marketplaces = snapshot;
-        self.ensure_cursor_valid(old_pos);
+        self.ensure_cursor_valid(panels, old_pos);
     }
 
-    fn ensure_cursor_valid(&mut self, preferred_pos: Option<usize>) {
-        let flat = self.build_flat_list();
+    fn ensure_cursor_valid(&mut self, panels: &PanelSet, preferred_pos: Option<usize>) {
+        let flat = self.build_flat_list(panels);
         if flat.is_empty() {
             self.ui.cursor = CursorTarget::Workflow(0);
             return;
@@ -437,48 +416,9 @@ impl App {
         }
     }
 
-    pub fn start_selected(&mut self) {
-        if let Some(entry) = self.selected_workflow() {
-            let name = entry.name.clone();
-            self.ui.pending_workflow_start = Some(name.clone());
-            let _ = self.cmd_tx.try_send(DaemonCommand::Start { name });
-        }
-    }
-
     pub fn stop_selected_run(&mut self) {
         if let Some(run_id) = self.selected_run_id() {
             let _ = self.cmd_tx.try_send(DaemonCommand::StopRun { run_id });
-        }
-    }
-
-    pub fn stop_selected(&mut self) {
-        if let Some(entry) = self.selected_workflow() {
-            let name = entry.name.clone();
-            let _ = self.cmd_tx.try_send(DaemonCommand::Stop { name });
-        }
-    }
-
-    pub fn toggle_enable_selected(&mut self) {
-        // Only the workflow row itself toggles auto-start; a Run cursor would
-        // otherwise resolve back to the parent workflow via selected_workflow()
-        // and silently flip it from a run row, which is not what the keybinding
-        // means.
-        let CursorTarget::Workflow(wi) = self.ui.cursor else {
-            return;
-        };
-        let Some(entry) = self.workflows.get_mut(wi) else {
-            return;
-        };
-        let name = entry.name.clone();
-        if entry.autostart {
-            entry.autostart = false;
-            let _ = self
-                .cmd_tx
-                .try_send(DaemonCommand::DisableWorkflow { name });
-        } else {
-            entry.autostart = true;
-            self.ui.pending_workflow_start = Some(name.clone());
-            let _ = self.cmd_tx.try_send(DaemonCommand::EnableWorkflow { name });
         }
     }
 
@@ -541,12 +481,12 @@ impl App {
         }
     }
 
-    /// Build a flat list of all cursor targets in navigation order
-    pub(crate) fn build_flat_list(&self) -> Vec<CursorTarget> {
+    /// Build a flat list of all cursor targets in navigation order.
+    pub(crate) fn build_flat_list(&self, panels: &PanelSet) -> Vec<CursorTarget> {
         let mut list = Vec::new();
         for (wi, entry) in self.workflows.iter().enumerate() {
             list.push(CursorTarget::Workflow(wi));
-            if entry.expanded {
+            if panels.runs.is_expanded(&entry.name) {
                 for (ri, _) in entry.runs.iter().enumerate() {
                     list.push(CursorTarget::Run(wi, ri));
                 }
@@ -554,7 +494,7 @@ impl App {
         }
         for (mi, m) in self.marketplaces.iter().enumerate() {
             list.push(CursorTarget::Marketplace(mi));
-            if self.ui.is_marketplace_expanded(&m.name) {
+            if panels.marketplaces.is_expanded(&m.name) {
                 for (wi, w) in m.workflows.iter().enumerate() {
                     if !crate::marketplaces_panel::workflow_is_visible(self, w) {
                         continue;
@@ -568,9 +508,9 @@ impl App {
 
     /// Navigate up one position in the unified flat list (wraps to bottom).
     /// Returns true if the cursor moved.
-    pub fn move_cursor_up(&mut self) -> bool {
+    pub fn move_cursor_up(&mut self, panels: &PanelSet) -> bool {
         self.ui.focus = Focus::Left;
-        let flat = self.build_flat_list();
+        let flat = self.build_flat_list(panels);
         if flat.is_empty() {
             return false;
         }
@@ -584,9 +524,9 @@ impl App {
 
     /// Navigate down one position in the unified flat list (wraps to top).
     /// Returns true if the cursor moved.
-    pub fn move_cursor_down(&mut self) -> bool {
+    pub fn move_cursor_down(&mut self, panels: &PanelSet) -> bool {
         self.ui.focus = Focus::Left;
-        let flat = self.build_flat_list();
+        let flat = self.build_flat_list(panels);
         if flat.is_empty() {
             return false;
         }
@@ -595,38 +535,6 @@ impl App {
             true
         } else {
             false
-        }
-    }
-
-    /// Toggle expanded state of the workflow or marketplace at the current cursor
-    pub fn toggle_expanded(&mut self) {
-        match self.ui.cursor {
-            CursorTarget::Workflow(wi) => {
-                if let Some(entry) = self.workflows.get_mut(wi) {
-                    if entry.runs.is_empty() {
-                        return;
-                    }
-                    entry.expanded = !entry.expanded;
-                    // Collapse: snap cursor to the workflow row
-                    if !entry.expanded {
-                        self.ui.cursor = CursorTarget::Workflow(wi);
-                    }
-                }
-            }
-            CursorTarget::Marketplace(mi) => {
-                if let Some(m) = self.marketplaces.get(mi) {
-                    if m.workflows.is_empty() {
-                        return;
-                    }
-                    let name = m.name.clone();
-                    let new_state = !self.ui.is_marketplace_expanded(&name);
-                    self.ui.marketplace_expanded.insert(name, new_state);
-                    if !new_state {
-                        self.ui.cursor = CursorTarget::Marketplace(mi);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 

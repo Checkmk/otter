@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use otter_core::types::CheckpointAction;
 
-use crate::app::{App, CursorTarget, Focus, Modal, Mode};
+use crate::app::{App, CursorTarget, Focus, Modal};
 use crate::panel::{Panel, PanelSet};
 
 pub fn handle_key(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
@@ -19,12 +19,12 @@ pub fn handle_key(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
         return;
     }
 
-    match app.ui.mode {
-        Mode::Normal => handle_normal(app, panels, key),
-        Mode::FeedbackInput => {
-            panels.feedback.handle_key(app, key);
-        }
+    if panels.feedback.is_open() {
+        panels.feedback.handle_key(app, key);
+        return;
     }
+
+    handle_normal(app, panels, key);
 }
 
 fn handle_normal(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
@@ -62,8 +62,7 @@ fn handle_normal(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
                     .active_checkpoint()
                     .is_some_and(|cp| cp.feedback_available) =>
             {
-                app.ui.mode = Mode::FeedbackInput;
-                app.ui.feedback_input.clear();
+                panels.feedback.open();
                 return;
             }
             _ => {}
@@ -73,13 +72,13 @@ fn handle_normal(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
     // Cross-panel keys handled by the dispatcher
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            if app.move_cursor_up() {
+            if app.move_cursor_up(panels) {
                 panels.right.reset();
             }
             return;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.move_cursor_down() {
+            if app.move_cursor_down(panels) {
                 panels.right.reset();
             }
             return;

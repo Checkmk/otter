@@ -2,14 +2,35 @@ use crossterm::event::{KeyCode, KeyEvent};
 use otter_core::types::CheckpointAction;
 use ratatui::{layout::Rect, Frame};
 
-use crate::app::{App, Mode};
+use crate::app::App;
 use crate::panel::Panel;
 use crate::status_bar::PanelHint;
 
-/// The feedback prompt overlay shown at the bottom of the screen during a
-/// checkpoint. Followup will move state (`input`, `open`) here.
 #[derive(Default)]
-pub struct FeedbackPrompt;
+pub struct FeedbackPrompt {
+    input: String,
+    open: bool,
+}
+
+impl FeedbackPrompt {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    pub fn open(&mut self) {
+        self.open = true;
+        self.input.clear();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.input.clear();
+    }
+}
 
 impl Panel for FeedbackPrompt {
     fn render(&mut self, _f: &mut Frame, _app: &App, _area: Rect, _focused: bool) {
@@ -19,22 +40,21 @@ impl Panel for FeedbackPrompt {
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Enter => {
-                let text = app.ui.feedback_input.drain(..).collect::<String>();
-                app.ui.mode = Mode::Normal;
+                let text = std::mem::take(&mut self.input);
+                self.open = false;
                 app.respond_checkpoint(CheckpointAction::Feedback(text));
                 true
             }
             KeyCode::Esc => {
-                app.ui.mode = Mode::Normal;
-                app.ui.feedback_input.clear();
+                self.close();
                 true
             }
             KeyCode::Backspace => {
-                app.ui.feedback_input.pop();
+                self.input.pop();
                 true
             }
             KeyCode::Char(c) => {
-                app.ui.feedback_input.push(c);
+                self.input.push(c);
                 true
             }
             _ => false,
