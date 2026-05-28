@@ -226,6 +226,7 @@ pub(crate) async fn remove_worktree(base_repo: &Path, worktree_path: &Path) -> a
 mod tests {
     use super::*;
     use crate::types::PoolConfig;
+    use crate::workspace_pool::repo_namespace;
     use otter_secrets::NoOpSecretStore;
     use std::process::Command;
 
@@ -758,8 +759,9 @@ mod tests {
 
         // THEN
         let slot = result.unwrap();
-        assert_eq!(slot, pool.path().join("slot-0"));
-        assert!(pool.path().join("slot-0.lock").is_dir());
+        let ns = pool.path().join(repo_namespace(&repo));
+        assert_eq!(slot, ns.join("slot-0"));
+        assert!(ns.join("slot-0.lock").is_dir());
     }
 
     #[tokio::test]
@@ -797,8 +799,9 @@ mod tests {
             .unwrap();
 
         // THEN — lock dir gone, slot dir kept
-        assert!(!pool.path().join("slot-0.lock").exists());
-        assert!(pool.path().join("slot-0").is_dir());
+        let ns = pool.path().join(repo_namespace(&repo));
+        assert!(!ns.join("slot-0.lock").exists());
+        assert!(ns.join("slot-0").is_dir());
     }
 
     #[tokio::test]
@@ -836,7 +839,8 @@ mod tests {
             .unwrap();
 
         // THEN — lock dir stays held
-        assert!(pool.path().join("slot-0.lock").is_dir());
+        let ns = pool.path().join(repo_namespace(&repo));
+        assert!(ns.join("slot-0.lock").is_dir());
     }
 
     #[tokio::test]

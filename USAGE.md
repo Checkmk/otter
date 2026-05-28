@@ -359,7 +359,7 @@ keep_directory_on = ["failed"]        # optional; default = []
 **Behavior:**
 
 - **Unpooled**: `git -C <base_repo> worktree add --detach <scratch>/worktree <ref>`. Cleanup: `git worktree remove --force` at end of run (also drops the registration in `.git/worktrees/`).
-- **Pooled**: scans `pool.dir/slot-0`, `slot-1`, ... for a free slot; if all locked, creates `slot-N`. Locking uses an atomic `mkdir <slot>.lock` (cross-platform). The slot is reset to `ref` on acquire (`checkout --detach`, `reset --hard`, `clean -fd`). Stale locks (older than 24h) are broken automatically on the next acquire.
+- **Pooled**: slots are namespaced per base repo at `pool.dir/<base-repo-ns>/slot-N`, so workflows pointing at different repos can safely share one `pool.dir`. Within a namespace, acquire scans `slot-0`, `slot-1`, ... for a free slot; if all locked, creates `slot-N`. Locking uses an atomic `mkdir <slot>.lock` (cross-platform). The slot is reset to `ref` on acquire (`checkout --detach`, `reset --hard`, `clean -fd`). Stale locks (older than 24h) are broken automatically on the next acquire.
 - Trigger-context, when used with polling triggers, is written to `<workspace>/trigger-context/` like any non-scratch workspace.
 
 **Note:** `[workspace.pool]` is only valid when `type = "git"`. Combining it with `scratch`, `fixed`, or `script` is rejected at workflow-load time.

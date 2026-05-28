@@ -1,25 +1,35 @@
 //! Reusable, locked git-worktree slots for the `git` workspace type.
 //!
-//! A "pool" is a directory under which slot worktrees and lock dirs live:
+//! A "pool" is a directory under which slot worktrees and lock dirs live.
+//! Slots are namespaced by base repo so multiple workflows pointing at
+//! different repos can share a single `pool.dir` without colliding:
 //!
 //! ```text
 //! <pool_dir>/
-//!   slot-0/              # worktree (checked out)
-//!   slot-0.lock/         # lock dir (atomic mkdir-based locking)
-//!     timestamp          # epoch seconds; used for stale-lock detection
-//!   slot-1/
-//!   slot-1.lock/
-//!   ...
+//!   <base-repo-ns>/      # one subdir per distinct canonical base_repo path
+//!     slot-0/            # worktree (checked out)
+//!     slot-0.lock/       # lock dir (atomic mkdir-based locking)
+//!       timestamp        # epoch seconds; used for stale-lock detection
+//!     slot-1/
+//!     slot-1.lock/
+//!     ...
+//!   <other-repo-ns>/
+//!     slot-0/
+//!     ...
 //! ```
+//!
+//! `<base-repo-ns>` is `<basename>-<fnv1a-hex>` derived from the canonical
+//! base_repo path — stable across otter rebuilds and unambiguous across
+//! repos that happen to share a basename.
 //!
 //! `mkdir(lock_dir)` is the lock primitive — atomic on both POSIX
 //! (`mkdir(2)` returns `EEXIST`) and Windows NTFS (`CreateDirectoryW` returns
 //! `ERROR_ALREADY_EXISTS`). `std::fs::create_dir` maps both to
 //! `io::ErrorKind::AlreadyExists`, so the same code is cross-platform.
 //!
-//! Slots are grown on demand: an acquire scans `slot-0..slot-N-1`; if all are
-//! locked and non-stale, it creates `slot-N`. Stale locks (older than
-//! [`STALE_LOCK_SECS`]) are broken and reclaimed.
+//! Slots are grown on demand within a namespace: an acquire scans
+//! `slot-0..slot-N-1`; if all are locked and non-stale, it creates `slot-N`.
+//! Stale locks (older than [`STALE_LOCK_SECS`]) are broken and reclaimed.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -43,10 +53,11 @@ pub async fn acquire_pool_slot(
     base_repo: &Path,
     git_ref: &str,
 ) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(pool_dir)
-        .map_err(|e| anyhow::anyhow!("cannot create pool dir '{}': {}", pool_dir.display(), e))?;
+    let ns_dir = pool_dir.join(repo_namespace(base_repo));
+    std::fs::create_dir_all(&ns_dir)
+        .map_err(|e| anyhow::anyhow!("cannot create pool dir '{}': {}", ns_dir.display(), e))?;
 
-    let (slot_path, lock_path) = lock_a_slot(pool_dir)?;
+    let (slot_path, lock_path) = lock_a_slot(&ns_dir)?;
     info!(slot = %slot_path.display(), "Acquired git pool slot");
 
     // From here on, release the lock on any failure so the slot is recoverable.
@@ -110,6 +121,36 @@ fn lock_path_for(slot_path: &Path) -> anyhow::Result<PathBuf> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("slot path has no parent: {}", slot_path.display()))?;
     Ok(parent.join(format!("{}.lock", file_name)))
+}
+
+pub(crate) fn repo_namespace(base_repo: &Path) -> String {
+    let basename = base_repo
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut sanitized = String::with_capacity(basename.len().min(32));
+    for c in basename.chars().take(32) {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            sanitized.push(c);
+        } else {
+            sanitized.push('_');
+        }
+    }
+    let hash = fnv1a_64(base_repo.as_os_str().to_string_lossy().as_bytes());
+    if sanitized.is_empty() {
+        format!("{hash:016x}")
+    } else {
+        format!("{sanitized}-{hash:016x}")
+    }
+}
+
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// Scans `slot-0`, `slot-1`, ... and atomically claims the first free one (or
@@ -259,12 +300,60 @@ mod tests {
         // GIVEN a pool dir and a base repo
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
+        let ns = pool.path().join(repo_namespace(&repo));
         // WHEN
         let slot = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // THEN
-        assert_eq!(slot, pool.path().join("slot-0"));
+        assert_eq!(slot, ns.join("slot-0"));
         assert!(slot.join("README.md").is_file());
-        assert!(pool.path().join("slot-0.lock").is_dir());
+        assert!(ns.join("slot-0.lock").is_dir());
+    }
+
+    #[tokio::test]
+    async fn distinct_base_repos_get_distinct_namespaces() {
+        // GIVEN two different base repos sharing one pool dir
+        let (_g1, repo_a) = init_repo();
+        let (_g2, repo_b) = init_repo();
+        let pool = tempfile::tempdir().unwrap();
+        // WHEN
+        let slot_a = acquire_pool_slot(pool.path(), &repo_a, "HEAD")
+            .await
+            .unwrap();
+        let slot_b = acquire_pool_slot(pool.path(), &repo_b, "HEAD")
+            .await
+            .unwrap();
+        // THEN — both got slot-0 under their own namespace subdir
+        assert_ne!(slot_a.parent().unwrap(), slot_b.parent().unwrap());
+        assert_eq!(slot_a.file_name().unwrap(), "slot-0");
+        assert_eq!(slot_b.file_name().unwrap(), "slot-0");
+        assert_eq!(slot_a.parent().unwrap().parent().unwrap(), pool.path());
+        assert_eq!(slot_b.parent().unwrap().parent().unwrap(), pool.path());
+    }
+
+    #[tokio::test]
+    async fn same_base_repo_shares_namespace() {
+        // GIVEN one base repo and two acquires
+        let (_g, repo) = init_repo();
+        let pool = tempfile::tempdir().unwrap();
+        // WHEN
+        let s0 = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
+        let s1 = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
+        // THEN — same namespace dir, distinct slot indices
+        assert_eq!(s0.parent(), s1.parent());
+        assert_eq!(s0.file_name().unwrap(), "slot-0");
+        assert_eq!(s1.file_name().unwrap(), "slot-1");
+    }
+
+    #[test]
+    fn repo_namespace_is_stable_and_unique() {
+        let a = PathBuf::from("/home/user/check_mk");
+        let b = PathBuf::from("/home/user/other/check_mk");
+        // Same input → same output
+        assert_eq!(repo_namespace(&a), repo_namespace(&a));
+        // Same basename, different parent → different namespace
+        assert_ne!(repo_namespace(&a), repo_namespace(&b));
+        // Namespace embeds the basename for debuggability
+        assert!(repo_namespace(&a).starts_with("check_mk-"));
     }
 
     #[tokio::test]
@@ -272,14 +361,15 @@ mod tests {
         // GIVEN one slot already locked
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
+        let ns = pool.path().join(repo_namespace(&repo));
         let first = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // WHEN
         let second = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // THEN
-        assert_eq!(first, pool.path().join("slot-0"));
-        assert_eq!(second, pool.path().join("slot-1"));
-        assert!(pool.path().join("slot-0.lock").is_dir());
-        assert!(pool.path().join("slot-1.lock").is_dir());
+        assert_eq!(first, ns.join("slot-0"));
+        assert_eq!(second, ns.join("slot-1"));
+        assert!(ns.join("slot-0.lock").is_dir());
+        assert!(ns.join("slot-1.lock").is_dir());
     }
 
     #[tokio::test]
@@ -287,13 +377,14 @@ mod tests {
         // GIVEN
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
+        let ns = pool.path().join(repo_namespace(&repo));
         let first = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // WHEN
         release_pool_slot(&first).await.unwrap();
         let second = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // THEN — same slot reused (slot-0)
         assert_eq!(first, second);
-        assert!(pool.path().join("slot-0.lock").is_dir());
+        assert!(ns.join("slot-0.lock").is_dir());
     }
 
     #[tokio::test]
@@ -301,13 +392,14 @@ mod tests {
         // GIVEN a lock with an ancient timestamp
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
-        let stale_lock = pool.path().join("slot-0.lock");
+        let ns = pool.path().join(repo_namespace(&repo));
+        let stale_lock = ns.join("slot-0.lock");
         std::fs::create_dir_all(&stale_lock).unwrap();
         std::fs::write(stale_lock.join("timestamp"), "0").unwrap();
         // WHEN
         let slot = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // THEN — slot-0 was reclaimed
-        assert_eq!(slot, pool.path().join("slot-0"));
+        assert_eq!(slot, ns.join("slot-0"));
     }
 
     #[tokio::test]
@@ -315,11 +407,12 @@ mod tests {
         // GIVEN a lock dir with no timestamp file
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(pool.path().join("slot-0.lock")).unwrap();
+        let ns = pool.path().join(repo_namespace(&repo));
+        std::fs::create_dir_all(ns.join("slot-0.lock")).unwrap();
         // WHEN
         let slot = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
         // THEN
-        assert_eq!(slot, pool.path().join("slot-0"));
+        assert_eq!(slot, ns.join("slot-0"));
     }
 
     #[tokio::test]
@@ -378,7 +471,8 @@ mod tests {
         // GIVEN — a base repo and an empty pool
         let (_repo_guard, repo) = init_repo();
         let pool = tempfile::tempdir().unwrap();
-        let lock_dir = pool.path().join("slot-0.lock");
+        let ns = pool.path().join(repo_namespace(&repo));
+        let lock_dir = ns.join("slot-0.lock");
 
         // WHEN — acquire is cancelled (future dropped) right after the lock is
         // taken but before prepare_slot finishes
@@ -391,7 +485,7 @@ mod tests {
                     // If prepare_slot is fast enough to win the race, the lock
                     // remains held on success — release it so the assertion below
                     // still exercises drop-on-cancel behavior on retries.
-                    release_pool_slot(&pool.path().join("slot-0")).await.unwrap();
+                    release_pool_slot(&ns.join("slot-0")).await.unwrap();
                 }
                 _ = async {
                     while !lock_dir.exists() {
@@ -412,7 +506,7 @@ mod tests {
         );
         // And a fresh acquire reuses slot-0 rather than growing the pool.
         let next = acquire_pool_slot(pool.path(), &repo, "HEAD").await.unwrap();
-        assert_eq!(next, pool.path().join("slot-0"));
+        assert_eq!(next, ns.join("slot-0"));
     }
 
     #[tokio::test]

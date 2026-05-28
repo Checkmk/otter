@@ -592,14 +592,12 @@ async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
 
     // THEN: the slot dir was created, the worktree persists for reuse, and the lock
     // was released (cleanup ran at end of finally).
+    let ns = pool_dir.join(crate::workspace_pool::repo_namespace(&base_repo));
+    assert!(ns.join("slot-0").is_dir(), "slot-0 worktree should exist");
     assert!(
-        pool_dir.join("slot-0").is_dir(),
-        "slot-0 worktree should exist"
-    );
-    assert!(
-        !pool_dir.join("slot-0.lock").exists(),
+        !ns.join("slot-0.lock").exists(),
         "slot-0 lock should be released after a successful run, got: {:?}",
-        std::fs::read_dir(&pool_dir).ok().map(|r| r
+        std::fs::read_dir(&ns).ok().map(|r| r
             .filter_map(Result::ok)
             .map(|e| e.file_name())
             .collect::<Vec<_>>())
