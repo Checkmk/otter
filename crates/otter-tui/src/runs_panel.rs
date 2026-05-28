@@ -1,4 +1,5 @@
 use chrono::Local;
+use crossterm::event::{KeyCode, KeyEvent};
 use otter_core::types::{RunStatus, TriggerDef, WorkflowState, WorkflowType};
 use ratatui::{
     layout::Rect,
@@ -7,11 +8,17 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, CursorTarget};
+use crate::app::{App, CursorTarget, Selection};
 use crate::list_row::list_row;
+use crate::panel::Panel;
 use crate::status_bar::PanelHint;
 use crate::styles::{base_style, spinner_frame};
 use crate::theme;
+
+/// Top "Workflows" panel — lists installed workflows and their runs. Stateless
+/// for now.
+#[derive(Default)]
+pub struct RunsPanel;
 
 fn workflow_state_color(
     state: &WorkflowState,
@@ -45,7 +52,69 @@ fn workflow_state_color(
     }
 }
 
-pub fn render_runs(f: &mut Frame, app: &App, area: Rect) {
+impl Panel for RunsPanel {
+    fn render(&mut self, f: &mut Frame, app: &App, area: Rect, _focused: bool) {
+        render_runs(f, app, area);
+    }
+
+    fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
+        use otter_core::types::RunStatus;
+
+        match key.code {
+            KeyCode::Char(' ') => {
+                app.toggle_expanded();
+                true
+            }
+            KeyCode::Delete => {
+                app.delete_selected_run();
+                true
+            }
+            KeyCode::Char('a') => {
+                if matches!(app.selection(), Selection::Workflow(_)) {
+                    app.toggle_enable_selected();
+                }
+                true
+            }
+            KeyCode::Enter => {
+                enum Verdict {
+                    StopRun,
+                    StartWorkflow,
+                    StopWorkflow,
+                    Noop,
+                }
+                let verdict = match app.selection() {
+                    Selection::Run(_, r)
+                        if matches!(
+                            r.status,
+                            RunStatus::Running | RunStatus::WaitingCheckpoint
+                        ) =>
+                    {
+                        Verdict::StopRun
+                    }
+                    Selection::Workflow(e) => match e.state {
+                        WorkflowState::Dormant => Verdict::StartWorkflow,
+                        WorkflowState::Running => Verdict::StopWorkflow,
+                    },
+                    _ => Verdict::Noop,
+                };
+                match verdict {
+                    Verdict::StopRun => app.stop_selected_run(),
+                    Verdict::StartWorkflow => app.start_selected(),
+                    Verdict::StopWorkflow => app.stop_selected(),
+                    Verdict::Noop => {}
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn hints(&self, app: &App) -> Vec<PanelHint> {
+        left_panel_hints(app)
+    }
+}
+
+pub(crate) fn render_runs(f: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width as usize;
     let tick = app.ui.tick;
 

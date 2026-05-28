@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::first_launch::FirstLaunchState;
-use crate::right_panel::RightPanel;
+use crate::help_modal::HelpModal;
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
@@ -19,17 +19,17 @@ pub enum Mode {
     FeedbackInput,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Modal {
-    Help { scroll: usize },
+    Help,
 }
 
 impl Modal {
-    /// Stable identifier used by [[FirstLaunchState]] to remember whether
+    /// Stable identifier used by [`FirstLaunchState`] to remember whether
     /// the user has already seen this modal on a prior launch.
     pub fn first_launch_id(&self) -> &'static str {
         match self {
-            Modal::Help { .. } => "help",
+            Modal::Help => HelpModal::FIRST_LAUNCH_ID,
         }
     }
 }
@@ -83,10 +83,9 @@ pub struct Ui {
     pub modal: Option<Modal>,
     pub feedback_input: String,
     pub marketplace_expanded: HashMap<String, bool>,
-    pub right: RightPanel,
     /// Modals queued to be shown automatically on TUI launch — one at a
     /// time, popped from the front when the current modal is dismissed.
-    /// New entries can be added by [[Ui::queue_first_launch_modal]].
+    /// New entries can be added by [`Ui::queue_first_launch_modal`].
     pub first_launch_queue: VecDeque<Modal>,
     /// Persisted record of which one-time modals the user has already seen.
     pub first_launch: FirstLaunchState,
@@ -106,7 +105,6 @@ impl Ui {
             modal: None,
             feedback_input: String::new(),
             marketplace_expanded: HashMap::new(),
-            right: RightPanel::default(),
             first_launch_queue: VecDeque::new(),
             first_launch,
             pending_workflow_start: None,
@@ -115,7 +113,7 @@ impl Ui {
 
         // Register one-time modals here. Order is the order they will be
         // shown to the user (one at a time, advancing on dismissal).
-        ui.queue_first_launch_modal(Modal::Help { scroll: 0 });
+        ui.queue_first_launch_modal(Modal::Help);
 
         // Pop the first modal so something is visible on the initial draw.
         ui.modal = ui.first_launch_queue.pop_front();
@@ -138,16 +136,6 @@ impl Ui {
     /// if any. Called by the input handler when the user dismisses a modal.
     pub fn dismiss_modal(&mut self) {
         self.modal = self.first_launch_queue.pop_front();
-    }
-
-    pub fn enter_right_panel(&mut self) {
-        self.focus = Focus::Right;
-        self.right.reset();
-    }
-
-    pub fn close_right_panel(&mut self) {
-        self.focus = Focus::Left;
-        self.right.reset();
     }
 
     pub fn is_marketplace_expanded(&self, name: &str) -> bool {
@@ -274,7 +262,7 @@ impl App {
             .and_then(|w| w.update_available.as_deref())
     }
 
-    pub fn handle_daemon_event(&mut self, event: DaemonEvent) {
+    pub fn handle_daemon_event(&mut self, event: DaemonEvent, panels: &mut crate::panel::PanelSet) {
         match event {
             DaemonEvent::RunUpdated(run) => {
                 // Find the workflow by name and upsert the run
@@ -370,7 +358,7 @@ impl App {
             DaemonEvent::ConsumedTriggersChanged { workflow, triggers } => {
                 self.consumed_triggers.insert(workflow, triggers);
                 let len = self.selected_consumed_triggers().len();
-                self.ui.right.clamp_consumed_cursor(len);
+                panels.right.clamp_consumed_cursor(len);
             }
             DaemonEvent::UpdateAvailable { latest, .. } => {
                 self.update_available = Some(latest);
@@ -578,27 +566,35 @@ impl App {
         list
     }
 
-    /// Navigate up one position in the unified flat list (wraps to bottom)
-    pub fn move_cursor_up(&mut self) {
-        self.ui.close_right_panel();
+    /// Navigate up one position in the unified flat list (wraps to bottom).
+    /// Returns true if the cursor moved.
+    pub fn move_cursor_up(&mut self) -> bool {
+        self.ui.focus = Focus::Left;
         let flat = self.build_flat_list();
         if flat.is_empty() {
-            return;
+            return false;
         }
         if let Some(current_pos) = flat.iter().position(|t| *t == self.ui.cursor) {
             self.ui.cursor = flat[(current_pos + flat.len() - 1) % flat.len()];
+            true
+        } else {
+            false
         }
     }
 
-    /// Navigate down one position in the unified flat list (wraps to top)
-    pub fn move_cursor_down(&mut self) {
-        self.ui.close_right_panel();
+    /// Navigate down one position in the unified flat list (wraps to top).
+    /// Returns true if the cursor moved.
+    pub fn move_cursor_down(&mut self) -> bool {
+        self.ui.focus = Focus::Left;
         let flat = self.build_flat_list();
         if flat.is_empty() {
-            return;
+            return false;
         }
         if let Some(current_pos) = flat.iter().position(|t| *t == self.ui.cursor) {
             self.ui.cursor = flat[(current_pos + 1) % flat.len()];
+            true
+        } else {
+            false
         }
     }
 
@@ -641,17 +637,23 @@ impl App {
         )
     }
 
-    pub fn open_consumed_triggers(&mut self) {
+    /// Open the consumed-triggers right-panel view for the currently
+    /// selected polling workflow. Returns true if the request was
+    /// dispatched (caller is responsible for switching the right panel into
+    /// consumed-triggers mode via [`crate::right_panel::RightPanel::show_consumed_triggers`]).
+    pub fn open_consumed_triggers(&mut self) -> bool {
         if !self.cursor_is_polling_workflow() {
-            return;
+            return false;
         }
         if let Some(name) = self.selected_workflow().map(|e| e.name.clone()) {
             self.consumed_triggers.entry(name.clone()).or_default();
-            self.ui.right.show_consumed_triggers();
             self.ui.focus = Focus::Right;
             let _ = self
                 .cmd_tx
                 .try_send(DaemonCommand::ListConsumedTriggers { workflow: name });
+            true
+        } else {
+            false
         }
     }
 
@@ -666,12 +668,12 @@ impl App {
             .unwrap_or(&[])
     }
 
-    pub fn delete_selected_consumed_trigger(&mut self) {
+    pub fn delete_selected_consumed_trigger(&mut self, right: &mut crate::right_panel::RightPanel) {
         let workflow = match self.selected_workflow().map(|e| e.name.clone()) {
             Some(n) => n,
             None => return,
         };
-        let cursor = self.ui.right.cursor;
+        let cursor = right.cursor;
         let triggers = match self.consumed_triggers.get_mut(&workflow) {
             Some(t) => t,
             None => return,
@@ -681,7 +683,7 @@ impl App {
         }
         let trigger = triggers.remove(cursor);
         let new_len = triggers.len();
-        self.ui.right.clamp_consumed_cursor(new_len);
+        right.clamp_consumed_cursor(new_len);
         let _ = self
             .cmd_tx
             .try_send(DaemonCommand::DeleteConsumedTrigger { workflow, trigger });

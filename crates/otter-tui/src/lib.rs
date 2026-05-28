@@ -1,10 +1,12 @@
 mod app;
+mod feedback_prompt;
 mod first_launch;
 mod help_modal;
 mod input;
 mod input_field;
 mod list_row;
 mod marketplaces_panel;
+mod panel;
 mod right_panel;
 mod runs_panel;
 mod scroll;
@@ -46,19 +48,20 @@ pub fn run(
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut app = app::App::new(cmd_tx, data_dir, config_dir);
+    let mut panels = panel::PanelSet::default();
 
     loop {
         // Drain pending daemon events
         while let Ok(ev) = event_rx.try_recv() {
-            app.handle_daemon_event(ev);
+            app.handle_daemon_event(ev, &mut panels);
         }
 
-        terminal.draw(|f| ui::render(f, &mut app))?;
+        terminal.draw(|f| ui::render(f, &mut app, &mut panels))?;
         app.ui.tick = app.ui.tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(16))? {
             if let event::Event::Key(key) = event::read()? {
-                input::handle_key(&mut app, key);
+                input::handle_key(&mut app, &mut panels, key);
             }
         }
 

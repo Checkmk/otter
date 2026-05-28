@@ -4,10 +4,11 @@ use otter_core::types::{MarketplaceOrigin, ProgressChunk, WorkflowDef};
 
 use crate::app::{App, CursorTarget, Selection, WorkflowEntry};
 
+use crate::panel::Panel;
 use crate::right_panel::{
     build_log_lines, build_marketplace_preview, build_workflow_preview_lines, format_log_entry,
-    render_progress_lines, right_panel_hints, with_scroll_indicators, DefinitionView,
-    PreviewSource, RenderMode, RightPanel, RightPanelContent, WrappedLogLine,
+    render_progress_lines, with_scroll_indicators, DefinitionView, PreviewSource, RenderMode,
+    RightPanel, RightPanelContent, WrappedLogLine,
 };
 use chrono::Utc;
 use otter_core::types::{LogEntry, MarketplaceStatus, WorkflowRun, WorkflowState, WorkflowType};
@@ -539,11 +540,12 @@ fn scroll_indicators_both_sides() {
 #[test]
 fn right_panel_hints_consumed_triggers_shows_delete() {
     // GIVEN consumed triggers panel content
-    let mut app = make_app();
-    app.ui.right.content = RightPanelContent::ConsumedTriggers;
+    let app = make_app();
+    let mut panel = RightPanel::default();
+    panel.content = RightPanelContent::ConsumedTriggers;
 
     // WHEN
-    let hints = right_panel_hints(&app);
+    let hints = panel.hints(&app);
 
     // THEN scroll, delete, and close hints
     assert_eq!(hints.len(), 3);

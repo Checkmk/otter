@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -8,9 +9,36 @@ use ratatui::{
 
 use crate::app::{App, CursorTarget, Focus};
 use crate::list_row::list_row;
+use crate::panel::Panel;
 use crate::status_bar::PanelHint;
 use crate::styles::base_style;
 use crate::theme;
+
+/// Marketplaces footer panel. Stateless for now.
+#[derive(Default)]
+pub struct MarketplacesPanel;
+
+impl Panel for MarketplacesPanel {
+    fn render(&mut self, _f: &mut Frame, _app: &App, _area: Rect, _focused: bool) {
+        // The marketplaces panel is laid out from ui.rs alongside the runs
+        // panel, so the dispatcher does not call this method directly.
+        // ui.rs invokes `render_marketplaces` after carving out its slot.
+    }
+
+    fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char(' ') => {
+                app.toggle_expanded();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn hints(&self, app: &App) -> Vec<PanelHint> {
+        marketplaces_hints(app)
+    }
+}
 
 pub fn footer_height(app: &App, panel_height: u16) -> u16 {
     if app.marketplaces.is_empty() {

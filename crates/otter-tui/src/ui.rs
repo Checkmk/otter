@@ -5,10 +5,9 @@ use ratatui::{
 };
 
 use crate::app::{App, CursorTarget, Focus, Modal, Mode};
-use crate::help_modal::render_help_modal;
-use crate::marketplaces_panel::{footer_height, marketplaces_hints, render_marketplaces};
-use crate::right_panel::{render_right_panel, right_panel_hints};
-use crate::runs_panel::{left_panel_hints, render_runs};
+use crate::marketplaces_panel::{footer_height, render_marketplaces};
+use crate::panel::{Panel, PanelSet};
+use crate::runs_panel::render_runs;
 use crate::status_bar::{render_status_bar, PanelHint, StatusBarMode};
 use crate::styles::base_style;
 use crate::styles::{panel, panel_focused};
@@ -21,7 +20,16 @@ fn centered_rect(width: Constraint, height: Constraint, area: Rect) -> Rect {
     h
 }
 
-pub fn render(f: &mut Frame, app: &mut App) {
+fn active_left_panel<'a>(app: &App, panels: &'a mut PanelSet) -> &'a mut dyn Panel {
+    match app.ui.cursor {
+        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
+            &mut panels.marketplaces
+        }
+        CursorTarget::Workflow(_) | CursorTarget::Run(_, _) => &mut panels.runs,
+    }
+}
+
+pub fn render(f: &mut Frame, app: &mut App, panels: &mut PanelSet) {
     f.render_widget(Paragraph::new("").style(base_style()), f.area());
 
     let rows = Layout::default()
@@ -92,26 +100,27 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if mp_height > 0 {
         render_marketplaces(f, app, left_split[1]);
     }
-    render_right_panel(f, app, main[1]);
+    let right_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Right;
+    panels.right.render(f, app, main[1], right_focused);
 
-    if let Some(modal) = &mut app.ui.modal {
+    if let Some(modal) = &app.ui.modal {
         match modal {
-            Modal::Help { scroll } => {
+            Modal::Help => {
                 let popup_area = centered_rect(
                     Constraint::Percentage(80),
                     Constraint::Percentage(80),
                     inner[0],
                 );
                 f.render_widget(Clear, popup_area);
-                render_help_modal(f, popup_area, scroll);
+                panels.help.render_overlay(f, popup_area);
             }
         }
     }
 
     let status_mode = if let Some(modal) = &app.ui.modal {
         match modal {
-            Modal::Help { .. } => StatusBarMode::Modal {
-                hints: vec![PanelHint::new("[↑↓]", "Scroll")],
+            Modal::Help => StatusBarMode::Modal {
+                hints: panels.help.hints(app),
                 close: PanelHint::new("[Any]", "Close help"),
                 tick: app.ui.tick,
             },
@@ -128,7 +137,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 }
             }
             Mode::Normal if app.ui.focus == Focus::Right => StatusBarMode::Normal {
-                panel_hints: right_panel_hints(app),
+                panel_hints: panels.right.hints(app),
                 other_checkpoints: 0,
                 tick: app.ui.tick,
                 update_available: app.update_available.as_deref(),
@@ -138,12 +147,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     feedback_available: cp.feedback_available,
                 },
                 None => StatusBarMode::Normal {
-                    panel_hints: match app.ui.cursor {
-                        CursorTarget::Marketplace(_) | CursorTarget::MarketplaceWorkflow(_, _) => {
-                            marketplaces_hints(app)
-                        }
-                        _ => left_panel_hints(app),
-                    },
+                    panel_hints: active_left_panel(app, panels).hints(app),
                     other_checkpoints: app.other_checkpoint_count(),
                     tick: app.ui.tick,
                     update_available: app.update_available.as_deref(),

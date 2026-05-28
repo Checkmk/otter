@@ -1,4 +1,5 @@
 use super::*;
+use crate::panel::PanelSet;
 use otter_core::types::{DaemonEvent, WorkflowState, WorkflowType};
 use tokio::sync::mpsc;
 
@@ -9,6 +10,10 @@ fn make_test_app() -> App {
     let data = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let (tx, _rx) = mpsc::channel(32);
     App::new(tx, data.path().to_path_buf(), cfg.path().to_path_buf())
+}
+
+fn dispatch(app: &mut App, ev: DaemonEvent) {
+    app.handle_daemon_event(ev, &mut PanelSet::default());
 }
 
 #[test]
@@ -182,7 +187,7 @@ fn handle_daemon_event_run_deleted_removes_run_from_workflows() {
     });
 
     // Handle RunDeleted event
-    app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run1_id });
+    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run1_id });
 
     // run1 should be removed
     assert_eq!(app.workflows[0].runs.len(), 1);
@@ -214,11 +219,11 @@ fn handle_daemon_event_run_updated_inserts_and_sorts_by_started_at() {
     run2.started_at = run1.started_at + chrono::Duration::seconds(10);
 
     // Add run2 first
-    app.handle_daemon_event(DaemonEvent::RunUpdated(run2.clone()));
+    dispatch(&mut app, DaemonEvent::RunUpdated(run2.clone()));
     assert_eq!(app.workflows[0].runs.len(), 1);
 
     // Add run1
-    app.handle_daemon_event(DaemonEvent::RunUpdated(run1.clone()));
+    dispatch(&mut app, DaemonEvent::RunUpdated(run1.clone()));
     assert_eq!(app.workflows[0].runs.len(), 2);
 
     // Verify sorting: newest first
@@ -253,7 +258,7 @@ fn deleting_selected_run_snaps_cursor_to_previous_run() {
     assert_eq!(app.selected_run_id(), Some(run1_id));
 
     // Delete the selected run
-    app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run1_id });
+    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run1_id });
 
     // Cursor should snap to the previous run (index 0), not jump to another workflow
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
@@ -302,7 +307,7 @@ fn deleting_run_does_not_jump_to_another_workflow() {
     app.ui.cursor = CursorTarget::Run(1, 1);
 
     // Delete that run
-    app.handle_daemon_event(DaemonEvent::RunDeleted { run_id: run_b0.id });
+    dispatch(&mut app, DaemonEvent::RunDeleted { run_id: run_b0.id });
 
     // Should snap to Run(1, 0) — the first run of wf-b — NOT to wf-a or run_b1_id accidentally
     assert_eq!(app.ui.cursor, CursorTarget::Run(1, 0));
@@ -334,7 +339,7 @@ fn deleting_last_run_from_expanded_workflow_snaps_cursor_to_workflow() {
     assert_eq!(app.selected_run_id(), Some(run_id));
 
     // Delete the run
-    app.handle_daemon_event(DaemonEvent::RunDeleted { run_id });
+    dispatch(&mut app, DaemonEvent::RunDeleted { run_id });
 
     // Cursor should snap to the workflow row
     assert_eq!(app.ui.cursor, CursorTarget::Workflow(0));
@@ -362,7 +367,7 @@ fn handle_daemon_event_run_updated_moves_cursor_to_new_run_when_just_started() {
     app.start_selected();
 
     let run = WorkflowRun::new("wf".to_string());
-    app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, DaemonEvent::RunUpdated(run));
 
     // Cursor should move to the new run, not stay on the workflow row
     assert_eq!(app.ui.cursor, CursorTarget::Run(0, 0));
@@ -387,7 +392,7 @@ fn handle_daemon_event_run_updated_does_not_auto_expand_without_start() {
 
     // Add a new run without starting the workflow
     let run = WorkflowRun::new("wf".to_string());
-    app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, DaemonEvent::RunUpdated(run));
 
     // Workflow should NOT be expanded
     assert!(!app.workflows[0].expanded);
@@ -416,7 +421,7 @@ fn handle_daemon_event_run_updated_expands_workflow_when_just_started() {
 
     // Add a new run
     let run = WorkflowRun::new("wf".to_string());
-    app.handle_daemon_event(DaemonEvent::RunUpdated(run));
+    dispatch(&mut app, DaemonEvent::RunUpdated(run));
 
     // Workflow should be expanded
     assert!(app.workflows[0].expanded);
@@ -449,12 +454,15 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
     app.ui.cursor = CursorTarget::Run(0, 0);
 
     // Simulate checkpoint pending
-    app.handle_daemon_event(DaemonEvent::CheckpointPending {
-        run_id,
-        step_index: 0,
-        message: "Review?".to_string(),
-        feedback_available: true,
-    });
+    dispatch(
+        &mut app,
+        DaemonEvent::CheckpointPending {
+            run_id,
+            step_index: 0,
+            message: "Review?".to_string(),
+            feedback_available: true,
+        },
+    );
     assert!(app.pending_checkpoints.contains_key(&run_id));
     assert!(!app.pending_checkpoints[&run_id].processing);
 
@@ -465,12 +473,15 @@ fn feedback_processing_set_on_feedback_and_cleared_on_checkpoint_repending() {
     assert!(app.pending_checkpoints[&run_id].processing);
 
     // WHEN agent finishes and checkpoint re-presents
-    app.handle_daemon_event(DaemonEvent::CheckpointPending {
-        run_id,
-        step_index: 0,
-        message: "Review?".to_string(),
-        feedback_available: true,
-    });
+    dispatch(
+        &mut app,
+        DaemonEvent::CheckpointPending {
+            run_id,
+            step_index: 0,
+            message: "Review?".to_string(),
+            feedback_available: true,
+        },
+    );
 
     // THEN processing is cleared
     assert!(!app.pending_checkpoints[&run_id].processing);
@@ -493,11 +504,14 @@ fn snap(name: &str, toml_content: Option<&str>, enabled: bool) -> WorkflowStatus
 fn workflows_snapshot_stores_toml_content() {
     let mut app = make_test_app();
 
-    app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap(
-        "wf",
-        Some("name = \"wf\"\ntype = \"looping\"\n"),
-        false,
-    )]));
+    dispatch(
+        &mut app,
+        DaemonEvent::WorkflowsSnapshot(vec![snap(
+            "wf",
+            Some("name = \"wf\"\ntype = \"looping\"\n"),
+            false,
+        )]),
+    );
 
     assert_eq!(app.workflows.len(), 1);
     assert_eq!(
@@ -513,33 +527,42 @@ fn step_progress_accumulates_and_persists_after_log() {
     let run_id = Uuid::new_v4();
 
     // WHEN progress arrives
-    app.handle_daemon_event(DaemonEvent::StepProgress {
-        run_id,
-        step_index: 0,
-        chunk: ProgressChunk::Status("Thinking...".to_string()),
-    });
-    app.handle_daemon_event(DaemonEvent::StepProgress {
-        run_id,
-        step_index: 0,
-        chunk: ProgressChunk::Status("Using tool: Read".to_string()),
-    });
+    dispatch(
+        &mut app,
+        DaemonEvent::StepProgress {
+            run_id,
+            step_index: 0,
+            chunk: ProgressChunk::Status("Thinking...".to_string()),
+        },
+    );
+    dispatch(
+        &mut app,
+        DaemonEvent::StepProgress {
+            run_id,
+            step_index: 0,
+            chunk: ProgressChunk::Status("Using tool: Read".to_string()),
+        },
+    );
 
     // THEN — progress accumulates
     assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
 
     // WHEN a LogAppended arrives for the same run
-    app.handle_daemon_event(DaemonEvent::LogAppended(LogEntry {
-        run_id,
-        iteration: 0,
-        step_index: 0,
-        step_type: "agent".to_string(),
-        stdout: "done".to_string(),
-        stderr: String::new(),
-        exit_code: Some(0),
-        accepted: None,
-        feedback: None,
-        timestamp: Utc::now(),
-    }));
+    dispatch(
+        &mut app,
+        DaemonEvent::LogAppended(LogEntry {
+            run_id,
+            iteration: 0,
+            step_index: 0,
+            step_type: "agent".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            accepted: None,
+            feedback: None,
+            timestamp: Utc::now(),
+        }),
+    );
 
     // THEN — progress persists (not cleared)
     assert_eq!(app.progress.get(&run_id).unwrap().len(), 2);
@@ -567,16 +590,19 @@ fn snapshot_preserves_runs_and_expanded_for_existing_workflow() {
     });
 
     // WHEN a snapshot arrives that still contains wf (with a state change and toml)
-    app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![WorkflowStatus {
-        name: "wf".to_string(),
-        kind: WorkflowType::Looping,
-        state: WorkflowState::Running,
-        trigger: None,
-        toml_content: Some("name = \"wf\"\n".to_string()),
-        enabled: true,
-        update_available: None,
-        origin: None,
-    }]));
+    dispatch(
+        &mut app,
+        DaemonEvent::WorkflowsSnapshot(vec![WorkflowStatus {
+            name: "wf".to_string(),
+            kind: WorkflowType::Looping,
+            state: WorkflowState::Running,
+            trigger: None,
+            toml_content: Some("name = \"wf\"\n".to_string()),
+            enabled: true,
+            update_available: None,
+            origin: None,
+        }]),
+    );
 
     // THEN runs and expanded are preserved; state, toml, autostart updated
     assert_eq!(app.workflows.len(), 1);
@@ -621,9 +647,10 @@ fn snapshot_removes_workflows_not_in_payload() {
     });
 
     // WHEN a snapshot arrives that only contains wf-b
-    app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap(
-        "wf-b", None, false,
-    )]));
+    dispatch(
+        &mut app,
+        DaemonEvent::WorkflowsSnapshot(vec![snap("wf-b", None, false)]),
+    );
 
     // THEN wf-a is gone, wf-b remains
     assert_eq!(app.workflows.len(), 1);
@@ -697,7 +724,10 @@ fn snapshot_stores_enabled_flag() {
     let mut app = make_test_app();
 
     // WHEN a snapshot arrives with enabled=true
-    app.handle_daemon_event(DaemonEvent::WorkflowsSnapshot(vec![snap("wf", None, true)]));
+    dispatch(
+        &mut app,
+        DaemonEvent::WorkflowsSnapshot(vec![snap("wf", None, true)]),
+    );
 
     // THEN the entry has autostart=true
     assert!(app.workflows[0].autostart);
@@ -791,7 +821,7 @@ fn first_launch_shows_help_modal_on_initial_construction() {
     let app = App::new(tx, data.path().into(), cfg.path().into());
 
     // THEN the help modal is open and the queue is empty
-    assert!(matches!(app.ui.modal, Some(Modal::Help { .. })));
+    assert!(matches!(app.ui.modal, Some(Modal::Help)));
     assert!(app.ui.first_launch_queue.is_empty());
 }
 
@@ -824,19 +854,16 @@ fn dismiss_modal_advances_to_next_first_launch_entry() {
     // Reset "help" so we can re-queue and add a second entry behind it
     // simulating the future changelog modal.
     app.ui.modal = None;
-    app.ui
-        .first_launch_queue
-        .push_back(Modal::Help { scroll: 0 });
-    app.ui
-        .first_launch_queue
-        .push_back(Modal::Help { scroll: 5 });
+    app.ui.first_launch_queue.push_back(Modal::Help);
+    app.ui.first_launch_queue.push_back(Modal::Help);
     app.ui.modal = app.ui.first_launch_queue.pop_front();
 
     // WHEN dismissing the first modal
     app.ui.dismiss_modal();
 
-    // THEN the second one becomes active
-    assert!(matches!(app.ui.modal, Some(Modal::Help { scroll: 5 })));
+    // THEN the second queued modal becomes active
+    assert!(matches!(app.ui.modal, Some(Modal::Help)));
+    assert!(app.ui.first_launch_queue.is_empty());
 
     // AND dismissing again closes everything
     app.ui.dismiss_modal();

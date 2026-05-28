@@ -1,4 +1,5 @@
 use chrono::Local;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::Rect,
     style::Style,
@@ -10,6 +11,7 @@ use ratatui::{
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
 use crate::app::{App, Focus, Selection};
+use crate::panel::Panel;
 use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
@@ -276,13 +278,64 @@ pub fn with_scroll_indicators(
     visible
 }
 
-pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let is_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Right;
-    let mode = app.ui.right.render_mode(app.selection());
-    match mode {
-        RenderMode::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
-        RenderMode::Logs => render_logs(f, app, area, is_focused),
-        RenderMode::Definition(view) => render_definition_preview(f, app, area, is_focused, view),
+impl Panel for RightPanel {
+    fn render(&mut self, f: &mut Frame, app: &App, area: Rect, focused: bool) {
+        let mode = self.render_mode(app.selection());
+        match mode {
+            RenderMode::ConsumedTriggers => render_consumed_triggers(self, f, app, area, focused),
+            RenderMode::Logs => render_logs(self, f, app, area, focused),
+            RenderMode::Definition(view) => {
+                render_definition_preview(self, f, app, area, focused, view)
+            }
+        }
+    }
+
+    fn handle_key(&mut self, app: &mut App, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let consumed_len = app.selected_consumed_triggers().len();
+        let mode = self.render_mode(app.selection());
+        match key.code {
+            KeyCode::Esc | KeyCode::Tab | KeyCode::Left => {
+                app.ui.focus = Focus::Left;
+                self.reset();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.move_up(mode, consumed_len),
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(mode, consumed_len),
+            KeyCode::PageUp => self.page_up(mode),
+            KeyCode::PageDown => self.page_down(mode),
+            KeyCode::Char('b') if ctrl => self.page_up(mode),
+            KeyCode::Char('f') if ctrl => self.page_down(mode),
+            KeyCode::Char('u') if ctrl => self.half_page_up(mode),
+            KeyCode::Char('d') if ctrl => self.half_page_down(mode),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_top(mode),
+            KeyCode::End | KeyCode::Char('G') => self.scroll_bottom(mode),
+            KeyCode::Delete => app.delete_selected_consumed_trigger(self),
+            KeyCode::Char('w') => self.toggle_definition_view(mode),
+            _ => return false,
+        }
+        true
+    }
+
+    fn hints(&self, app: &App) -> Vec<PanelHint> {
+        match self.render_mode(app.selection()) {
+            RenderMode::Logs => vec![
+                PanelHint::new("[↑↓]", "Scroll"),
+                PanelHint::new("[Home/End]", "Top/Bottom"),
+            ],
+            RenderMode::Definition(view) => vec![
+                PanelHint::new("[↑↓]", "Scroll"),
+                PanelHint::new("[Home/End]", "Top/Bottom"),
+                match view {
+                    DefinitionView::Preview => PanelHint::new("[W]", "Show raw workflow"),
+                    DefinitionView::Raw => PanelHint::new("[W]", "Show workflow preview"),
+                },
+            ],
+            RenderMode::ConsumedTriggers => vec![
+                PanelHint::new("[↑↓]", "Scroll"),
+                PanelHint::new("[Del]", "Delete trigger"),
+                PanelHint::new("[Esc]", "Close"),
+            ],
+        }
     }
 }
 
@@ -430,10 +483,10 @@ fn build_log_lines<'a>(
     lines
 }
 
-fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
+fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.ui.right.height = inner_height;
+    right.height = inner_height;
     let logs = app.selected_logs();
 
     let progress = app.selected_progress();
@@ -447,10 +500,10 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let lines: Vec<Line> = build_log_lines(logs, progress, inner_width, dim_style, stderr_style);
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
-    // Clamp app state so pressing ↓ always has a visible effect after scrolling up.
-    app.ui.right.scroll = app.ui.right.scroll.min(auto_bottom);
+    // Clamp panel state so pressing ↓ always has a visible effect after scrolling up.
+    right.scroll = right.scroll.min(auto_bottom);
     let scroll_offset = if is_focused {
-        auto_bottom - app.ui.right.scroll
+        auto_bottom - right.scroll
     } else {
         auto_bottom
     } as u16;
@@ -795,15 +848,16 @@ fn append_step_lines<'a, F>(
 }
 
 fn render_definition_preview(
+    right: &mut RightPanel,
     f: &mut Frame,
-    app: &mut App,
+    app: &App,
     area: Rect,
     is_focused: bool,
     view: DefinitionView,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.ui.right.height = inner_height;
+    right.height = inner_height;
 
     let lines: Vec<Line> = match view {
         DefinitionView::Raw => build_raw_lines(app, inner_width),
@@ -819,9 +873,9 @@ fn render_definition_preview(
     };
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
-    // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
-    app.ui.right.scroll = app.ui.right.scroll.min(auto_bottom);
-    let scroll_offset = if is_focused { app.ui.right.scroll } else { 0 };
+    // Clamp panel state so pressing ↑ always has a visible effect after scrolling down.
+    right.scroll = right.scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { right.scroll } else { 0 };
 
     let title = match view {
         DefinitionView::Preview => "Definition (preview)",
@@ -995,7 +1049,13 @@ fn build_marketplace_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>>
     }
 }
 
-fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
+fn render_consumed_triggers(
+    right: &mut RightPanel,
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    is_focused: bool,
+) {
     let triggers = app.selected_consumed_triggers();
     let block = if is_focused {
         panel_focused("Consumed Triggers")
@@ -1015,7 +1075,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
             .iter()
             .enumerate()
             .map(|(i, hash)| {
-                if is_focused && i == app.ui.right.cursor {
+                if is_focused && i == right.cursor {
                     Line::from(Span::styled(
                         hash.clone(),
                         Style::default()
@@ -1034,10 +1094,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     let scroll_offset = if triggers.is_empty() || !is_focused {
         0
     } else {
-        app.ui
-            .right
-            .cursor
-            .saturating_sub(inner_height.saturating_sub(1)) as u16
+        right.cursor.saturating_sub(inner_height.saturating_sub(1)) as u16
     };
 
     let para = Paragraph::new(lines)
@@ -1045,29 +1102,6 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
         .scroll((scroll_offset, 0));
 
     f.render_widget(para, area);
-}
-
-/// Returns the keybinding hints this panel contributes to the status bar.
-pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
-    match app.ui.right.render_mode(app.selection()) {
-        RenderMode::Logs => vec![
-            PanelHint::new("[↑↓]", "Scroll"),
-            PanelHint::new("[Home/End]", "Top/Bottom"),
-        ],
-        RenderMode::Definition(view) => vec![
-            PanelHint::new("[↑↓]", "Scroll"),
-            PanelHint::new("[Home/End]", "Top/Bottom"),
-            match view {
-                DefinitionView::Preview => PanelHint::new("[W]", "Show raw workflow"),
-                DefinitionView::Raw => PanelHint::new("[W]", "Show workflow preview"),
-            },
-        ],
-        RenderMode::ConsumedTriggers => vec![
-            PanelHint::new("[↑↓]", "Scroll"),
-            PanelHint::new("[Del]", "Delete trigger"),
-            PanelHint::new("[Esc]", "Close"),
-        ],
-    }
 }
 
 #[cfg(test)]
