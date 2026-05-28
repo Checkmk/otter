@@ -9,11 +9,178 @@ use ratatui::{
 
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
-use crate::app::{App, CursorTarget, DefinitionView, Focus, RightPanelRender};
+use crate::app::{App, CursorTarget, Focus};
 use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
 use crate::theme;
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RightPanelContent {
+    /// Content is derived from the current left-pane selection.
+    Contextual,
+    /// The consumed-triggers list for the selected polling workflow.
+    ConsumedTriggers,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DefinitionView {
+    Preview,
+    Raw,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RightPanelRender {
+    Logs,
+    Definition(DefinitionView),
+    ConsumedTriggers,
+}
+
+pub struct RightPanel {
+    pub content: RightPanelContent,
+    pub definition_view: DefinitionView,
+    /// Selected row in the consumed-triggers list.
+    pub cursor: usize,
+    /// Scroll offset for logs / definition modes.
+    pub scroll: usize,
+    /// Inner height in rows; updated by the renderer each frame.
+    pub height: usize,
+}
+
+impl Default for RightPanel {
+    fn default() -> Self {
+        Self {
+            content: RightPanelContent::Contextual,
+            definition_view: DefinitionView::Preview,
+            cursor: 0,
+            scroll: 0,
+            height: 0,
+        }
+    }
+}
+
+impl RightPanel {
+    pub fn render_mode(&self, cursor: CursorTarget) -> RightPanelRender {
+        match self.content {
+            RightPanelContent::ConsumedTriggers => RightPanelRender::ConsumedTriggers,
+            RightPanelContent::Contextual => match cursor {
+                CursorTarget::Run(_, _) => RightPanelRender::Logs,
+                CursorTarget::Workflow(_)
+                | CursorTarget::Marketplace(_)
+                | CursorTarget::MarketplaceWorkflow(_, _) => {
+                    RightPanelRender::Definition(self.definition_view)
+                }
+            },
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.content = RightPanelContent::Contextual;
+        self.scroll = 0;
+    }
+
+    pub fn show_consumed_triggers(&mut self) {
+        self.content = RightPanelContent::ConsumedTriggers;
+        self.cursor = 0;
+    }
+
+    pub fn toggle_definition_view(&mut self, cursor: CursorTarget) {
+        if !matches!(self.render_mode(cursor), RightPanelRender::Definition(_)) {
+            return;
+        }
+        self.definition_view = match self.definition_view {
+            DefinitionView::Preview => DefinitionView::Raw,
+            DefinitionView::Raw => DefinitionView::Preview,
+        };
+        self.scroll = 0;
+    }
+
+    pub fn move_up(&mut self, cursor: CursorTarget, consumed_len: usize) {
+        match self.render_mode(cursor) {
+            RightPanelRender::ConsumedTriggers => self.consumed_cursor_step(consumed_len, -1),
+            RightPanelRender::Logs => self.scroll += 1,
+            RightPanelRender::Definition(_) => self.scroll = self.scroll.saturating_sub(1),
+        }
+    }
+
+    pub fn move_down(&mut self, cursor: CursorTarget, consumed_len: usize) {
+        match self.render_mode(cursor) {
+            RightPanelRender::ConsumedTriggers => self.consumed_cursor_step(consumed_len, 1),
+            RightPanelRender::Logs => self.scroll = self.scroll.saturating_sub(1),
+            RightPanelRender::Definition(_) => self.scroll += 1,
+        }
+    }
+
+    pub fn page_up(&mut self, cursor: CursorTarget) {
+        self.scroll_by(cursor, self.height, ScrollDir::Up);
+    }
+
+    pub fn page_down(&mut self, cursor: CursorTarget) {
+        self.scroll_by(cursor, self.height, ScrollDir::Down);
+    }
+
+    pub fn half_page_up(&mut self, cursor: CursorTarget) {
+        self.scroll_by(cursor, (self.height / 2).max(1), ScrollDir::Up);
+    }
+
+    pub fn half_page_down(&mut self, cursor: CursorTarget) {
+        self.scroll_by(cursor, (self.height / 2).max(1), ScrollDir::Down);
+    }
+
+    pub fn scroll_top(&mut self, cursor: CursorTarget) {
+        // Logs scroll lines-from-bottom: top of history is usize::MAX
+        // (the renderer clamps it to auto_bottom).
+        self.scroll = if self.scrolls_top_down(cursor) {
+            0
+        } else {
+            usize::MAX
+        };
+    }
+
+    pub fn scroll_bottom(&mut self, cursor: CursorTarget) {
+        self.scroll = if self.scrolls_top_down(cursor) {
+            usize::MAX
+        } else {
+            0
+        };
+    }
+
+    /// Clamp the consumed-triggers cursor after the list size changes.
+    pub fn clamp_consumed_cursor(&mut self, len: usize) {
+        if len == 0 {
+            self.cursor = 0;
+        } else {
+            self.cursor = self.cursor.min(len - 1);
+        }
+    }
+
+    fn consumed_cursor_step(&mut self, len: usize, dir: i32) {
+        if len == 0 {
+            return;
+        }
+        let delta = if dir < 0 { len - 1 } else { 1 };
+        self.cursor = (self.cursor + delta) % len;
+    }
+
+    fn scroll_by(&mut self, cursor: CursorTarget, amount: usize, dir: ScrollDir) {
+        let top_down = self.scrolls_top_down(cursor);
+        let forward = matches!(dir, ScrollDir::Down) == top_down;
+        if forward {
+            self.scroll += amount;
+        } else {
+            self.scroll = self.scroll.saturating_sub(amount);
+        }
+    }
+
+    fn scrolls_top_down(&self, cursor: CursorTarget) -> bool {
+        !matches!(self.render_mode(cursor), RightPanelRender::Logs)
+    }
+}
+
+enum ScrollDir {
+    Up,
+    Down,
+}
 
 #[derive(Debug, PartialEq)]
 enum WrappedLogLine {
@@ -112,7 +279,7 @@ pub fn with_scroll_indicators(
 
 pub fn render_right_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.modal.is_none() && app.focus == Focus::Right;
-    match app.right_panel_render() {
+    match app.right.render_mode(app.cursor) {
         RightPanelRender::ConsumedTriggers => render_consumed_triggers(f, app, area, is_focused),
         RightPanelRender::Logs => render_logs(f, app, area, is_focused),
         RightPanelRender::Definition(view) => {
@@ -268,7 +435,7 @@ fn build_log_lines<'a>(
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.right_panel_height = inner_height;
+    app.right.height = inner_height;
     let logs = app.selected_logs();
 
     let progress = app.selected_progress();
@@ -283,9 +450,9 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect, is_focused: bool) {
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
     // Clamp app state so pressing ↓ always has a visible effect after scrolling up.
-    app.right_scroll = app.right_scroll.min(auto_bottom);
+    app.right.scroll = app.right.scroll.min(auto_bottom);
     let scroll_offset = if is_focused {
-        auto_bottom - app.right_scroll
+        auto_bottom - app.right.scroll
     } else {
         auto_bottom
     } as u16;
@@ -638,7 +805,7 @@ fn render_definition_preview(
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
-    app.right_panel_height = inner_height;
+    app.right.height = inner_height;
 
     let lines: Vec<Line> = match view {
         DefinitionView::Raw => build_raw_lines(app, inner_width),
@@ -655,8 +822,8 @@ fn render_definition_preview(
 
     let auto_bottom = lines.len().saturating_sub(inner_height);
     // Clamp app state so pressing ↑ always has a visible effect after scrolling down.
-    app.right_scroll = app.right_scroll.min(auto_bottom);
-    let scroll_offset = if is_focused { app.right_scroll } else { 0 };
+    app.right.scroll = app.right.scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { app.right.scroll } else { 0 };
 
     let title = match view {
         DefinitionView::Preview => "Definition (preview)",
@@ -847,7 +1014,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
             .iter()
             .enumerate()
             .map(|(i, hash)| {
-                if is_focused && i == app.right_cursor {
+                if is_focused && i == app.right.cursor {
                     Line::from(Span::styled(
                         hash.clone(),
                         Style::default()
@@ -866,7 +1033,8 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
     let scroll_offset = if triggers.is_empty() || !is_focused {
         0
     } else {
-        app.right_cursor
+        app.right
+            .cursor
             .saturating_sub(inner_height.saturating_sub(1)) as u16
     };
 
@@ -879,7 +1047,7 @@ fn render_consumed_triggers(f: &mut Frame, app: &mut App, area: Rect, is_focused
 
 /// Returns the keybinding hints this panel contributes to the status bar.
 pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
-    match app.right_panel_render() {
+    match app.right.render_mode(app.cursor) {
         RightPanelRender::Logs => vec![
             PanelHint::new("[↑↓]", "Scroll"),
             PanelHint::new("[Home/End]", "Top/Bottom"),
@@ -901,596 +1069,5 @@ pub fn right_panel_hints(app: &App) -> Vec<PanelHint> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::RightPanelContent;
-    use chrono::Utc;
-    use otter_core::types::LogEntry;
-    use std::path::PathBuf;
-    use tokio::sync::mpsc;
-    use uuid::Uuid;
-
-    fn make_app() -> App {
-        let (tx, _rx) = mpsc::channel(32);
-        App::new(
-            tx,
-            PathBuf::from("/tmp/otter-tui-test"),
-            PathBuf::from("/tmp/otter-tui-test-config"),
-        )
-    }
-
-    fn make_log(step_index: usize, step_type: &str, stdout: &str) -> LogEntry {
-        LogEntry {
-            run_id: Uuid::nil(),
-            iteration: 0,
-            step_index,
-            step_type: step_type.to_string(),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            exit_code: None,
-            accepted: None,
-            feedback: None,
-            timestamp: Utc::now(),
-        }
-    }
-
-    fn line_text(line: &Line) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn marketplace_preview_shows_stats_when_marketplace_selected() {
-        // GIVEN a marketplace with two workflows, one of them installed
-        let mut app = make_app();
-        app.marketplaces = vec![otter_core::types::MarketplaceStatus {
-            name: "acme".to_string(),
-            url: "/home/user/acme".to_string(),
-            workflow_count: 2,
-            last_fetched_at: None,
-            workflows: vec![
-                otter_core::types::MarketplaceWorkflowEntry {
-                    name: "installed-wf".to_string(),
-                    version: Some("1.0.0".to_string()),
-                    description: None,
-                    path: "installed-wf".to_string(),
-                },
-                otter_core::types::MarketplaceWorkflowEntry {
-                    name: "fresh-wf".to_string(),
-                    version: Some("1.0.0".to_string()),
-                    description: None,
-                    path: "fresh-wf".to_string(),
-                },
-            ],
-        }];
-        app.workflows.push(crate::app::WorkflowEntry {
-            name: "installed-wf".to_string(),
-            kind: otter_core::types::WorkflowType::Looping,
-            state: otter_core::types::WorkflowState::Dormant,
-            runs: Vec::new(),
-            expanded: false,
-            trigger: None,
-            toml_content: None,
-            autostart: false,
-            update_available: None,
-            origin: None,
-        });
-        app.cursor = CursorTarget::Marketplace(0);
-
-        // WHEN the marketplace row (not a workflow) is selected
-        let lines = build_marketplace_preview(&app, 80);
-
-        // THEN the panel shows the marketplace stats
-        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("acme"));
-        assert!(text.contains("/home/user/acme"));
-        assert!(text.contains("2 published · 1 installed"));
-        assert!(text.contains("never"));
-    }
-
-    fn is_progress_line(line: &Line) -> bool {
-        // Progress lines start with "  │ "
-        line_text(line).starts_with("  \u{2502} ")
-    }
-
-    #[test]
-    fn progress_appears_before_completion_log_not_after() {
-        // GIVEN an agent step with two log entries (start + completion) and progress in between
-        let dim = Style::default();
-        let red = Style::default();
-        let logs = vec![
-            make_log(usize::MAX, "run_start", "Run started"),
-            make_log(0, "agent", "Running claude agent..."),
-            make_log(0, "agent", "Final output"),
-            make_log(1, "shell", "Next step"),
-        ];
-        let progress = vec![
-            (0, ProgressChunk::Status("Thinking...".to_string())),
-            (0, ProgressChunk::Status("Using tool: Read".to_string())),
-        ];
-
-        // WHEN
-        let lines = build_log_lines(&logs, &progress, 80, dim, red);
-
-        // THEN progress lines appear after "Running claude agent..." and before "Final output"
-        let texts: Vec<String> = lines.iter().map(line_text).collect();
-        let idx_start = texts
-            .iter()
-            .position(|t| t.contains("Running claude agent..."))
-            .unwrap();
-        let idx_prog0 = texts
-            .iter()
-            .position(|t| t.contains("Thinking..."))
-            .unwrap();
-        let idx_prog1 = texts
-            .iter()
-            .position(|t| t.contains("Using tool: Read"))
-            .unwrap();
-        let idx_final = texts
-            .iter()
-            .position(|t| t.contains("Final output"))
-            .unwrap();
-        let idx_next = texts.iter().position(|t| t.contains("Next step")).unwrap();
-
-        assert!(
-            idx_start < idx_prog0,
-            "progress must come after agent start"
-        );
-        assert!(idx_prog0 < idx_prog1, "progress chunks preserve order");
-        assert!(
-            idx_prog1 < idx_final,
-            "progress must come before final output"
-        );
-        assert!(idx_final < idx_next, "final output before next step");
-    }
-
-    #[test]
-    fn progress_appears_after_start_log_when_step_in_flight() {
-        // GIVEN an agent step with only its start log (not yet completed) and live progress
-        let dim = Style::default();
-        let red = Style::default();
-        let logs = vec![
-            make_log(usize::MAX, "run_start", "Run started"),
-            make_log(0, "agent", "Running claude agent..."),
-        ];
-        let progress = vec![(0, ProgressChunk::Status("Thinking...".to_string()))];
-
-        // WHEN
-        let lines = build_log_lines(&logs, &progress, 80, dim, red);
-
-        // THEN progress appears after the start log (in-flight position)
-        let texts: Vec<String> = lines.iter().map(line_text).collect();
-        let idx_start = texts
-            .iter()
-            .position(|t| t.contains("Running claude agent..."))
-            .unwrap();
-        let idx_prog = texts
-            .iter()
-            .position(|t| t.contains("Thinking..."))
-            .unwrap();
-
-        assert!(idx_start < idx_prog);
-        assert!(is_progress_line(&lines[idx_prog]));
-    }
-
-    #[test]
-    fn long_progress_chunk_wraps_to_multiple_lines() {
-        // GIVEN a progress chunk whose text exceeds the panel width
-        let dim = Style::default();
-        let red = Style::default();
-        // inner_width=20, prefix="  │ "=4 chars → text_width=16
-        let long_text = "a".repeat(40);
-        let chunk = ProgressChunk::Status(long_text.clone());
-
-        // WHEN
-        let lines = render_progress_lines(&chunk, 20, dim, red);
-
-        // THEN multiple lines are returned, each with the progress prefix
-        assert!(
-            lines.len() > 1,
-            "expected wrapping but got {} line(s)",
-            lines.len()
-        );
-        for line in &lines {
-            assert!(
-                is_progress_line(line),
-                "each wrapped line must have the progress prefix"
-            );
-        }
-        // All characters of the original text are preserved across lines
-        let total_text: String = lines
-            .iter()
-            .map(|l| line_text(l).trim_start_matches("  │ ").to_string())
-            .collect::<Vec<_>>()
-            .join("");
-        assert_eq!(total_text, long_text);
-    }
-
-    #[test]
-    fn multiline_progress_chunk_renders_each_line_with_prefix() {
-        // GIVEN a progress chunk with embedded newlines
-        let dim = Style::default();
-        let red = Style::default();
-        let chunk = ProgressChunk::Stdout("line one\nline two".to_string());
-
-        // WHEN
-        let lines = render_progress_lines(&chunk, 80, dim, red);
-
-        // THEN two lines, both with prefix
-        assert_eq!(lines.len(), 2);
-        assert!(line_text(&lines[0]).contains("line one"));
-        assert!(line_text(&lines[1]).contains("line two"));
-        assert!(is_progress_line(&lines[0]));
-        assert!(is_progress_line(&lines[1]));
-    }
-
-    #[test]
-    fn scroll_indicators_no_truncation() {
-        // GIVEN lines that fit exactly in the viewport
-        let lines: Vec<Line> = (0..3).map(|i| Line::from(format!("line {i}"))).collect();
-        // WHEN no overflow
-        let visible = with_scroll_indicators(lines, 0, 3);
-        // THEN all lines returned unmodified
-        assert_eq!(visible.len(), 3);
-        assert_eq!(visible[0].spans[0].content, "line 0");
-    }
-
-    #[test]
-    fn scroll_indicators_above_only() {
-        // GIVEN 5 lines, scrolled to show lines 2-4 (2 above)
-        let lines: Vec<Line> = (0..5).map(|i| Line::from(format!("line {i}"))).collect();
-        // WHEN 2 above, 0 below
-        let visible = with_scroll_indicators(lines, 2, 3);
-        // THEN first line replaced with "above" indicator
-        assert_eq!(visible.len(), 3);
-        assert!(visible[0].spans[0].content.contains("2 more ↑"));
-        assert_eq!(visible[2].spans[0].content, "line 4");
-    }
-
-    #[test]
-    fn scroll_indicators_below_only() {
-        // GIVEN 5 lines, showing first 3 (2 below)
-        let lines: Vec<Line> = (0..5).map(|i| Line::from(format!("line {i}"))).collect();
-        // WHEN 0 above, 2 below
-        let visible = with_scroll_indicators(lines, 0, 3);
-        // THEN last line replaced with "below" indicator
-        assert_eq!(visible.len(), 3);
-        assert_eq!(visible[0].spans[0].content, "line 0");
-        assert!(visible[2].spans[0].content.contains("2 more ↓"));
-    }
-
-    #[test]
-    fn scroll_indicators_both_sides() {
-        // GIVEN 7 lines, showing middle 3 (2 above, 2 below)
-        let lines: Vec<Line> = (0..7).map(|i| Line::from(format!("line {i}"))).collect();
-        // WHEN 2 above, 2 below
-        let visible = with_scroll_indicators(lines, 2, 3);
-        // THEN both first and last lines are indicators
-        assert!(visible[0].spans[0].content.contains("2 more ↑"));
-        assert!(visible[2].spans[0].content.contains("2 more ↓"));
-    }
-
-    #[test]
-    fn right_panel_hints_consumed_triggers_shows_delete() {
-        // GIVEN consumed triggers panel content
-        let mut app = make_app();
-        app.right_panel_content = RightPanelContent::ConsumedTriggers;
-
-        // WHEN
-        let hints = right_panel_hints(&app);
-
-        // THEN scroll, delete, and close hints
-        assert_eq!(hints.len(), 3);
-        assert_eq!(hints[0].key, "[↑↓]");
-        assert_eq!(hints[1].key, "[Del]");
-        assert_eq!(hints[2].key, "[Esc]");
-    }
-
-    #[test]
-    fn short_message_produces_single_header_line() {
-        let lines = format_log_entry("06:00:00", "agent", "hello", 80);
-        assert_eq!(
-            lines,
-            vec![WrappedLogLine::Header {
-                time: "06:00:00".into(),
-                step_type: "agent".into(),
-                text: "hello".into()
-            },]
-        );
-    }
-
-    #[test]
-    fn long_message_wraps_to_continuation() {
-        // panel_width=40, prefix "[06:00:00] agent: " = 18 chars → first_width=22, cont_width=38
-        // 30-char message: first 22 go in the header, remaining 8 re-split at 38 → one continuation
-        let msg = "a".repeat(30);
-        let lines = format_log_entry("06:00:00", "agent", &msg, 40);
-        assert_eq!(lines.len(), 2);
-        assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text.len() == 22));
-        assert!(matches!(&lines[1], WrappedLogLine::Continuation { text } if text.len() == 8));
-    }
-
-    #[test]
-    fn long_message_continuation_uses_full_width() {
-        // panel_width=40, first_width=22, cont_width=38
-        // 80-char message: header gets 22, remaining 58 chars → ceil(58/38) = 2 continuations
-        let msg = "a".repeat(80);
-        let lines = format_log_entry("06:00:00", "agent", &msg, 40);
-        assert_eq!(lines.len(), 3);
-        assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text.len() == 22));
-        assert!(matches!(&lines[1], WrappedLogLine::Continuation { text } if text.len() == 38));
-        assert!(matches!(&lines[2], WrappedLogLine::Continuation { text } if text.len() == 20));
-    }
-
-    #[test]
-    fn multiline_body_each_line_can_wrap() {
-        let msg = "line one\nline two";
-        let lines = format_log_entry("06:00:00", "shell", msg, 80);
-        assert_eq!(lines.len(), 2);
-        assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text == "line one"));
-        assert!(matches!(&lines[1], WrappedLogLine::Continuation { text } if text == "line two"));
-    }
-
-    #[test]
-    fn empty_text_produces_header_with_empty_text() {
-        let lines = format_log_entry("06:00:00", "agent", "", 80);
-        assert_eq!(
-            lines,
-            vec![WrappedLogLine::Header {
-                time: "06:00:00".into(),
-                step_type: "agent".into(),
-                text: String::new()
-            },]
-        );
-    }
-
-    #[test]
-    fn carriage_returns_stripped() {
-        let lines = format_log_entry("06:00:00", "shell", "ok\r", 80);
-        assert!(matches!(&lines[0], WrappedLogLine::Header { text, .. } if text == "ok"));
-    }
-
-    fn parse_def(toml: &str) -> WorkflowDef {
-        toml::from_str(toml).expect("parses")
-    }
-
-    fn collect_text(lines: &[Line]) -> String {
-        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
-    }
-
-    #[test]
-    fn preview_includes_install_command_and_requires() {
-        // GIVEN a workflow with a [require] entry
-        let def = parse_def(
-            r#"
-name = "polling-simple"
-type = "triggered"
-schema = 1
-
-[require.JIRA_PAT]
-description = "Jira PAT"
-sensitive = true
-
-[trigger]
-type = "manual"
-
-[[steps]]
-type = "shell"
-command = ["echo", "hi"]
-"#,
-        );
-
-        // WHEN
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Marketplace {
-                marketplace_name: "acme",
-                installed: false,
-                pkg_dir_missing: false,
-            },
-            "polling-simple",
-            Some("1.0.0"),
-            None,
-            Some(&def),
-            None,
-            80,
-            |_| None,
-        );
-
-        // THEN it shows the install command and the require entry
-        let text = collect_text(&lines);
-        assert!(text.contains("otter workflow install polling-simple@acme"));
-        assert!(text.contains("JIRA_PAT"));
-        assert!(text.contains("(secret)"));
-    }
-
-    #[test]
-    fn preview_inlines_message_file_contents() {
-        // GIVEN an agent step that references a message_file
-        let def = parse_def(
-            r#"
-name = "wf"
-type = "looping"
-schema = 1
-
-[[steps]]
-type = "agent"
-provider = "claude"
-message_file = "prompts/follow-up.md"
-"#,
-        );
-
-        // WHEN read_file returns content for that path
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Marketplace {
-                marketplace_name: "acme",
-                installed: false,
-                pkg_dir_missing: false,
-            },
-            "wf",
-            None,
-            None,
-            Some(&def),
-            None,
-            80,
-            |rel| {
-                if rel == "prompts/follow-up.md" {
-                    Some("First line\nSecond line".to_string())
-                } else {
-                    None
-                }
-            },
-        );
-
-        // THEN the file contents are inlined under the step
-        let text = collect_text(&lines);
-        assert!(text.contains("prompts/follow-up.md"));
-        assert!(text.contains("First line"));
-        assert!(text.contains("Second line"));
-    }
-
-    #[test]
-    fn preview_marks_missing_message_file_gracefully() {
-        // GIVEN a message_file that the resolver returns None for
-        let def = parse_def(
-            r#"
-name = "wf"
-type = "looping"
-schema = 1
-
-[[steps]]
-type = "agent"
-provider = "claude"
-message_file = "missing.md"
-"#,
-        );
-
-        // WHEN
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Marketplace {
-                marketplace_name: "acme",
-                installed: false,
-                pkg_dir_missing: false,
-            },
-            "wf",
-            None,
-            None,
-            Some(&def),
-            None,
-            80,
-            |_| None,
-        );
-
-        // THEN a "not found" line is rendered instead of crashing
-        let text = collect_text(&lines);
-        assert!(text.contains("missing.md"));
-        assert!(text.contains("not found"));
-    }
-
-    #[test]
-    fn preview_handles_missing_clone() {
-        // GIVEN pkg_dir_missing = true (clone removed) and no def parsed
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Marketplace {
-                marketplace_name: "acme",
-                installed: false,
-                pkg_dir_missing: true,
-            },
-            "wf",
-            Some("1.0.0"),
-            None,
-            None,
-            None,
-            80,
-            |_| None,
-        );
-
-        // THEN it shows install command + clone-missing hint, no crash
-        let text = collect_text(&lines);
-        assert!(text.contains("otter workflow install wf@acme"));
-        assert!(text.contains("marketplace clone missing"));
-    }
-
-    #[test]
-    fn installed_preview_shows_origin_and_update_section_when_outdated() {
-        // GIVEN an installed workflow from marketplace 'acme' with a newer version upstream
-        let def = parse_def(
-            r#"
-name = "jira-sync"
-type = "looping"
-schema = 1
-
-[[steps]]
-type = "shell"
-command = ["echo", "hi"]
-"#,
-        );
-        let origin = MarketplaceOrigin {
-            marketplace: "acme".to_string(),
-            dangling: false,
-        };
-
-        // WHEN
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Installed {
-                origin: Some(&origin),
-                update_available: Some("1.2.0"),
-            },
-            "jira-sync",
-            Some("1.0.0"),
-            None,
-            Some(&def),
-            None,
-            80,
-            |_| None,
-        );
-
-        // THEN the header notes the origin, and an UPDATE AVAILABLE section is shown
-        let text = collect_text(&lines);
-        assert!(text.contains("from acme"));
-        assert!(text.contains("UPDATE AVAILABLE"));
-        assert!(text.contains("→ v1.2.0"));
-        assert!(text.contains("otter workflow install jira-sync"));
-        // No marketplace-style INSTALL command with @marketplace syntax
-        assert!(!text.contains("install jira-sync@acme"));
-    }
-
-    #[test]
-    fn installed_preview_omits_update_section_when_current() {
-        // GIVEN an installed workflow with origin but no update available
-        let def = parse_def(
-            r#"
-name = "wf"
-type = "looping"
-schema = 1
-
-[[steps]]
-type = "shell"
-command = ["echo", "hi"]
-"#,
-        );
-        let origin = MarketplaceOrigin {
-            marketplace: "acme".to_string(),
-            dangling: false,
-        };
-
-        // WHEN
-        let lines = build_workflow_preview_lines(
-            PreviewSource::Installed {
-                origin: Some(&origin),
-                update_available: None,
-            },
-            "wf",
-            None,
-            None,
-            Some(&def),
-            None,
-            80,
-            |_| None,
-        );
-
-        // THEN no INSTALL/UPDATE section is rendered
-        let text = collect_text(&lines);
-        assert!(text.contains("from acme"));
-        assert!(!text.contains("UPDATE AVAILABLE"));
-        assert!(!text.contains("INSTALL"));
-    }
-}
+#[path = "right_panel_tests.rs"]
+mod right_panel_tests;

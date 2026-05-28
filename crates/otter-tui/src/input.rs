@@ -129,20 +129,22 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
 
 fn handle_right_panel(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let cursor = app.cursor;
+    let consumed_len = app.selected_consumed_triggers().len();
     match key.code {
         KeyCode::Esc | KeyCode::Tab | KeyCode::Left => app.close_right_panel(),
-        KeyCode::Up | KeyCode::Char('k') => app.move_right_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_right_down(),
-        KeyCode::PageUp => app.scroll_right_page_up(),
-        KeyCode::PageDown => app.scroll_right_page_down(),
-        KeyCode::Char('b') if ctrl => app.scroll_right_page_up(),
-        KeyCode::Char('f') if ctrl => app.scroll_right_page_down(),
-        KeyCode::Char('u') if ctrl => app.scroll_right_half_page_up(),
-        KeyCode::Char('d') if ctrl => app.scroll_right_half_page_down(),
-        KeyCode::Home | KeyCode::Char('g') => app.scroll_right_top(),
-        KeyCode::End | KeyCode::Char('G') => app.scroll_right_bottom(),
+        KeyCode::Up | KeyCode::Char('k') => app.right.move_up(cursor, consumed_len),
+        KeyCode::Down | KeyCode::Char('j') => app.right.move_down(cursor, consumed_len),
+        KeyCode::PageUp => app.right.page_up(cursor),
+        KeyCode::PageDown => app.right.page_down(cursor),
+        KeyCode::Char('b') if ctrl => app.right.page_up(cursor),
+        KeyCode::Char('f') if ctrl => app.right.page_down(cursor),
+        KeyCode::Char('u') if ctrl => app.right.half_page_up(cursor),
+        KeyCode::Char('d') if ctrl => app.right.half_page_down(cursor),
+        KeyCode::Home | KeyCode::Char('g') => app.right.scroll_top(cursor),
+        KeyCode::End | KeyCode::Char('G') => app.right.scroll_bottom(cursor),
         KeyCode::Delete => app.delete_selected_consumed_trigger(),
-        KeyCode::Char('w') => app.toggle_definition_view(),
+        KeyCode::Char('w') => app.right.toggle_definition_view(cursor),
         _ => {}
     }
 }
