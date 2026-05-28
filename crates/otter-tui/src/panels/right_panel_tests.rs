@@ -4,8 +4,8 @@ use otter_core::types::{MarketplaceOrigin, ProgressChunk, WorkflowDef};
 
 use crate::app::{App, CursorTarget, Selection, WorkflowEntry};
 
-use crate::panel::Panel;
-use crate::right_panel::{
+use super::super::panel::Panel;
+use super::{
     build_log_lines, build_marketplace_preview, build_workflow_preview_lines, format_log_entry,
     render_progress_lines, with_scroll_indicators, DefinitionView, PreviewSource, RenderMode,
     RightPanel, RightPanelContent, WrappedLogLine,

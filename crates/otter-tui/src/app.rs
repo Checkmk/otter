@@ -11,8 +11,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::first_launch::FirstLaunchState;
-use crate::help_modal::HelpModal;
-use crate::panel::PanelSet;
+use crate::panels::{HelpModal, PanelSet};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Modal {
@@ -496,7 +495,7 @@ impl App {
             list.push(CursorTarget::Marketplace(mi));
             if panels.marketplaces.is_expanded(&m.name) {
                 for (wi, w) in m.workflows.iter().enumerate() {
-                    if !crate::marketplaces_panel::workflow_is_visible(self, w) {
+                    if !crate::panels::workflow_is_visible(self, w) {
                         continue;
                     }
                     list.push(CursorTarget::MarketplaceWorkflow(mi, wi));
@@ -548,7 +547,7 @@ impl App {
     /// Open the consumed-triggers right-panel view for the currently
     /// selected polling workflow. Returns true if the request was
     /// dispatched (caller is responsible for switching the right panel into
-    /// consumed-triggers mode via [`crate::right_panel::RightPanel::show_consumed_triggers`]).
+    /// consumed-triggers mode via [`crate::panels::RightPanel::show_consumed_triggers`]).
     pub fn open_consumed_triggers(&mut self) -> bool {
         if !self.cursor_is_polling_workflow() {
             return false;
@@ -576,7 +575,7 @@ impl App {
             .unwrap_or(&[])
     }
 
-    pub fn delete_selected_consumed_trigger(&mut self, right: &mut crate::right_panel::RightPanel) {
+    pub fn delete_selected_consumed_trigger(&mut self, right: &mut crate::panels::RightPanel) {
         let workflow = match self.selected_workflow().map(|e| e.name.clone()) {
             Some(n) => n,
             None => return,

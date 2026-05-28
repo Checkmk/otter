@@ -7,10 +7,10 @@ use ratatui::{
     Frame,
 };
 
+use super::panel::Panel;
+use super::right_panel::with_scroll_indicators;
+use super::status_bar::PanelHint;
 use crate::app::App;
-use crate::panel::Panel;
-use crate::right_panel::with_scroll_indicators;
-use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel_focused};
 use crate::theme;
 

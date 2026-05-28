@@ -7,10 +7,10 @@ use ratatui::{
     Frame,
 };
 
+use super::panel::Panel;
+use super::status_bar::PanelHint;
 use crate::app::{App, CursorTarget, Focus};
 use crate::list_row::list_row;
-use crate::panel::Panel;
-use crate::status_bar::PanelHint;
 use crate::styles::base_style;
 use crate::theme;
 
@@ -107,10 +107,7 @@ pub fn footer_height(app: &App, panel: &MarketplacesPanel, panel_height: u16) ->
 
 /// A marketplace workflow is shown when it's either not installed yet
 /// (advertisement value) or installed-but-out-of-date (update value).
-pub(crate) fn workflow_is_visible(
-    app: &App,
-    entry: &otter_core::types::MarketplaceWorkflowEntry,
-) -> bool {
+pub fn workflow_is_visible(app: &App, entry: &otter_core::types::MarketplaceWorkflowEntry) -> bool {
     !app.is_workflow_installed(&entry.name) || app.workflow_update_available(&entry.name).is_some()
 }
 

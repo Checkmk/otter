@@ -1,13 +1,13 @@
 use crossterm::event::KeyEvent;
 use ratatui::{layout::Rect, Frame};
 
+use super::feedback_prompt::FeedbackPrompt;
+use super::help_modal::HelpModal;
+use super::marketplaces_panel::MarketplacesPanel;
+use super::right_panel::RightPanel;
+use super::runs_panel::RunsPanel;
+use super::status_bar::PanelHint;
 use crate::app::App;
-use crate::feedback_prompt::FeedbackPrompt;
-use crate::help_modal::HelpModal;
-use crate::marketplaces_panel::MarketplacesPanel;
-use crate::right_panel::RightPanel;
-use crate::runs_panel::RunsPanel;
-use crate::status_bar::PanelHint;
 
 pub trait Panel {
     /// Render the panel into `area`. `focused` is true when this panel

@@ -2,9 +2,9 @@ use crossterm::event::{KeyCode, KeyEvent};
 use otter_core::types::CheckpointAction;
 use ratatui::{layout::Rect, Frame};
 
+use super::panel::Panel;
+use super::status_bar::PanelHint;
 use crate::app::App;
-use crate::panel::Panel;
-use crate::status_bar::PanelHint;
 
 #[derive(Default)]
 pub struct FeedbackPrompt {

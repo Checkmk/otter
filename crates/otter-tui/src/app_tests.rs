@@ -1,5 +1,5 @@
 use super::*;
-use crate::panel::PanelSet;
+use crate::panels::PanelSet;
 use otter_core::types::{DaemonEvent, WorkflowState, WorkflowType};
 use tokio::sync::mpsc;
 
@@ -895,7 +895,7 @@ fn dismiss_modal_advances_to_next_first_launch_entry() {
 
 #[test]
 fn toggle_expanded_is_noop_on_workflow_without_runs() {
-    use crate::panel::Panel;
+    use crate::panels::Panel;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     // GIVEN a workflow with no runs

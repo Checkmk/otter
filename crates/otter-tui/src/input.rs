@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use otter_core::types::CheckpointAction;
 
 use crate::app::{App, CursorTarget, Focus, Modal};
-use crate::panel::{Panel, PanelSet};
+use crate::panels::{Panel, PanelSet};
 
 pub fn handle_key(app: &mut App, panels: &mut PanelSet, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {

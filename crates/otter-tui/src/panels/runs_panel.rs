@@ -10,10 +10,10 @@ use ratatui::{
     Frame,
 };
 
+use super::panel::Panel;
+use super::status_bar::PanelHint;
 use crate::app::{App, CursorTarget, Selection};
 use crate::list_row::list_row;
-use crate::panel::Panel;
-use crate::status_bar::PanelHint;
 use crate::styles::{base_style, spinner_frame};
 use crate::theme;
 
@@ -194,7 +194,7 @@ impl Panel for RunsPanel {
     }
 }
 
-pub(crate) fn render_runs(f: &mut Frame, app: &App, panel: &RunsPanel, area: Rect) {
+pub fn render_runs(f: &mut Frame, app: &App, panel: &RunsPanel, area: Rect) {
     let inner_width = area.width as usize;
     let tick = app.ui.tick;
 

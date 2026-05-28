@@ -10,9 +10,9 @@ use ratatui::{
 
 use otter_core::types::{MarketplaceOrigin, ProgressChunk, StepDef, WorkflowDef};
 
+use super::panel::Panel;
+use super::status_bar::PanelHint;
 use crate::app::{App, Focus, Selection};
-use crate::panel::Panel;
-use crate::status_bar::PanelHint;
 use crate::styles::{base_style, panel, panel_focused, step_color};
 use crate::text::wrap_into_chunks;
 use crate::theme;

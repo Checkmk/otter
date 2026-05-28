@@ -5,10 +5,10 @@ use ratatui::{
 };
 
 use crate::app::{App, CursorTarget, Focus, Modal};
-use crate::marketplaces_panel::{footer_height, render_marketplaces};
-use crate::panel::{Panel, PanelSet};
-use crate::runs_panel::render_runs;
-use crate::status_bar::{render_status_bar, PanelHint, StatusBarMode};
+use crate::panels::{
+    footer_height, render_marketplaces, render_runs, render_status_bar, Panel, PanelHint, PanelSet,
+    StatusBarMode,
+};
 use crate::styles::base_style;
 use crate::styles::{panel, panel_focused};
 use crate::text::wrap_into_chunks;

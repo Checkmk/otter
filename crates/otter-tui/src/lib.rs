@@ -1,16 +1,10 @@
 mod app;
-mod feedback_prompt;
 mod first_launch;
-mod help_modal;
 mod input;
 mod input_field;
 mod list_row;
-mod marketplaces_panel;
-mod panel;
-mod right_panel;
-mod runs_panel;
+mod panels;
 mod scroll;
-mod status_bar;
 mod styles;
 mod text;
 pub mod theme;
@@ -48,7 +42,7 @@ pub fn run(
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut app = app::App::new(cmd_tx, data_dir, config_dir);
-    let mut panels = panel::PanelSet::default();
+    let mut panels = panels::PanelSet::default();
 
     loop {
         // Drain pending daemon events
