@@ -1394,7 +1394,7 @@ fn handle_log_command() -> anyhow::Result<()> {
     {
         use std::os::unix::process::CommandExt;
         let err = std::process::Command::new("less")
-            .arg("+F")
+            .arg("+G")
             .arg("-R")
             // LESS and LESSKEY are overwritten to ignore user configs that
             // could interfere with log formatting
