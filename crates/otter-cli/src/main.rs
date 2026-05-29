@@ -669,6 +669,12 @@ async fn handle_workflow_install(target: String, force: bool) -> anyhow::Result<
                 .map(|v| format!(" to {v}"))
                 .unwrap_or_default()
         );
+        if def.require.as_ref().is_some_and(|m| !m.is_empty()) {
+            println!(
+                "Run `otter workflow configure {}` to update these inputs.",
+                def.name
+            );
+        }
         if client::send_command_once(DaemonCommand::ReloadWorkflows)
             .await
             .is_ok()
@@ -752,6 +758,12 @@ async fn handle_workflow_install(target: String, force: bool) -> anyhow::Result<
         def.name,
         dir_dest.display()
     );
+    if has_manifest {
+        println!(
+            "Run `otter workflow configure {}` to change its inputs.",
+            def.name
+        );
+    }
 
     if client::send_command_once(DaemonCommand::ReloadWorkflows)
         .await

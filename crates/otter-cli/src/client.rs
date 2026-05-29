@@ -313,6 +313,15 @@ pub async fn print_marketplace_catalog(filter: Option<String>) -> anyhow::Result
         }
         print_marketplace_entry(m, &workflows);
     }
+
+    if selected.iter().any(|m| !m.workflows.is_empty()) {
+        println!();
+        let marketplace = match selected.as_slice() {
+            [m] => m.name.as_str(),
+            _ => "<marketplace>",
+        };
+        println!("Run `otter workflow install <name>@{marketplace}` to install a workflow.");
+    }
     Ok(())
 }
 
