@@ -107,7 +107,7 @@ pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
             print_workflows(&workflows);
             if !marketplaces.is_empty() {
                 println!();
-                print_marketplaces(&marketplaces);
+                print_marketplaces(&marketplaces, &workflows);
             }
         }
         DaemonResponse::ConsumedTriggersResponse { .. } => {}
@@ -132,7 +132,7 @@ pub async fn print_status(service_enabled: bool) -> anyhow::Result<()> {
             print_workflows(&workflows);
             if !marketplaces.is_empty() {
                 println!();
-                print_marketplaces(&marketplaces);
+                print_marketplaces(&marketplaces, &workflows);
             }
         }
         Ok(DaemonResponse::Error { message }) => {
@@ -216,38 +216,174 @@ fn print_workflows(workflows: &[WorkflowStatus]) {
     }
 }
 
-fn print_marketplaces(marketplaces: &[MarketplaceStatus]) {
+fn print_marketplaces(marketplaces: &[MarketplaceStatus], workflows: &[WorkflowStatus]) {
     println!("marketplaces:");
-    for (i, m) in marketplaces.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
+    for m in marketplaces {
+        let (installed, updates) = installed_and_update_counts(m, workflows);
         let fetched = match m.last_fetched_at {
             None => "never".to_string(),
             Some(t) => format_relative(t),
         };
-        println!(
-            "  {} ({} workflow{}, last fetch {}) {}",
-            m.name,
+        let mut bits = vec![format!(
+            "{} workflow{}",
             m.workflows.len(),
             if m.workflows.len() == 1 { "" } else { "s" },
-            fetched,
-            m.url,
+        )];
+        if installed > 0 {
+            bits.push(format!("{installed} installed"));
+        }
+        if updates > 0 {
+            bits.push(format!(
+                "{updates} update{} available",
+                if updates == 1 { "" } else { "s" },
+            ));
+        }
+        println!("  {}: {} · fetched {}", m.name, bits.join(", "), fetched,);
+    }
+    println!();
+    println!("Run `otter marketplace list [<name>]` to browse available workflows.");
+}
+
+fn installed_and_update_counts(
+    m: &MarketplaceStatus,
+    workflows: &[WorkflowStatus],
+) -> (usize, usize) {
+    let installed_names: std::collections::HashSet<&str> = workflows
+        .iter()
+        .filter_map(|w| {
+            w.origin
+                .as_ref()
+                .filter(|o| !o.dangling && o.marketplace == m.name)
+                .map(|_| w.name.as_str())
+        })
+        .collect();
+    let updates = workflows
+        .iter()
+        .filter(|w| {
+            w.origin
+                .as_ref()
+                .is_some_and(|o| !o.dangling && o.marketplace == m.name)
+                && w.update_available.is_some()
+        })
+        .count();
+    (installed_names.len(), updates)
+}
+
+pub async fn print_marketplace_catalog(filter: Option<String>) -> anyhow::Result<()> {
+    let resp = match send_command_once(DaemonCommand::Status).await {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("The otter service is not running. Run `otter service start` first.");
+            std::process::exit(1);
+        }
+    };
+    let (workflows, marketplaces) = match resp {
+        DaemonResponse::StatusResponse {
+            workflows,
+            marketplaces,
+        } => (workflows, marketplaces),
+        DaemonResponse::Error { message } => {
+            eprintln!("Error: {message}");
+            std::process::exit(1);
+        }
+        _ => return Ok(()),
+    };
+
+    let selected: Vec<&MarketplaceStatus> = match &filter {
+        Some(name) => {
+            let matched: Vec<&MarketplaceStatus> =
+                marketplaces.iter().filter(|m| &m.name == name).collect();
+            if matched.is_empty() {
+                eprintln!("Marketplace '{name}' is not registered.");
+                std::process::exit(1);
+            }
+            matched
+        }
+        None => marketplaces.iter().collect(),
+    };
+
+    if selected.is_empty() {
+        println!("No marketplaces registered. Add one with `otter marketplace add <git-url>`.");
+        return Ok(());
+    }
+
+    for (i, m) in selected.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print_marketplace_entry(m, &workflows);
+    }
+    Ok(())
+}
+
+fn print_marketplace_entry(m: &MarketplaceStatus, workflows: &[WorkflowStatus]) {
+    let fetched = match m.last_fetched_at {
+        None => "never".to_string(),
+        Some(t) => format_relative(t),
+    };
+    println!("{} — {} · fetched {}", m.name, m.url, fetched);
+    if m.workflows.is_empty() {
+        println!("  (no workflows published)");
+        return;
+    }
+
+    // Look up installed state and available-update version for each catalog entry.
+    struct Row {
+        name: String,
+        version: String,
+        status: String,
+        description: String,
+    }
+    let installed: std::collections::HashMap<&str, &WorkflowStatus> = workflows
+        .iter()
+        .filter(|w| {
+            w.origin
+                .as_ref()
+                .is_some_and(|o| !o.dangling && o.marketplace == m.name)
+        })
+        .map(|w| (w.name.as_str(), w))
+        .collect();
+
+    let rows: Vec<Row> = m
+        .workflows
+        .iter()
+        .map(|wf| {
+            let status = match installed.get(wf.name.as_str()) {
+                Some(inst) => match &inst.update_available {
+                    Some(v) => format!("installed (update → {v})"),
+                    None => "installed".to_string(),
+                },
+                None => "".to_string(),
+            };
+            Row {
+                name: wf.name.clone(),
+                version: wf.version.clone().unwrap_or_else(|| "-".to_string()),
+                status,
+                description: truncate(wf.description.as_deref().unwrap_or(""), 60),
+            }
+        })
+        .collect();
+
+    let col = |header: &str, get: fn(&Row) -> &str| {
+        rows.iter()
+            .map(|r| get(r).chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(header.chars().count())
+    };
+    let name_w = col("NAME", |r| &r.name);
+    let version_w = col("VERSION", |r| &r.version);
+    let status_w = col("STATUS", |r| &r.status);
+
+    println!(
+        "  {:<name_w$}  {:<version_w$}  {:<status_w$}  DESCRIPTION",
+        "NAME", "VERSION", "STATUS"
+    );
+    for r in &rows {
+        println!(
+            "  {:<name_w$}  {:<version_w$}  {:<status_w$}  {}",
+            r.name, r.version, r.status, r.description
         );
-        if m.workflows.is_empty() {
-            continue;
-        }
-        println!("    {:<24} {:<10} DESCRIPTION", "NAME", "VERSION");
-        for wf in &m.workflows {
-            let desc = wf.description.as_deref().unwrap_or("");
-            let desc = truncate(desc, 60);
-            println!(
-                "    {:<24} {:<10} {}",
-                wf.name,
-                wf.version.as_deref().unwrap_or("-"),
-                desc,
-            );
-        }
     }
 }
 
@@ -304,4 +440,72 @@ async fn connect_to_daemon() -> anyhow::Result<tokio::net::windows::named_pipe::
     tokio::net::windows::named_pipe::ClientOptions::new()
         .open(&path)
         .with_context(|| format!("could not connect to service pipe at {path:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otter_core::types::{
+        MarketplaceOrigin, MarketplaceWorkflowEntry, WorkflowState, WorkflowType,
+    };
+
+    fn wf(
+        name: &str,
+        marketplace: Option<&str>,
+        update: Option<&str>,
+        dangling: bool,
+    ) -> WorkflowStatus {
+        WorkflowStatus {
+            name: name.to_string(),
+            kind: WorkflowType::Triggered,
+            state: WorkflowState::Dormant,
+            trigger: None,
+            toml_content: None,
+            enabled: false,
+            update_available: update.map(str::to_string),
+            origin: marketplace.map(|m| MarketplaceOrigin {
+                marketplace: m.to_string(),
+                dangling,
+            }),
+        }
+    }
+
+    fn mp(name: &str, workflows: &[&str]) -> MarketplaceStatus {
+        MarketplaceStatus {
+            name: name.to_string(),
+            url: "test://".to_string(),
+            workflow_count: workflows.len(),
+            last_fetched_at: None,
+            workflows: workflows
+                .iter()
+                .map(|n| MarketplaceWorkflowEntry {
+                    name: n.to_string(),
+                    version: None,
+                    description: None,
+                    path: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn installed_and_update_counts_counts_only_matching_marketplace() {
+        // GIVEN a marketplace with three workflows, two installed (one with update),
+        // plus an installed workflow from a different marketplace and a dangling install.
+        let m = mp("acme", &["a", "b", "c"]);
+        let workflows = vec![
+            wf("a", Some("acme"), None, false),
+            wf("b", Some("acme"), Some("0.2.0"), false),
+            wf("c", Some("acme"), None, true), // dangling — does not count
+            wf("x", Some("other"), Some("1.0"), false), // different marketplace
+        ];
+
+        // WHEN counting installs and updates
+        let (installed, updates) = installed_and_update_counts(&m, &workflows);
+
+        // THEN only non-dangling workflows from this marketplace are counted,
+        // and only those with an available update contribute to the update count.
+        assert_eq!(installed, 2);
+        assert_eq!(updates, 1);
+    }
 }

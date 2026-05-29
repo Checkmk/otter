@@ -123,6 +123,11 @@ enum MarketplaceCommands {
         /// Name as printed by `otter status` / written to `marketplaces.toml`
         name: String,
     },
+    /// Browse workflows available in registered marketplaces.
+    List {
+        /// Restrict listing to a single marketplace
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1032,6 +1037,7 @@ async fn handle_marketplace_command(command: MarketplaceCommands) -> anyhow::Res
     match command {
         MarketplaceCommands::Add { url } => handle_marketplace_add(url).await,
         MarketplaceCommands::Remove { name } => handle_marketplace_remove(name).await,
+        MarketplaceCommands::List { name } => client::print_marketplace_catalog(name).await,
     }
 }
 
@@ -1085,7 +1091,7 @@ async fn handle_marketplace_add(url: String) -> anyhow::Result<()> {
     })?;
 
     println!(
-        "Registered marketplace '{name}' ({} workflow{}).",
+        "Registered marketplace '{name}' ({} workflow{}). Run `otter marketplace list {name}` to browse.",
         idx.workflows.len(),
         if idx.workflows.len() == 1 { "" } else { "s" }
     );
