@@ -1,0 +1,128 @@
+name = "todo-impl"
+type = "triggered"
+schema = 1
+version = "0.1.0"
+description = "Poll a local TODO.md; implement each new top-level section on its own branch in an isolated worktree."
+
+# --- Inputs (prompted at install; edit later with `otter workflow configure`) ---
+
+[require.TODO_PATH]
+description = "Absolute path to your TODO.md (each '# heading' is one task)"
+default = "~/otter-todo.md"
+
+[require.REPO_PATH]
+description = "Absolute path to the local git repo to implement changes in"
+default = "~/your-repo"
+
+[require.REPO_REF]
+description = "Git ref each task branches off (branch, tag, SHA, or HEAD)"
+default = "HEAD"
+
+[require.POOL_DIR]
+description = "Directory under which pooled worktree slots live (created if missing)"
+default = "~/.cache/otter-git-pool"
+
+[require.PUSH_COMMAND]
+description = "Command to push the task branch, run from the worktree (e.g. 'git push origin HEAD:refs/for/master'). Leave empty to skip pushing."
+default = ""
+
+# --- Trigger: poll the TODO file for new (unmarked) tasks ---
+
+[trigger]
+type = "polling"
+poll_command = ["todo.sh", "--poll"]
+context_command = ["todo.sh", "--context"]
+interval_secs = 60
+requires = ["TODO_PATH"]
+
+# --- Workspace: a fresh, pooled git worktree per task ---
+
+[workspace]
+type = "git"
+base_repo = "{{REPO_PATH}}"
+ref = "{{REPO_REF}}"
+
+[workspace.pool]
+dir = "{{POOL_DIR}}"
+keep_directory_on = ["failed"]
+
+# --- Steps ---
+
+# Keep otter's trigger-context dir out of the agent's commits.
+[[steps]]
+type = "shell"
+command = [
+    "bash",
+    "-c",
+    "ex=\"$(git rev-parse --git-common-dir)/info/exclude\"; grep -qxF '/trigger-context/' \"$ex\" 2>/dev/null || echo '/trigger-context/' >>\"$ex\"",
+]
+
+[[steps]]
+type = "agent"
+provider = "claude"
+session = "todo-impl"
+permission_mode = "acceptEdits"
+allowed_tools = [
+    "Read", 
+    "Write", 
+    "Edit", 
+    "Glob", 
+    "Grep", 
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git checkout -b otter-todo-*)",
+    "Bash(git branch otter-todo-*)",
+    "Bash(git switch otter-todo-*)",
+    "Bash(git checkout otter-todo-*)",
+]
+message = """
+The file `trigger-context/section.md` contains a single task: one Markdown
+`# heading` and its body.
+
+1. Read `trigger-context/section.md`.
+2. Create a branch off the current HEAD named `otter-todo-<slug>`, where
+   <slug> is a short kebab-case summary of the heading.
+3. Implement the task in this repository.
+4. Stage your changes with `git add` and commit them with a concise message
+   (subject <= 50 chars, body explaining what and why).
+
+Commit only the files you changed; never stage the `trigger-context/` directory.
+"""
+
+# Optional push, gated on PUSH_COMMAND. No-op when empty. The value is run as-is
+# from the worktree, so it supports any remote/refspec (origin, Gerrit, etc.).
+# Needs working git credentials for the remote (HOME is preserved).
+[[steps]]
+type = "shell"
+command = [
+    "bash",
+    "-c",
+    """
+set -euo pipefail
+if [ -z "${PUSH_COMMAND:-}" ]; then
+  echo "PUSH_COMMAND empty; skipping push"
+  exit 0
+fi
+echo "Running push: $PUSH_COMMAND"
+eval "$PUSH_COMMAND"
+""",
+]
+requires = ["PUSH_COMMAND"]
+
+[[steps]]
+type = "notify"
+message = "otter implemented a TODO task"
+
+# --- Outcome: record the result back in the TODO file ---
+
+[[finally]]
+type = "shell"
+command = ["bash", "-c", "todo.sh --done \"$(cat trigger-context/id)\""]
+on = ["success"]
+requires = ["TODO_PATH"]
+
+[[finally]]
+type = "shell"
+command = ["bash", "-c", "todo.sh --fail \"$(cat trigger-context/id)\""]
+on = ["failed", "stopped"]
+requires = ["TODO_PATH"]

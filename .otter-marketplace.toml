@@ -1,26 +1,5 @@
 schema = 1
-name = "otter-examples"
+name = "otter"
 
 [[workflow]]
-path = "examples/hello-world"
-
-[[workflow]]
-path = "examples/hello-agent"
-
-[[workflow]]
-path = "examples/one-shot-impl-otter"
-
-[[workflow]]
-path = "examples/git-workspace"
-
-[[workflow]]
-path = "examples/polling-simple"
-
-[[workflow]]
-path = "examples/workspace-script"
-
-[[workflow]]
-path = "examples/sandboxed-agent"
-
-[[workflow]]
-path = "examples/secret-workflow"
+path = "examples/todo-impl"
