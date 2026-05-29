@@ -14,7 +14,6 @@
 10. [Workflow Management](#workflow-management)
 11. [Service Management](#service-management)
 12. [Theming](#theming)
-13. [Examples](#examples)
 
 ---
 
@@ -783,9 +782,3 @@ cp ~/.config/otter/themes/light.toml ~/.config/otter/themes/my-theme.toml
 
 - Colors are 6-digit `#rrggbb` hex; omitted fields fall back to the bundled dark palette.
 - Editing `dark.toml` / `light.toml` has no effect — those modes always use the bundled palette. Use a custom name to override.
-
----
-
-## Example Workflows
-
-Can be found in the [examples](examples/) directory.
