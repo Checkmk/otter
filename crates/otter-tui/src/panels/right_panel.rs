@@ -779,6 +779,30 @@ where
     lines
 }
 
+fn append_prefixed_wrapped<'a>(
+    lines: &mut Vec<Line<'a>>,
+    content: &str,
+    prefix: &str,
+    prefix_style: Style,
+    body_style: Style,
+    width: usize,
+) {
+    let body_width = width.saturating_sub(prefix.chars().count());
+    for raw in content.lines() {
+        let line = raw.replace('\r', "");
+        if line.is_empty() {
+            lines.push(Line::from(Span::styled(prefix.to_string(), prefix_style)));
+            continue;
+        }
+        for chunk in wrap_into_chunks(&line, body_width) {
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), prefix_style),
+                Span::styled(chunk, body_style),
+            ]));
+        }
+    }
+}
+
 fn append_readme_lines<'a>(lines: &mut Vec<Line<'a>>, readme: Option<&str>, inner_width: usize) {
     let Some(readme) = readme else {
         return;
@@ -786,19 +810,7 @@ fn append_readme_lines<'a>(lines: &mut Vec<Line<'a>>, readme: Option<&str>, inne
     let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("README.md".to_string(), bold)));
-    for raw in readme.lines() {
-        let line = raw.replace('\r', "");
-        if line.is_empty() {
-            lines.push(Line::from(""));
-            continue;
-        }
-        for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(2)) {
-            lines.push(Line::from(vec![
-                Span::styled("  ".to_string(), base_style()),
-                Span::styled(chunk, base_style()),
-            ]));
-        }
-    }
+    append_prefixed_wrapped(lines, readme, "  ", base_style(), base_style(), inner_width);
 }
 
 fn append_step_lines<'a, F>(
@@ -860,18 +872,7 @@ fn append_step_lines<'a, F>(
     }
     if let Some((source, content)) = body {
         lines.push(Line::from(Span::styled(format!("     ({source})"), dim)));
-        for raw in content.lines() {
-            let line = raw.replace('\r', "");
-            for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(7)) {
-                lines.push(Line::from(vec![
-                    Span::styled("     │ ".to_string(), dim),
-                    Span::styled(chunk, base_style()),
-                ]));
-            }
-            if line.is_empty() {
-                lines.push(Line::from(Span::styled("     │ ".to_string(), dim)));
-            }
-        }
+        append_prefixed_wrapped(lines, &content, "     │ ", dim, base_style(), inner_width);
     }
 }
 

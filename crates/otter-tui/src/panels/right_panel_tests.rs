@@ -1033,3 +1033,31 @@ command = ["echo", "hi"]
     assert!(!text.contains("UPDATE AVAILABLE"));
     assert!(!text.contains("INSTALL"));
 }
+
+#[test]
+fn prefixed_wrapped_renders_blank_line_once() {
+    // GIVEN content with a single blank line between two text lines
+    let mut lines: Vec<Line> = Vec::new();
+    let style = crate::styles::base_style();
+
+    // WHEN appended with a prefix
+    super::append_prefixed_wrapped(&mut lines, "first\n\nsecond", "  | ", style, style, 80);
+
+    // THEN the blank line maps to exactly one prefixed line (not doubled)
+    let rendered: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(rendered, vec!["  | first", "  | ", "  | second"]);
+}
+
+#[test]
+fn prefixed_wrapped_wraps_long_lines_at_width_minus_prefix() {
+    // GIVEN a line longer than the body width (width 7 minus 2-char prefix = 5)
+    let mut lines: Vec<Line> = Vec::new();
+    let style = crate::styles::base_style();
+
+    // WHEN appended
+    super::append_prefixed_wrapped(&mut lines, "abcdefg", "> ", style, style, 7);
+
+    // THEN it wraps into 5-char chunks, each prefixed
+    let rendered: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(rendered, vec!["> abcde", "> fg"]);
+}
