@@ -284,13 +284,30 @@ pub fn with_scroll_indicators(
 impl Panel for RightPanel {
     fn render(&mut self, f: &mut Frame, app: &App, area: Rect, focused: bool) {
         let mode = self.render_mode(app.selection());
+        let title = match mode {
+            RenderMode::ConsumedTriggers => "Consumed Triggers",
+            RenderMode::Logs => "Run log",
+            RenderMode::Definition(DefinitionView::Preview) => "Definition (preview)",
+            RenderMode::Definition(DefinitionView::Raw) => "Definition (raw)",
+            RenderMode::Marketplace => "Marketplace",
+        };
+        // 1 col of left padding separates content from the border.
+        let block = if focused {
+            panel_focused(title)
+        } else {
+            panel(title)
+        }
+        .padding(Padding::left(1));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
         match mode {
-            RenderMode::ConsumedTriggers => render_consumed_triggers(self, f, app, area, focused),
-            RenderMode::Logs => render_logs(self, f, app, area, focused),
+            RenderMode::ConsumedTriggers => render_consumed_triggers(self, f, app, inner, focused),
+            RenderMode::Logs => render_logs(self, f, app, inner, focused),
             RenderMode::Definition(view) => {
-                render_definition_preview(self, f, app, area, focused, view)
+                render_definition_preview(self, f, app, inner, focused, view)
             }
-            RenderMode::Marketplace => render_marketplace_summary(self, f, app, area, focused),
+            RenderMode::Marketplace => render_marketplace_summary(self, f, app, inner, focused),
         }
     }
 
@@ -491,9 +508,9 @@ fn build_log_lines<'a>(
     lines
 }
 
-fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
-    let inner_width = area.width.saturating_sub(3) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
+fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, inner: Rect, is_focused: bool) {
+    let inner_width = inner.width as usize;
+    let inner_height = inner.height as usize;
     right.height = inner_height;
     let logs = app.selected_logs();
 
@@ -517,15 +534,7 @@ fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, area: Rect, is_
     } as u16;
 
     let visible = with_scroll_indicators(lines, scroll_offset as usize, inner_height);
-    let block = if is_focused {
-        panel_focused("Run log")
-    } else {
-        panel("Run log")
-    }
-    .padding(Padding::left(1));
-    let para = Paragraph::new(visible).block(block);
-
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(visible), inner);
 }
 
 /// Distinguishes a marketplace-advertised workflow from a locally-installed
@@ -850,12 +859,12 @@ fn render_definition_preview(
     right: &mut RightPanel,
     f: &mut Frame,
     app: &App,
-    area: Rect,
+    inner: Rect,
     is_focused: bool,
     view: DefinitionView,
 ) {
-    let inner_width = area.width.saturating_sub(3) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_width = inner.width as usize;
+    let inner_height = inner.height as usize;
     right.height = inner_height;
 
     let lines: Vec<Line> = match view {
@@ -874,30 +883,19 @@ fn render_definition_preview(
     right.scroll = right.scroll.min(auto_bottom);
     let scroll_offset = if is_focused { right.scroll } else { 0 };
 
-    let title = match view {
-        DefinitionView::Preview => "Definition (preview)",
-        DefinitionView::Raw => "Definition (raw)",
-    };
     let visible = with_scroll_indicators(lines, scroll_offset, inner_height);
-    let block = if is_focused {
-        panel_focused(title)
-    } else {
-        panel(title)
-    }
-    .padding(Padding::left(1));
-    let para = Paragraph::new(visible).block(block);
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(visible), inner);
 }
 
 fn render_marketplace_summary(
     right: &mut RightPanel,
     f: &mut Frame,
     app: &App,
-    area: Rect,
+    inner: Rect,
     is_focused: bool,
 ) {
-    let inner_width = area.width.saturating_sub(3) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_width = inner.width as usize;
+    let inner_height = inner.height as usize;
     right.height = inner_height;
 
     let lines = build_marketplace_preview(app, inner_width);
@@ -907,14 +905,7 @@ fn render_marketplace_summary(
     let scroll_offset = if is_focused { right.scroll } else { 0 };
 
     let visible = with_scroll_indicators(lines, scroll_offset, inner_height);
-    let block = if is_focused {
-        panel_focused("Marketplace")
-    } else {
-        panel("Marketplace")
-    }
-    .padding(Padding::left(1));
-    let para = Paragraph::new(visible).block(block);
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(visible), inner);
 }
 
 /// Renders the unparsed workflow TOML
@@ -1079,16 +1070,10 @@ fn render_consumed_triggers(
     right: &mut RightPanel,
     f: &mut Frame,
     app: &App,
-    area: Rect,
+    inner: Rect,
     is_focused: bool,
 ) {
     let triggers = app.selected_consumed_triggers();
-    let block = if is_focused {
-        panel_focused("Consumed Triggers")
-    } else {
-        panel("Consumed Triggers")
-    }
-    .padding(Padding::left(1));
 
     let lines: Vec<Line> = if triggers.is_empty() {
         vec![Line::from(Span::styled(
@@ -1117,18 +1102,16 @@ fn render_consumed_triggers(
     };
 
     // Scroll to keep right_cursor visible
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_height = inner.height as usize;
     let scroll_offset = if triggers.is_empty() || !is_focused {
         0
     } else {
         right.cursor.saturating_sub(inner_height.saturating_sub(1)) as u16
     };
 
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll_offset, 0));
+    let para = Paragraph::new(lines).scroll((scroll_offset, 0));
 
-    f.render_widget(para, area);
+    f.render_widget(para, inner);
 }
 
 #[cfg(test)]

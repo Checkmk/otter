@@ -150,6 +150,9 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, 
     let [divider_area, list_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let inner_width = area.width as usize;
+    // Reserve one column on the right so the highlighted-row background and
+    // trailing badges don't hug the panel edge.
+    let row_width = inner_width.saturating_sub(1);
     let tick = app.ui.tick;
 
     // Inline section divider: `── Marketplaces ──────`.
@@ -225,7 +228,7 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, 
             &trailing,
             base_style(),
             is_selected,
-            inner_width,
+            row_width,
             tick,
         ));
 
@@ -255,7 +258,7 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, 
                     &trailing,
                     name_style,
                     is_wf_selected,
-                    inner_width,
+                    row_width,
                     tick,
                 ));
             }
