@@ -150,7 +150,7 @@ pub async fn check_latest(
     }))
 }
 
-/// Download the latest release tarball, atomically swap the running binary.
+/// Download the latest release binary, atomically swap the running binary.
 /// Blocking — the caller must run it inside `spawn_blocking` to avoid stalling
 /// the tokio reactor.
 pub fn perform_update(current_version: &str) -> anyhow::Result<self_update::Status> {

@@ -52,16 +52,14 @@ jobs:
       - name: Build release binary
         run: cargo build --release --bin otter --target ${{ env.TARGET }}
 
-      - name: Package tarball
+      - name: Stage release binary
         id: package
         run: |
           mkdir -p dist
-          cp target/${{ env.TARGET }}/release/otter dist/otter
-          cd dist
-          ASSET="otter-${{ steps.tag.outputs.tag }}-${{ env.TARGET }}.tar.gz"
-          tar -czf "$ASSET" otter
-          shasum -a 256 "$ASSET" > "$ASSET.sha256"
-          rm otter
+          ASSET="otter-${{ steps.tag.outputs.tag }}-${{ env.TARGET }}"
+          cp target/${{ env.TARGET }}/release/otter "dist/$ASSET"
+          chmod +x "dist/$ASSET"
+          (cd dist && shasum -a 256 "$ASSET" > "$ASSET.sha256")
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
