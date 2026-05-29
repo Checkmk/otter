@@ -666,6 +666,8 @@ where
         }
     );
 
+    append_readme_lines(&mut lines, readme, inner_width);
+
     let Some(def) = def else {
         if !pkg_dir_missing {
             lines.push(Line::from(""));
@@ -774,25 +776,29 @@ where
         }
     }
 
-    // README
-    if let Some(readme) = readme {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("README.md".to_string(), bold)));
-        for raw in readme.lines() {
-            let line = raw.replace('\r', "");
-            for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(2)) {
-                lines.push(Line::from(vec![
-                    Span::styled("  ".to_string(), base_style()),
-                    Span::styled(chunk, base_style()),
-                ]));
-            }
-            if line.is_empty() {
-                lines.push(Line::from(""));
-            }
+    lines
+}
+
+fn append_readme_lines<'a>(lines: &mut Vec<Line<'a>>, readme: Option<&str>, inner_width: usize) {
+    let Some(readme) = readme else {
+        return;
+    };
+    let bold = base_style().add_modifier(ratatui::style::Modifier::BOLD);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("README.md".to_string(), bold)));
+    for raw in readme.lines() {
+        let line = raw.replace('\r', "");
+        if line.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        for chunk in wrap_into_chunks(&line, inner_width.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::styled("  ".to_string(), base_style()),
+                Span::styled(chunk, base_style()),
+            ]));
         }
     }
-
-    lines
 }
 
 fn append_step_lines<'a, F>(
