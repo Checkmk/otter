@@ -55,7 +55,7 @@ impl Panel for MarketplacesPanel {
         let Some(m) = app.marketplaces.get(mi) else {
             return true;
         };
-        if m.workflows.is_empty() {
+        if !has_visible_workflows(app, m) {
             return true;
         }
         if !self.toggle_expanded(&m.name) {
@@ -70,7 +70,7 @@ impl Panel for MarketplacesPanel {
         match app.ui.cursor {
             CursorTarget::Marketplace(mi) => {
                 if let Some(m) = app.marketplaces.get(mi) {
-                    if !m.workflows.is_empty() {
+                    if has_visible_workflows(app, m) {
                         let label = if self.is_expanded(&m.name) {
                             "Hide workflows"
                         } else {
@@ -109,6 +109,12 @@ pub fn footer_height(app: &App, panel: &MarketplacesPanel, panel_height: u16) ->
 /// (advertisement value) or installed-but-out-of-date (update value).
 pub fn workflow_is_visible(app: &App, entry: &otter_core::types::MarketplaceWorkflowEntry) -> bool {
     !app.is_workflow_installed(&entry.name) || app.workflow_update_available(&entry.name).is_some()
+}
+
+/// True if expanding `m` would reveal at least one row — i.e. the [Space]
+/// "Show workflows" affordance is actionable.
+fn has_visible_workflows(app: &App, m: &otter_core::types::MarketplaceStatus) -> bool {
+    m.workflows.iter().any(|w| workflow_is_visible(app, w))
 }
 
 /// Builds the flat list of (CursorTarget, line) rows the panel will render.
@@ -404,6 +410,39 @@ mod tests {
         let space = hints.iter().find(|h| h.key == "[Space]");
         assert!(space.is_some());
         assert_eq!(space.unwrap().label, "Show workflows");
+    }
+
+    #[test]
+    fn marketplaces_hints_omit_space_when_all_workflows_installed_and_current() {
+        // GIVEN a marketplace whose every published workflow is already
+        // installed at the latest version — expanding would reveal nothing
+        let mut app = make_app();
+        let panel = MarketplacesPanel::default();
+        app.marketplaces = vec![make_marketplace("acme", vec!["a", "b"])];
+        for name in ["a", "b"] {
+            app.workflows.push(crate::app::WorkflowEntry {
+                name: name.to_string(),
+                kind: otter_core::types::WorkflowType::Looping,
+                state: otter_core::types::WorkflowState::Dormant,
+                runs: Vec::new(),
+                trigger: None,
+                toml_content: None,
+                autostart: false,
+                update_available: None,
+                origin: None,
+            });
+        }
+        app.ui.cursor = CursorTarget::Marketplace(0);
+
+        // WHEN
+        let hints = panel.hints(&app);
+
+        // THEN [Space] is not advertised — the affordance would do nothing
+        assert!(
+            hints.iter().all(|h| h.key != "[Space]"),
+            "expected no [Space] hint, got {:?}",
+            hints.iter().map(|h| h.key.as_ref()).collect::<Vec<&str>>()
+        );
     }
 
     #[test]

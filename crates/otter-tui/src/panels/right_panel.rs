@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Padding, Paragraph},
     Frame,
 };
 
@@ -35,6 +35,7 @@ pub enum DefinitionView {
 pub enum RenderMode {
     Logs,
     Definition(DefinitionView),
+    Marketplace,
     ConsumedTriggers,
 }
 
@@ -67,10 +68,10 @@ impl RightPanel {
             RightPanelContent::ConsumedTriggers => RenderMode::ConsumedTriggers,
             RightPanelContent::Contextual => match selection {
                 Selection::Run(_, _) => RenderMode::Logs,
-                Selection::Workflow(_)
-                | Selection::Marketplace(_)
-                | Selection::MarketplaceWorkflow(_, _)
-                | Selection::None => RenderMode::Definition(self.definition_view),
+                Selection::Marketplace(_) => RenderMode::Marketplace,
+                Selection::Workflow(_) | Selection::MarketplaceWorkflow(_, _) | Selection::None => {
+                    RenderMode::Definition(self.definition_view)
+                }
             },
         }
     }
@@ -100,7 +101,9 @@ impl RightPanel {
         match mode {
             RenderMode::ConsumedTriggers => self.consumed_cursor_step(consumed_len, -1),
             RenderMode::Logs => self.scroll += 1,
-            RenderMode::Definition(_) => self.scroll = self.scroll.saturating_sub(1),
+            RenderMode::Definition(_) | RenderMode::Marketplace => {
+                self.scroll = self.scroll.saturating_sub(1)
+            }
         }
     }
 
@@ -108,7 +111,7 @@ impl RightPanel {
         match mode {
             RenderMode::ConsumedTriggers => self.consumed_cursor_step(consumed_len, 1),
             RenderMode::Logs => self.scroll = self.scroll.saturating_sub(1),
-            RenderMode::Definition(_) => self.scroll += 1,
+            RenderMode::Definition(_) | RenderMode::Marketplace => self.scroll += 1,
         }
     }
 
@@ -287,6 +290,7 @@ impl Panel for RightPanel {
             RenderMode::Definition(view) => {
                 render_definition_preview(self, f, app, area, focused, view)
             }
+            RenderMode::Marketplace => render_marketplace_summary(self, f, app, area, focused),
         }
     }
 
@@ -329,6 +333,10 @@ impl Panel for RightPanel {
                     DefinitionView::Preview => PanelHint::new("[W]", "Show raw workflow"),
                     DefinitionView::Raw => PanelHint::new("[W]", "Show workflow preview"),
                 },
+            ],
+            RenderMode::Marketplace => vec![
+                PanelHint::new("[↑↓]", "Scroll"),
+                PanelHint::new("[Home/End]", "Top/Bottom"),
             ],
             RenderMode::ConsumedTriggers => vec![
                 PanelHint::new("[↑↓]", "Scroll"),
@@ -484,7 +492,7 @@ fn build_log_lines<'a>(
 }
 
 fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_width = area.width.saturating_sub(3) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
     right.height = inner_height;
     let logs = app.selected_logs();
@@ -513,7 +521,8 @@ fn render_logs(right: &mut RightPanel, f: &mut Frame, app: &App, area: Rect, is_
         panel_focused("Run log")
     } else {
         panel("Run log")
-    };
+    }
+    .padding(Padding::left(1));
     let para = Paragraph::new(visible).block(block);
 
     f.render_widget(para, area);
@@ -845,7 +854,7 @@ fn render_definition_preview(
     is_focused: bool,
     view: DefinitionView,
 ) {
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_width = area.width.saturating_sub(3) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
     right.height = inner_height;
 
@@ -853,12 +862,10 @@ fn render_definition_preview(
         DefinitionView::Raw => build_raw_lines(app, inner_width),
         DefinitionView::Preview => match app.selection() {
             Selection::Workflow(_) => build_installed_preview(app, inner_width),
-            Selection::Marketplace(_) | Selection::MarketplaceWorkflow(_, _) => {
-                build_marketplace_preview(app, inner_width)
-            }
-            // The render dispatcher routes Run cursors to logs, so this arm
-            // is unreachable in practice.
-            Selection::Run(_, _) | Selection::None => Vec::new(),
+            Selection::MarketplaceWorkflow(_, _) => build_marketplace_preview(app, inner_width),
+            // Marketplace is routed to `render_marketplace_summary`, and the
+            // dispatcher routes Run cursors to logs.
+            Selection::Marketplace(_) | Selection::Run(_, _) | Selection::None => Vec::new(),
         },
     };
 
@@ -876,7 +883,36 @@ fn render_definition_preview(
         panel_focused(title)
     } else {
         panel(title)
-    };
+    }
+    .padding(Padding::left(1));
+    let para = Paragraph::new(visible).block(block);
+    f.render_widget(para, area);
+}
+
+fn render_marketplace_summary(
+    right: &mut RightPanel,
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    is_focused: bool,
+) {
+    let inner_width = area.width.saturating_sub(3) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    right.height = inner_height;
+
+    let lines = build_marketplace_preview(app, inner_width);
+
+    let auto_bottom = lines.len().saturating_sub(inner_height);
+    right.scroll = right.scroll.min(auto_bottom);
+    let scroll_offset = if is_focused { right.scroll } else { 0 };
+
+    let visible = with_scroll_indicators(lines, scroll_offset, inner_height);
+    let block = if is_focused {
+        panel_focused("Marketplace")
+    } else {
+        panel("Marketplace")
+    }
+    .padding(Padding::left(1));
     let para = Paragraph::new(visible).block(block);
     f.render_widget(para, area);
 }
@@ -889,10 +925,10 @@ fn build_raw_lines<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>> {
 
     let toml = match app.selection() {
         Selection::Workflow(e) => e.toml_content.clone(),
-        Selection::Marketplace(_) | Selection::MarketplaceWorkflow(_, _) => app
+        Selection::MarketplaceWorkflow(_, _) => app
             .selected_marketplace_pkg_dir()
             .and_then(|d| std::fs::read_to_string(d.join("workflow.toml")).ok()),
-        Selection::Run(_, _) | Selection::None => None,
+        Selection::Marketplace(_) | Selection::Run(_, _) | Selection::None => None,
     };
 
     let Some(toml) = toml else {
@@ -1051,7 +1087,8 @@ fn render_consumed_triggers(
         panel_focused("Consumed Triggers")
     } else {
         panel("Consumed Triggers")
-    };
+    }
+    .padding(Padding::left(1));
 
     let lines: Vec<Line> = if triggers.is_empty() {
         vec![Line::from(Span::styled(

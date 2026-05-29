@@ -68,16 +68,24 @@ fn render_mode_routes_run_cursor_to_logs() {
 }
 
 #[test]
-fn render_mode_routes_non_run_cursors_to_definition() {
+fn render_mode_routes_workflow_cursor_to_definition() {
     let p = RightPanel::default();
     let fx = SelectionFixture::new();
     assert_eq!(
         p.render_mode(fx.workflow_selection()),
         RenderMode::Definition(DefinitionView::Preview)
     );
+}
+
+#[test]
+fn render_mode_routes_marketplace_cursor_to_marketplace_mode() {
+    // GIVEN a marketplace (not a workflow) is selected
+    let p = RightPanel::default();
+    let fx = SelectionFixture::new();
+    // WHEN/THEN it gets its own render mode, not the workflow Definition one
     assert_eq!(
         p.render_mode(fx.marketplace_selection()),
-        RenderMode::Definition(DefinitionView::Preview)
+        RenderMode::Marketplace
     );
 }
 
@@ -151,6 +159,46 @@ fn toggle_definition_view_flips_between_preview_and_raw_and_resets_scroll() {
     // AND a second toggle flips back
     p.toggle_definition_view(workflow_mode());
     assert_eq!(p.definition_view, DefinitionView::Preview);
+}
+
+#[test]
+fn toggle_definition_view_is_no_op_in_marketplace_mode() {
+    // GIVEN a marketplace selection (no workflow.toml to toggle)
+    let mut p = RightPanel::default();
+    p.scroll = 7;
+
+    // WHEN the user presses W
+    p.toggle_definition_view(RenderMode::Marketplace);
+
+    // THEN nothing changes — no raw view to flip to
+    assert_eq!(p.definition_view, DefinitionView::Preview);
+    assert_eq!(p.scroll, 7);
+}
+
+#[test]
+fn marketplace_mode_hints_exclude_raw_workflow_toggle() {
+    // GIVEN cursor on a marketplace
+    let mut app = make_app();
+    app.marketplaces = vec![otter_core::types::MarketplaceStatus {
+        name: "acme".to_string(),
+        url: "https://example.com/acme".to_string(),
+        workflow_count: 0,
+        last_fetched_at: None,
+        workflows: Vec::new(),
+    }];
+    app.ui.cursor = CursorTarget::Marketplace(0);
+    let panel = RightPanel::default();
+
+    // WHEN the right-panel hints are queried
+    let hints = panel.hints(&app);
+
+    // THEN the [W] "Show raw workflow" hint is absent — marketplaces
+    // aren't workflows
+    assert!(
+        hints.iter().all(|h| h.key != "[W]"),
+        "expected no [W] hint for marketplace mode, got {:?}",
+        hints.iter().map(|h| h.key.as_ref()).collect::<Vec<_>>()
+    );
 }
 
 #[test]
