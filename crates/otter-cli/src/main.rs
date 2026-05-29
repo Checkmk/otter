@@ -1482,6 +1482,62 @@ pub(crate) fn socket_path() -> PathBuf {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn daemon_is_live_at(path: &std::path::Path) -> bool {
+    use otter_core::types::DaemonResponse;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let Ok(mut stream) = UnixStream::connect(path) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let Ok(cmd) = serde_json::to_string(&DaemonCommand::Ping) else {
+        return false;
+    };
+    if stream.write_all(format!("{cmd}\n").as_bytes()).is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    if BufReader::new(stream).read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(
+        serde_json::from_str::<DaemonResponse>(line.trim()),
+        Ok(DaemonResponse::Pong)
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn daemon_is_live_at(path: &std::path::Path) -> bool {
+    use otter_core::types::DaemonResponse;
+    use std::io::{BufRead, BufReader, Write};
+
+    let Ok(mut pipe) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    else {
+        return false;
+    };
+    let Ok(cmd) = serde_json::to_string(&DaemonCommand::Ping) else {
+        return false;
+    };
+    if pipe.write_all(format!("{cmd}\n").as_bytes()).is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    if BufReader::new(pipe).read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(
+        serde_json::from_str::<DaemonResponse>(line.trim()),
+        Ok(DaemonResponse::Pong)
+    )
+}
+
 pub(crate) fn dirs_data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -1515,6 +1571,84 @@ pub(crate) fn dirs_config_dir() -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn daemon_is_live_true_when_daemon_answers_pong() {
+        use otter_core::types::{DaemonCommand, DaemonResponse};
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        // GIVEN a listener that answers a Ping with Pong, like a live daemon
+        let tmp = TempDir::new().unwrap();
+        let sock = tmp.path().join("otter.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let cmd: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+            assert!(matches!(cmd, DaemonCommand::Ping));
+            let resp = serde_json::to_string(&DaemonResponse::Pong).unwrap();
+            (&stream).write_all(format!("{resp}\n").as_bytes()).unwrap();
+        });
+
+        // WHEN/THEN the probe reports a live daemon
+        assert!(daemon_is_live_at(&sock));
+        handle.join().unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn daemon_is_live_false_when_socket_accepts_but_stays_silent() {
+        use std::os::unix::net::UnixListener;
+
+        // GIVEN a socket that accepts the connection but never replies — like a
+        // leftover socket-activation listener or a stale half-open socket
+        let tmp = TempDir::new().unwrap();
+        let sock = tmp.path().join("otter.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let _ = listener.accept(); // accept then drop without replying
+        });
+
+        // WHEN/THEN the probe does not mistake it for a live daemon
+        assert!(!daemon_is_live_at(&sock));
+        handle.join().unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn daemon_is_live_false_on_non_pong_reply() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+
+        // GIVEN a listener that replies with something other than Pong
+        let tmp = TempDir::new().unwrap();
+        let sock = tmp.path().join("otter.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"\"Ok\"\n");
+            }
+        });
+
+        // WHEN/THEN the probe rejects the non-Pong reply
+        assert!(!daemon_is_live_at(&sock));
+        handle.join().unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn daemon_is_live_false_when_no_socket() {
+        // GIVEN a path with no socket bound
+        let tmp = TempDir::new().unwrap();
+        let sock = tmp.path().join("nonexistent.sock");
+
+        // WHEN/THEN the probe reports no daemon
+        assert!(!daemon_is_live_at(&sock));
+    }
 
     #[test]
     fn parse_marketplace_ref_accepts_workflow_at_marketplace() {

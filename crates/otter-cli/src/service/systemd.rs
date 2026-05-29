@@ -63,6 +63,28 @@ impl SystemdServiceManager {
 
         Ok(())
     }
+
+    /// Remove the legacy socket-activation unit left behind by older,
+    /// socket-activated otter versions.
+    fn cleanup_legacy_socket(&self) -> bool {
+        let legacy_socket = self.legacy_socket_unit_path();
+        if !legacy_socket.exists() {
+            return false;
+        }
+        let _ = self.systemctl(&["disable", "--now", "otter.socket"]);
+        let _ = std::fs::remove_file(&legacy_socket);
+        true
+    }
+
+    /// Clean up a leftover legacy socket unit before (re)starting and clear any
+    /// failed state the resulting restart loop may have left on the service.
+    fn migrate_legacy_socket_before_start(&self) -> anyhow::Result<()> {
+        if self.cleanup_legacy_socket() {
+            let _ = self.systemctl(&["reset-failed", "otter.service"]);
+            self.systemctl(&["daemon-reload"])?;
+        }
+        Ok(())
+    }
 }
 
 /// Ensure linger is enabled for the current user so the service keeps running after logout.
@@ -99,11 +121,7 @@ fn linger_enabled() -> bool {
 impl ServiceManager for SystemdServiceManager {
     fn enable(&self) -> anyhow::Result<()> {
         // Clean up legacy socket unit from socket-activated versions before reloading.
-        let legacy_socket = self.legacy_socket_unit_path();
-        if legacy_socket.exists() {
-            let _ = self.systemctl(&["disable", "--now", "otter.socket"]);
-            let _ = std::fs::remove_file(&legacy_socket);
-        }
+        self.cleanup_legacy_socket();
         self.write_unit_files()?;
         self.systemctl(&["daemon-reload"])?;
         self.systemctl(&["enable", "--now", "otter.service"])?;
@@ -127,6 +145,7 @@ impl ServiceManager for SystemdServiceManager {
 
     fn start(&self) -> anyhow::Result<()> {
         if self.service_unit_path().exists() {
+            self.migrate_legacy_socket_before_start()?;
             return self.systemctl(&["start", "otter.service"]);
         }
         super::start_session_daemon()
@@ -141,6 +160,7 @@ impl ServiceManager for SystemdServiceManager {
 
     fn restart(&self) -> anyhow::Result<()> {
         if self.service_unit_path().exists() {
+            self.migrate_legacy_socket_before_start()?;
             return self.systemctl(&["restart", "otter.service"]);
         }
         super::restart_session_daemon()
@@ -180,6 +200,35 @@ mod tests {
         assert!(service_content.contains("Environment=SHELL=/bin/bash"));
         // No socket unit is written
         assert!(!mgr.legacy_socket_unit_path().exists());
+    }
+
+    #[test]
+    fn cleanup_legacy_socket_removes_leftover_unit() {
+        // GIVEN a unit dir with a leftover legacy otter.socket from an old version
+        let tmp = tempdir().unwrap();
+        let mgr = manager_in(tmp.path());
+        fs::write(
+            mgr.legacy_socket_unit_path(),
+            "[Socket]\nListenStream=...\n",
+        )
+        .unwrap();
+
+        // WHEN the legacy socket is cleaned up
+        let removed = mgr.cleanup_legacy_socket();
+
+        // THEN it reports removal and the unit file is gone
+        assert!(removed);
+        assert!(!mgr.legacy_socket_unit_path().exists());
+    }
+
+    #[test]
+    fn cleanup_legacy_socket_is_noop_without_leftover() {
+        // GIVEN a unit dir with no legacy socket unit
+        let tmp = tempdir().unwrap();
+        let mgr = manager_in(tmp.path());
+
+        // WHEN/THEN cleanup reports nothing to do
+        assert!(!mgr.cleanup_legacy_socket());
     }
 
     #[test]

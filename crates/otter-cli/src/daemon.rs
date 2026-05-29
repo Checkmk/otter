@@ -86,7 +86,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     #[cfg(not(target_os = "windows"))]
     if socket_path.exists() {
-        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+        if crate::daemon_is_live_at(&socket_path) {
             anyhow::bail!("service is already running");
         }
         // Socket exists but no listener — stale; remove it.
@@ -372,6 +372,9 @@ async fn handle_connection<S>(
     };
 
     match cmd {
+        DaemonCommand::Ping => {
+            let _ = write_json(&mut writer, &DaemonResponse::Pong).await;
+        }
         DaemonCommand::Subscribe => {
             let (sub_tx, mut sub_rx) = mpsc::channel::<DaemonEvent>(256);
             // Send a single snapshot of all workflows before streaming live events.

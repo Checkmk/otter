@@ -85,11 +85,7 @@ pub(super) fn restart_session_daemon() -> anyhow::Result<()> {
 }
 
 pub(crate) fn is_service_running() -> bool {
-    let path = crate::socket_path();
-    #[cfg(not(target_os = "windows"))]
-    return std::os::unix::net::UnixStream::connect(&path).is_ok();
-    #[cfg(target_os = "windows")]
-    return std::fs::OpenOptions::new().read(true).open(&path).is_ok();
+    crate::daemon_is_live_at(&crate::socket_path())
 }
 
 fn kill_by_pid(pid: &str) -> anyhow::Result<()> {

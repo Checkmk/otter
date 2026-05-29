@@ -517,6 +517,7 @@ pub enum DaemonEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonCommand {
+    Ping,
     Start {
         name: String,
     },
@@ -555,6 +556,8 @@ pub enum DaemonCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonResponse {
     Ok,
+    /// Reply to [`DaemonCommand::Ping`]; proves a live daemon is listening.
+    Pong,
     Error {
         message: String,
     },

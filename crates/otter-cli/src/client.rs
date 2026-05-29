@@ -95,7 +95,7 @@ pub async fn run_ui() -> anyhow::Result<()> {
 pub async fn send_command_print(cmd: DaemonCommand) -> anyhow::Result<()> {
     let resp = send_command_once(cmd).await?;
     match resp {
-        DaemonResponse::Ok => println!("OK"),
+        DaemonResponse::Ok | DaemonResponse::Pong => println!("OK"),
         DaemonResponse::Error { message } => {
             eprintln!("Error: {message}");
             std::process::exit(1);
