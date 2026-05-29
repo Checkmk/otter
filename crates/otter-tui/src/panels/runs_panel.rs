@@ -258,9 +258,9 @@ pub fn render_runs(f: &mut Frame, app: &App, panel: &RunsPanel, area: Rect) {
         );
         let name_content = entry.name.clone();
         let prefixed_icon = if entry.autostart {
-            format!(" (A) {state_icon}")
+            format!(" (A) {state_icon} ")
         } else {
-            format!(" {state_icon}")
+            format!(" {state_icon} ")
         };
         items.push(make_item(
             expand_char,
@@ -306,7 +306,7 @@ pub fn render_runs(f: &mut Frame, app: &App, panel: &RunsPanel, area: Rect) {
                 items.push(make_item(
                     "   ",
                     &run_content,
-                    format!(" {run_icon}"),
+                    format!(" {run_icon} "),
                     run_color,
                     is_run_selected,
                 ));
