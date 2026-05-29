@@ -69,7 +69,7 @@ repository doubles as one:
 
 ```bash
 otter marketplace add "$(pwd)"
-otter workflow install hello-world@otter-examples
+otter workflow install todo-impl@otter
 ```
 
 ## Build
