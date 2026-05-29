@@ -226,10 +226,19 @@ fn is_stale_lock(lock_path: &Path) -> bool {
 
 async fn prepare_slot(slot_path: &Path, base_repo: &Path, git_ref: &str) -> anyhow::Result<()> {
     if slot_path.is_dir() {
-        reset_existing_worktree(slot_path, git_ref).await
-    } else {
-        super::workspace::add_worktree(base_repo, slot_path, git_ref).await
+        return reset_existing_worktree(slot_path, git_ref).await;
     }
+    match super::workspace::add_worktree(base_repo, slot_path, git_ref, false).await {
+        Err(e) if is_stale_registration(&e) => {
+            warn!(slot = %slot_path.display(), "Re-adding worktree over stale registration");
+            super::workspace::add_worktree(base_repo, slot_path, git_ref, true).await
+        }
+        result => result,
+    }
+}
+
+fn is_stale_registration(error: &anyhow::Error) -> bool {
+    error.to_string().contains("already registered")
 }
 
 async fn reset_existing_worktree(slot_path: &Path, git_ref: &str) -> anyhow::Result<()> {

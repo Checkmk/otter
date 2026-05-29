@@ -114,7 +114,7 @@ pub async fn resolve_workspace(
                 }
                 None => {
                     let worktree_path = scratch_dir.join("worktree");
-                    add_worktree(&base_repo_path, &worktree_path, git_ref).await?;
+                    add_worktree(&base_repo_path, &worktree_path, git_ref, false).await?;
                     Ok(Some(worktree_path))
                 }
             }
@@ -161,20 +161,22 @@ pub async fn cleanup_workspace(
     }
 }
 
-/// `git -C <base_repo> worktree add --detach <path> <ref>`.
+/// `git -C <base_repo> worktree add [--force] --detach <path> <ref>`.
+///
+/// `force` overrides a stale "missing but already registered" registration for
+/// this exact path (e.g. a pooled slot whose directory was wiped externally).
 pub(crate) async fn add_worktree(
     base_repo: &Path,
     worktree_path: &Path,
     git_ref: &str,
+    force: bool,
 ) -> anyhow::Result<()> {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.arg("-C")
-        .arg(base_repo)
-        .arg("worktree")
-        .arg("add")
-        .arg("--detach")
-        .arg(worktree_path)
-        .arg(git_ref);
+    cmd.arg("-C").arg(base_repo).arg("worktree").arg("add");
+    if force {
+        cmd.arg("--force");
+    }
+    cmd.arg("--detach").arg(worktree_path).arg(git_ref);
     inject_isolated_env(&mut cmd, &[], true);
     let output = cmd.output().await.map_err(|e| {
         anyhow::anyhow!(
