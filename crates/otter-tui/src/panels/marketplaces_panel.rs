@@ -146,13 +146,13 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, 
     let inner_width = area.width as usize;
     let tick = app.ui.tick;
 
-    // Inline section divider: `── Marketplaces ──────` — colored to match
-    // the surrounding panel border (which itself swaps style on focus).
-    let label = "─ Marketplaces ";
-    let trailing = inner_width.saturating_sub(label.chars().count());
-    let divider = format!("{label}{}", "─".repeat(trailing));
+    // Inline section divider: `── Marketplaces ──────`.
+    let label_text = "Marketplaces";
+    let trailing = inner_width
+        .saturating_sub(label_text.chars().count())
+        .saturating_sub(3);
     let left_focused = app.ui.modal.is_none() && app.ui.focus == Focus::Left;
-    let divider_style = if left_focused {
+    let dash_style = if left_focused {
         Style::default()
             .fg(theme::current().foreground)
             .bg(theme::current().background)
@@ -162,8 +162,16 @@ pub fn render_marketplaces(f: &mut Frame, app: &App, panel: &MarketplacesPanel, 
             .fg(theme::current().border)
             .bg(theme::current().background)
     };
+    let label_style = Style::default()
+        .fg(theme::current().foreground)
+        .bg(theme::current().background)
+        .add_modifier(Modifier::BOLD);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(divider, divider_style))),
+        Paragraph::new(Line::from(vec![
+            Span::styled("─ ", dash_style),
+            Span::styled(label_text, label_style),
+            Span::styled(format!(" {}", "─".repeat(trailing)), dash_style),
+        ])),
         divider_area,
     );
     let dim = Style::default()
