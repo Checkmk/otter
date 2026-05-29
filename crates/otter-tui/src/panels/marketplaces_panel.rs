@@ -83,8 +83,13 @@ impl Panel for MarketplacesPanel {
             CursorTarget::MarketplaceWorkflow(mi, wi) => {
                 if let Some(m) = app.marketplaces.get(mi) {
                     if let Some(w) = m.workflows.get(wi) {
+                        let verb = if app.workflow_update_available(&w.name).is_some() {
+                            "Update"
+                        } else {
+                            "Install"
+                        };
                         hints.push(PanelHint::owned(format!(
-                            "Install via `otter workflow install {}@{}`",
+                            "{verb} via `otter workflow install {}@{}`",
                             w.name, m.name
                         )));
                     }

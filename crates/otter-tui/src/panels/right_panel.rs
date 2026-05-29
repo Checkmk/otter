@@ -545,6 +545,7 @@ pub(crate) enum PreviewSource<'a> {
     Marketplace {
         marketplace_name: &'a str,
         installed: bool,
+        update_available: Option<&'a str>,
         pkg_dir_missing: bool,
     },
     Installed {
@@ -625,23 +626,36 @@ where
     }
 
     // Call-to-action: UPDATE AVAILABLE when an installed workflow has a newer
-    // upstream version.
-    if let PreviewSource::Installed {
-        origin: Some(o),
-        update_available: Some(latest),
-    } = &source
-    {
-        if !o.dangling {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("UPDATE AVAILABLE".to_string(), bold),
-                Span::styled(format!("  → v{latest}"), dim),
-            ]));
-            lines.push(Line::from(Span::styled(
-                format!("  otter workflow install {workflow_name}"),
-                base_style(),
-            )));
-        }
+    // upstream version. The install command is qualified with `@<marketplace>`
+    // so it works verbatim even when multiple marketplaces ship the same name.
+    let update_info: Option<(&str, Option<&str>)> = match &source {
+        PreviewSource::Installed {
+            origin: Some(o),
+            update_available: Some(latest),
+        } if !o.dangling => Some((*latest, Some(o.marketplace.as_str()))),
+        PreviewSource::Marketplace {
+            marketplace_name,
+            update_available: Some(latest),
+            installed: true,
+            ..
+        } => Some((*latest, Some(*marketplace_name))),
+        _ => None,
+    };
+    if let Some((latest, marketplace)) = update_info {
+        let green_bold = Style::default()
+            .fg(theme::current().completed)
+            .bg(theme::current().background)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let suffix = marketplace.map(|m| format!("@{m}")).unwrap_or_default();
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("UPDATE AVAILABLE".to_string(), green_bold),
+            Span::styled(format!("  → v{latest}"), dim),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  otter workflow install {workflow_name}{suffix}"),
+            base_style(),
+        )));
     }
 
     let pkg_dir_missing = matches!(
@@ -995,11 +1009,13 @@ fn build_marketplace_preview<'a>(app: &App, inner_width: usize) -> Vec<Line<'a>>
                 .as_ref()
                 .and_then(|d| std::fs::read_to_string(d.join("README.md")).ok());
             let installed = app.is_workflow_installed(&w.name);
+            let update_available = app.workflow_update_available(&w.name);
 
             build_workflow_preview_lines(
                 PreviewSource::Marketplace {
                     marketplace_name: &m.name,
                     installed,
+                    update_available,
                     pkg_dir_missing,
                 },
                 &w.name,

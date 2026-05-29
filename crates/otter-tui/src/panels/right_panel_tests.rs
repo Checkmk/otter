@@ -699,6 +699,7 @@ command = ["echo", "hi"]
         PreviewSource::Marketplace {
             marketplace_name: "acme",
             installed: false,
+            update_available: None,
             pkg_dir_missing: false,
         },
         "polling-simple",
@@ -783,6 +784,7 @@ message_file = "prompts/follow-up.md"
         PreviewSource::Marketplace {
             marketplace_name: "acme",
             installed: false,
+            update_available: None,
             pkg_dir_missing: false,
         },
         "wf",
@@ -828,6 +830,7 @@ message_file = "missing.md"
         PreviewSource::Marketplace {
             marketplace_name: "acme",
             installed: false,
+            update_available: None,
             pkg_dir_missing: false,
         },
         "wf",
@@ -852,6 +855,7 @@ fn preview_handles_missing_clone() {
         PreviewSource::Marketplace {
             marketplace_name: "acme",
             installed: false,
+            update_available: None,
             pkg_dir_missing: true,
         },
         "wf",
@@ -908,9 +912,85 @@ command = ["echo", "hi"]
     assert!(text.contains("from acme"));
     assert!(text.contains("UPDATE AVAILABLE"));
     assert!(text.contains("→ v1.2.0"));
-    assert!(text.contains("otter workflow install jira-sync"));
-    // No marketplace-style INSTALL command with @marketplace syntax
-    assert!(!text.contains("install jira-sync@acme"));
+    assert!(text.contains("otter workflow install jira-sync@acme"));
+}
+
+#[test]
+fn marketplace_preview_shows_update_section_when_installed_and_outdated() {
+    // GIVEN a marketplace workflow that is already installed locally but a newer
+    // version exists upstream
+    let def = parse_def(
+        r#"
+name = "jira-sync"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+    );
+
+    // WHEN
+    let lines = build_workflow_preview_lines(
+        PreviewSource::Marketplace {
+            marketplace_name: "acme",
+            installed: true,
+            update_available: Some("1.2.0"),
+            pkg_dir_missing: false,
+        },
+        "jira-sync",
+        Some("1.2.0"),
+        None,
+        Some(&def),
+        None,
+        80,
+        |_| None,
+    );
+
+    // THEN an UPDATE AVAILABLE section is shown
+    let text = collect_text(&lines);
+    assert!(text.contains("UPDATE AVAILABLE"));
+    assert!(text.contains("→ v1.2.0"));
+    assert!(text.contains("otter workflow install jira-sync@acme"));
+}
+
+#[test]
+fn marketplace_preview_omits_update_section_when_not_installed() {
+    // GIVEN a marketplace workflow that has not been installed yet — even if
+    // `update_available` is set, there is nothing to "update"
+    let def = parse_def(
+        r#"
+name = "jira-sync"
+type = "looping"
+schema = 1
+
+[[steps]]
+type = "shell"
+command = ["echo", "hi"]
+"#,
+    );
+
+    // WHEN
+    let lines = build_workflow_preview_lines(
+        PreviewSource::Marketplace {
+            marketplace_name: "acme",
+            installed: false,
+            update_available: Some("1.2.0"),
+            pkg_dir_missing: false,
+        },
+        "jira-sync",
+        Some("1.2.0"),
+        None,
+        Some(&def),
+        None,
+        80,
+        |_| None,
+    );
+
+    // THEN no UPDATE AVAILABLE section is rendered
+    let text = collect_text(&lines);
+    assert!(!text.contains("UPDATE AVAILABLE"));
 }
 
 #[test]
