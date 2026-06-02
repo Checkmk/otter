@@ -45,9 +45,7 @@ const MAX_SLOTS: usize = 1024;
 
 /// Acquires a worktree slot from the pool and prepares it at `git_ref`.
 ///
-/// Locking is per-slot via `mkdir <slot>.lock`. The slot's worktree is either
-/// created (`git worktree add`) on first use or reset (`checkout --detach`,
-/// `reset --hard`, `clean -fd`) on reuse.
+/// Locking is per-slot via `mkdir <slot>.lock`.
 pub async fn acquire_pool_slot(
     pool_dir: &Path,
     base_repo: &Path,
@@ -242,8 +240,8 @@ fn is_stale_registration(error: &anyhow::Error) -> bool {
 }
 
 async fn reset_existing_worktree(slot_path: &Path, git_ref: &str) -> anyhow::Result<()> {
-    run_git(slot_path, &["checkout", "--detach", git_ref]).await?;
-    run_git(slot_path, &["reset", "--hard"]).await?;
+    run_git(slot_path, &["checkout", "--detach", "--force", git_ref]).await?;
+    run_git(slot_path, &["reset", "--hard", git_ref]).await?;
     run_git(slot_path, &["clean", "-fd"]).await?;
     Ok(())
 }
@@ -394,6 +392,35 @@ mod tests {
         // THEN — same slot reused (slot-0)
         assert_eq!(first, second);
         assert!(ns.join("slot-0.lock").is_dir());
+    }
+
+    #[tokio::test]
+    async fn reuse_resets_dirty_slot_when_switching_refs() {
+        // GIVEN a repo with two commits: the slot is reused at a different ref
+        // than it last ran at, while carrying uncommitted changes to a tracked
+        // file that differs between the two refs (the real failure: a plain
+        // `checkout` refuses to overwrite the locally-modified file).
+        let (_repo_guard, repo) = init_repo();
+        run_sync(&repo, &["tag", "v1"]);
+        std::fs::write(repo.join("README.md"), "v2").unwrap();
+        run_sync(&repo, &["commit", "-am", "v2"]);
+
+        let pool = tempfile::tempdir().unwrap();
+        let slot = acquire_pool_slot(pool.path(), &repo, "v1").await.unwrap();
+        std::fs::write(slot.join("README.md"), "local edit").unwrap();
+        std::fs::write(slot.join("untracked.txt"), "stray").unwrap();
+        release_pool_slot(&slot).await.unwrap();
+
+        // WHEN the slot is acquired again at the newer ref
+        let reused = acquire_pool_slot(pool.path(), &repo, "main").await.unwrap();
+
+        // THEN the slot is reset to that ref: tracked file matches, untracked gone
+        assert_eq!(slot, reused);
+        assert_eq!(
+            std::fs::read_to_string(reused.join("README.md")).unwrap(),
+            "v2"
+        );
+        assert!(!reused.join("untracked.txt").exists());
     }
 
     #[tokio::test]
