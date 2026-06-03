@@ -56,8 +56,6 @@ otter service stop
 | `otter service enable`  | enable auto-boot     |
 | `otter service disable` | disable auto-boot    |
 
-`otter service enable` is the only path that writes outside otter's own directories (it installs a systemd user unit), `disable` removes it.
-
 ## Example Workflows
 
 Can be found in the [examples/](examples/) directory.
@@ -85,6 +83,8 @@ cargo build --release
 | ------------------------------ | ----------------------- | ------------------ |
 | Configuration & workflows      | `~/.config/otter/`      | `%APPDATA%\otter\` |
 | State, logs & run scratch dirs | `~/.local/share/otter/` | `%APPDATA%\otter\` |
+
+`otter service enable` is the only path that writes outside these directories (it installs a systemd user unit to `~/.config/systemd/user/otter.service`). `otter service disable` removes it.
 
 ## Configuration Reference
 
