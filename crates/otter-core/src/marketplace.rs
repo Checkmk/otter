@@ -287,6 +287,13 @@ pub async fn fetch_marketplace(clone: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn refresh_marketplace(data_dir: &Path, name: &str) -> anyhow::Result<()> {
+    let clone = clone_dir(data_dir, name);
+    fetch_marketplace(&clone).await?;
+    refresh_state_from_clone(data_dir, name)?;
+    Ok(())
+}
+
 /// Refresh the per-marketplace `known_versions` map by reading the current
 /// state of every (non-wip) workflow package in the clone. Updates `last_fetched_at`.
 pub fn refresh_state_from_clone(data_dir: &Path, name: &str) -> anyhow::Result<MarketplaceState> {

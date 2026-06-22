@@ -514,10 +514,19 @@ struct InstallSource {
     is_bare_name_refresh: bool,
 }
 
-fn resolve_install_source(target: &str) -> anyhow::Result<InstallSource> {
+async fn refresh_marketplace_best_effort(data_dir: &std::path::Path, marketplace_name: &str) {
+    if let Err(e) = otter_core::marketplace::refresh_marketplace(data_dir, marketplace_name).await {
+        eprintln!(
+            "Warning: could not refresh marketplace '{marketplace_name}': {e} (using cached copy)"
+        );
+    }
+}
+
+async fn resolve_install_source(target: &str) -> anyhow::Result<InstallSource> {
     // Case 1: <name>@<marketplace> marketplace reference.
     if let Some((marketplace_name, workflow_name)) = parse_marketplace_ref(target) {
         let data_dir = dirs_data_dir();
+        refresh_marketplace_best_effort(&data_dir, marketplace_name).await;
         let pkg = otter_core::marketplace::resolve_workflow_in_marketplace(
             &data_dir,
             marketplace_name,
@@ -557,8 +566,10 @@ fn resolve_install_source(target: &str) -> anyhow::Result<InstallSource> {
                 "Workflow '{target}' has no recorded origin — pass a local path to reinstall."
             )
         })?;
+        let data_dir = dirs_data_dir();
+        refresh_marketplace_best_effort(&data_dir, &origin.marketplace).await;
         let pkg = otter_core::marketplace::resolve_workflow_in_marketplace(
-            &dirs_data_dir(),
+            &data_dir,
             &origin.marketplace,
             target,
         )?;
@@ -575,7 +586,7 @@ fn resolve_install_source(target: &str) -> anyhow::Result<InstallSource> {
 }
 
 async fn handle_workflow_install(target: String, force: bool) -> anyhow::Result<()> {
-    let source = resolve_install_source(&target)?;
+    let source = resolve_install_source(&target).await?;
 
     let (toml_path, is_package) = if source.path.is_dir() {
         let tp = source.path.join("workflow.toml");

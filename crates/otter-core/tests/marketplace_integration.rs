@@ -162,3 +162,70 @@ path = "workflows/beta"
     assert_eq!(dangling.len(), 1);
     assert_eq!(dangling[0].0, "alpha");
 }
+
+/// Regression: an explicit install must not resolve against a stale clone.
+/// Mirrors the post-`otter update` race where the daemon's async startup fetch
+/// hasn't landed yet — `refresh_marketplace` (what install now calls) realigns
+/// the clone so resolution sees the latest upstream version.
+#[tokio::test]
+async fn refresh_marketplace_picks_up_upstream_bump() {
+    if !git_available() {
+        eprintln!("git not available — skipping refresh_marketplace_picks_up_upstream_bump");
+        return;
+    }
+
+    // GIVEN a marketplace cloned at version 1.0.0
+    let host = TempDir::new().unwrap();
+    let data_dir = host.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let upstream = TempDir::new().unwrap();
+    let upstream_path = upstream.path();
+    git(upstream_path, &["init", "-q", "-b", "main"]);
+    write(
+        &upstream_path.join(".otter-marketplace.toml"),
+        r#"
+schema = 1
+name = "shop"
+[[workflow]]
+path = "workflows/alpha"
+"#,
+    );
+    write(
+        &upstream_path.join("workflows/alpha/workflow.toml"),
+        &workflow_toml("alpha", "1.0.0"),
+    );
+    git(upstream_path, &["add", "."]);
+    git(upstream_path, &["commit", "-q", "-m", "initial"]);
+
+    let marketplace_name = "shop";
+    let clone = marketplace::clone_dir(&data_dir, marketplace_name);
+    let url = format!("file://{}", upstream_path.display());
+    marketplace::clone_marketplace(&url, &clone).await.unwrap();
+
+    // WHEN upstream bumps alpha to 2.0.0 but the local clone has NOT been fetched
+    write(
+        &upstream_path.join("workflows/alpha/workflow.toml"),
+        &workflow_toml("alpha", "2.0.0"),
+    );
+    git(upstream_path, &["add", "workflows/alpha/workflow.toml"]);
+    git(upstream_path, &["commit", "-q", "-m", "bump alpha"]);
+
+    // THEN resolving against the stale clone still reports the old version
+    let stale = marketplace::read_package_def(&clone, "workflows/alpha").unwrap();
+    assert_eq!(stale.version.as_deref(), Some("1.0.0"));
+
+    // WHEN install refreshes the marketplace first
+    marketplace::refresh_marketplace(&data_dir, marketplace_name)
+        .await
+        .unwrap();
+
+    // THEN resolution now sees the upstream bump
+    let fresh = marketplace::read_package_def(&clone, "workflows/alpha").unwrap();
+    assert_eq!(fresh.version.as_deref(), Some("2.0.0"));
+    let state = marketplace::load_state(&data_dir, marketplace_name).unwrap();
+    assert_eq!(
+        state.known_versions.get("workflows/alpha"),
+        Some(&Some("2.0.0".to_string()))
+    );
+}
