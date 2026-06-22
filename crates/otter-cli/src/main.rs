@@ -4,7 +4,7 @@ mod daemon;
 mod service;
 mod updater;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser, Subcommand};
@@ -123,11 +123,8 @@ enum MarketplaceCommands {
         /// Name as printed by `otter status` / written to `marketplaces.toml`
         name: String,
     },
-    /// Browse workflows available in registered marketplaces.
-    List {
-        /// Restrict listing to a single marketplace
-        name: Option<String>,
-    },
+    /// List registered marketplaces.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -174,7 +171,7 @@ enum WorkflowCommands {
         #[arg(long)]
         reset_secrets: bool,
     },
-    /// List installed workflows and their auto-start state.
+    /// List installed and available workflows.
     List,
 }
 
@@ -363,22 +360,48 @@ async fn handle_workflow_command(command: WorkflowCommands) -> anyhow::Result<()
             name,
             reset_secrets,
         } => handle_workflow_configure(name, reset_secrets).await,
-        WorkflowCommands::List => handle_workflow_list(),
+        WorkflowCommands::List => handle_workflow_list().await,
     }
 }
 
-fn handle_workflow_list() -> anyhow::Result<()> {
+async fn handle_workflow_list() -> anyhow::Result<()> {
     let config_dir = dirs_config_dir();
     let workflows_dir = config_dir.join("workflows");
     let enabled = read_enabled(&config_dir)?;
     let rows = collect_installed_workflows(&workflows_dir, &enabled);
 
+    // The marketplace catalog and update info come from the daemon; the
+    // installed list works offline, so degrade gracefully when it is down.
+    let status = client::fetch_status().await;
+
+    println!("Installed");
     if rows.is_empty() {
-        println!("No workflows installed.");
-        return Ok(());
+        println!("  No workflows installed.");
+    } else {
+        let updates: HashMap<String, String> = status
+            .as_ref()
+            .map(|(workflows, _)| {
+                workflows
+                    .iter()
+                    .filter_map(|w| w.update_available.clone().map(|v| (w.name.clone(), v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        print_workflow_list(&rows, &updates);
     }
 
-    print_workflow_list(&rows);
+    println!();
+    match status {
+        Some((workflows, marketplaces)) => {
+            client::print_available_workflows(&marketplaces, &workflows);
+        }
+        None => {
+            println!("Available");
+            println!(
+                "  Start the otter service (`otter service start`) to list available workflows."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -448,7 +471,7 @@ fn collect_installed_workflows(
     rows
 }
 
-fn print_workflow_list(rows: &[InstalledWorkflowRow]) {
+fn print_workflow_list(rows: &[InstalledWorkflowRow], updates: &HashMap<String, String>) {
     let display_names: Vec<String> = rows.iter().map(|r| r.display_name()).collect();
     let name_w = display_names
         .iter()
@@ -463,13 +486,17 @@ fn print_workflow_list(rows: &[InstalledWorkflowRow]) {
         .unwrap_or(0)
         .max("KIND".len());
     let auto_w = "AUTO-START".len();
-    let total_w = name_w + kind_w + auto_w + 2;
 
-    println!("{:<name_w$} {:<kind_w$} AUTO-START", "NAME", "KIND");
-    println!("{}", "-".repeat(total_w));
+    println!("  {:<name_w$} {:<kind_w$} AUTO-START", "NAME", "KIND");
     for (r, name) in rows.iter().zip(display_names.iter()) {
         let autostart = if r.autostart { "enabled" } else { "disabled" };
-        println!("{:<name_w$} {:<kind_w$} {}", name, r.kind, autostart);
+        match updates.get(&r.name) {
+            Some(v) => println!(
+                "  {name:<name_w$} {:<kind_w$} {autostart:<auto_w$}  (update → {v})",
+                r.kind
+            ),
+            None => println!("  {name:<name_w$} {:<kind_w$} {autostart}", r.kind),
+        }
     }
 }
 
@@ -1049,7 +1076,7 @@ async fn handle_marketplace_command(command: MarketplaceCommands) -> anyhow::Res
     match command {
         MarketplaceCommands::Add { url } => handle_marketplace_add(url).await,
         MarketplaceCommands::Remove { name } => handle_marketplace_remove(name).await,
-        MarketplaceCommands::List { name } => client::print_marketplace_catalog(name).await,
+        MarketplaceCommands::List => client::print_marketplace_list().await,
     }
 }
 
@@ -1103,7 +1130,7 @@ async fn handle_marketplace_add(url: String) -> anyhow::Result<()> {
     })?;
 
     println!(
-        "Registered marketplace '{name}' ({} workflow{}). Run `otter marketplace list {name}` to browse.",
+        "Registered marketplace '{name}' ({} workflow{}). Run `otter workflow list` to see what you can install.",
         idx.workflows.len(),
         if idx.workflows.len() == 1 { "" } else { "s" }
     );

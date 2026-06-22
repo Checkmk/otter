@@ -241,7 +241,7 @@ fn print_marketplaces(marketplaces: &[MarketplaceStatus], workflows: &[WorkflowS
         println!("  {}: {} · fetched {}", m.name, bits.join(", "), fetched,);
     }
     println!();
-    println!("Run `otter marketplace list [<name>]` to browse available workflows.");
+    println!("Run `otter workflow list` to browse available workflows.");
 }
 
 fn installed_and_update_counts(
@@ -269,131 +269,136 @@ fn installed_and_update_counts(
     (installed_names.len(), updates)
 }
 
-pub async fn print_marketplace_catalog(filter: Option<String>) -> anyhow::Result<()> {
-    let resp = match send_command_once(DaemonCommand::Status).await {
-        Ok(r) => r,
-        Err(_) => {
-            eprintln!("The otter service is not running. Run `otter service start` first.");
-            std::process::exit(1);
-        }
-    };
-    let (workflows, marketplaces) = match resp {
-        DaemonResponse::StatusResponse {
+pub async fn fetch_status() -> Option<(Vec<WorkflowStatus>, Vec<MarketplaceStatus>)> {
+    match send_command_once(DaemonCommand::Status).await {
+        Ok(DaemonResponse::StatusResponse {
             workflows,
             marketplaces,
-        } => (workflows, marketplaces),
-        DaemonResponse::Error { message } => {
-            eprintln!("Error: {message}");
-            std::process::exit(1);
-        }
-        _ => return Ok(()),
+        }) => Some((workflows, marketplaces)),
+        _ => None,
+    }
+}
+
+pub async fn print_marketplace_list() -> anyhow::Result<()> {
+    let Some((workflows, marketplaces)) = fetch_status().await else {
+        eprintln!("The otter service is not running. Run `otter service start` first.");
+        std::process::exit(1);
     };
 
-    let selected: Vec<&MarketplaceStatus> = match &filter {
-        Some(name) => {
-            let matched: Vec<&MarketplaceStatus> =
-                marketplaces.iter().filter(|m| &m.name == name).collect();
-            if matched.is_empty() {
-                eprintln!("Marketplace '{name}' is not registered.");
-                std::process::exit(1);
-            }
-            matched
-        }
-        None => marketplaces.iter().collect(),
-    };
-
-    if selected.is_empty() {
+    if marketplaces.is_empty() {
         println!("No marketplaces registered. Add one with `otter marketplace add <git-url>`.");
         return Ok(());
     }
 
-    for (i, m) in selected.iter().enumerate() {
-        if i > 0 {
-            println!();
+    for m in &marketplaces {
+        let (installed, updates) = installed_and_update_counts(m, &workflows);
+        let fetched = match m.last_fetched_at {
+            None => "never".to_string(),
+            Some(t) => format_relative(t),
+        };
+        let mut bits = vec![format!(
+            "{} workflow{}",
+            m.workflows.len(),
+            if m.workflows.len() == 1 { "" } else { "s" },
+        )];
+        if installed > 0 {
+            bits.push(format!("{installed} installed"));
         }
-        print_marketplace_entry(m, &workflows);
+        if updates > 0 {
+            bits.push(format!(
+                "{updates} update{} available",
+                if updates == 1 { "" } else { "s" },
+            ));
+        }
+        println!("{} — {} · fetched {}", m.name, m.url, fetched);
+        println!("  {}", bits.join(", "));
     }
 
-    if selected.iter().any(|m| !m.workflows.is_empty()) {
-        println!();
-        let marketplace = match selected.as_slice() {
-            [m] => m.name.as_str(),
-            _ => "<marketplace>",
-        };
-        println!("Run `otter workflow install <name>@{marketplace}` to install a workflow.");
-    }
+    println!();
+    println!("Run `otter workflow list` to browse available workflows.");
     Ok(())
 }
 
-fn print_marketplace_entry(m: &MarketplaceStatus, workflows: &[WorkflowStatus]) {
-    let fetched = match m.last_fetched_at {
-        None => "never".to_string(),
-        Some(t) => format_relative(t),
-    };
-    println!("{} — {} · fetched {}", m.name, m.url, fetched);
-    if m.workflows.is_empty() {
-        println!("  (no workflows published)");
-        return;
+pub fn print_available_workflows(marketplaces: &[MarketplaceStatus], workflows: &[WorkflowStatus]) {
+    print!("{}", render_available_workflows(marketplaces, workflows));
+}
+
+fn render_available_workflows(
+    marketplaces: &[MarketplaceStatus],
+    workflows: &[WorkflowStatus],
+) -> String {
+    let mut out = String::new();
+    out.push_str("Available\n");
+
+    if marketplaces.is_empty() {
+        out.push_str(
+            "  No marketplaces registered. Add one with `otter marketplace add <git-url>`.\n",
+        );
+        return out;
     }
 
-    // Look up installed state and available-update version for each catalog entry.
     struct Row {
         name: String,
         version: String,
-        status: String,
         description: String,
     }
-    let installed: std::collections::HashMap<&str, &WorkflowStatus> = workflows
-        .iter()
-        .filter(|w| {
-            w.origin
-                .as_ref()
-                .is_some_and(|o| !o.dangling && o.marketplace == m.name)
-        })
-        .map(|w| (w.name.as_str(), w))
-        .collect();
 
-    let rows: Vec<Row> = m
-        .workflows
-        .iter()
-        .map(|wf| {
-            let status = match installed.get(wf.name.as_str()) {
-                Some(inst) => match &inst.update_available {
-                    Some(v) => format!("installed (update → {v})"),
-                    None => "installed".to_string(),
-                },
-                None => "".to_string(),
-            };
-            Row {
+    let mut any = false;
+    for m in marketplaces {
+        let installed: std::collections::HashSet<&str> = workflows
+            .iter()
+            .filter(|w| {
+                w.origin
+                    .as_ref()
+                    .is_some_and(|o| !o.dangling && o.marketplace == m.name)
+            })
+            .map(|w| w.name.as_str())
+            .collect();
+
+        let rows: Vec<Row> = m
+            .workflows
+            .iter()
+            .filter(|wf| !installed.contains(wf.name.as_str()))
+            .map(|wf| Row {
                 name: wf.name.clone(),
                 version: wf.version.clone().unwrap_or_else(|| "-".to_string()),
-                status,
                 description: truncate(wf.description.as_deref().unwrap_or(""), 60),
-            }
-        })
-        .collect();
+            })
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        any = true;
 
-    let col = |header: &str, get: fn(&Row) -> &str| {
-        rows.iter()
-            .map(|r| get(r).chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(header.chars().count())
-    };
-    let name_w = col("NAME", |r| &r.name);
-    let version_w = col("VERSION", |r| &r.version);
-    let status_w = col("STATUS", |r| &r.status);
+        let col = |header: &str, get: fn(&Row) -> &str| {
+            rows.iter()
+                .map(|r| get(r).chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(header.chars().count())
+        };
+        let name_w = col("NAME", |r| &r.name);
+        let version_w = col("VERSION", |r| &r.version);
 
-    println!(
-        "  {:<name_w$}  {:<version_w$}  {:<status_w$}  DESCRIPTION",
-        "NAME", "VERSION", "STATUS"
-    );
-    for r in &rows {
-        println!(
-            "  {:<name_w$}  {:<version_w$}  {:<status_w$}  {}",
-            r.name, r.version, r.status, r.description
-        );
+        out.push_str(&format!("  {}:\n", m.name));
+        out.push_str(&format!(
+            "    {:<name_w$}  {:<version_w$}  DESCRIPTION\n",
+            "NAME", "VERSION"
+        ));
+        for r in &rows {
+            out.push_str(&format!(
+                "    {:<name_w$}  {:<version_w$}  {}\n",
+                r.name, r.version, r.description
+            ));
+        }
     }
+
+    if any {
+        out.push_str("\n  Run `otter workflow install <name>@<marketplace>` to install one.\n");
+    } else {
+        out.push_str("  All published workflows are installed.\n");
+    }
+    out
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -516,5 +521,48 @@ mod tests {
         // and only those with an available update contribute to the update count.
         assert_eq!(installed, 2);
         assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn available_lists_only_not_installed_workflows() {
+        // GIVEN a marketplace with three workflows, one already installed
+        let m = mp("acme", &["a", "b", "c"]);
+        let workflows = vec![wf("b", Some("acme"), None, false)];
+
+        // WHEN rendering the available section
+        let out = render_available_workflows(&[m], &workflows);
+
+        // THEN the installed workflow is omitted and the others are offered
+        assert!(out.contains("acme:"));
+        assert!(out.contains("a"));
+        assert!(out.contains("c"));
+        assert!(!out.lines().any(|l| l.trim_start().starts_with("b ")));
+        assert!(out.contains("otter workflow install <name>@<marketplace>"));
+    }
+
+    #[test]
+    fn available_reports_when_everything_is_installed() {
+        // GIVEN a marketplace whose every workflow is installed
+        let m = mp("acme", &["a", "b"]);
+        let workflows = vec![
+            wf("a", Some("acme"), None, false),
+            wf("b", Some("acme"), None, false),
+        ];
+
+        // WHEN rendering the available section
+        let out = render_available_workflows(&[m], &workflows);
+
+        // THEN it states there is nothing left to install
+        assert!(out.contains("All published workflows are installed."));
+    }
+
+    #[test]
+    fn available_reports_when_no_marketplaces_registered() {
+        // GIVEN no registered marketplaces
+        // WHEN rendering the available section
+        let out = render_available_workflows(&[], &[]);
+
+        // THEN it guides the user to add one
+        assert!(out.contains("No marketplaces registered."));
     }
 }

@@ -673,7 +673,7 @@ otter workflow install ./my-workflow.toml         # local .toml file (no compani
 otter workflow install jira-sync@acme             # from a registered marketplace
 otter workflow install jira-sync                  # refresh from origin marketplace
 otter workflow install jira-sync --force          # discard saved values and reinstall fresh
-otter workflow list                               # list installed workflows
+otter workflow list                               # list installed and available workflows
 ```
 
 The installed workflow lives at `~/.config/otter/workflows/<name>/`.
@@ -704,16 +704,13 @@ A **marketplace** is a git repository publishing a curated set of installable wo
 > point it at, and the workflows from a marketplace run arbitrary shell and
 > agent steps once installed. Inspect the marketplace's source before adding it.
 
-### Registering, browsing, and unregistering
+### Registering, listing, and unregistering
 
 ```bash
 otter marketplace add <git-url>                   # register under the manifest's declared name
-otter marketplace list                            # browse all registered marketplaces
-otter marketplace list <marketplace>              # browse one marketplace's catalog
+otter marketplace list                            # list registered marketplaces
 otter marketplace remove <marketplace>            # unregister & delete the clone
 ```
-
-`otter marketplace list` shows the catalog of available workflows alongside their installation state and any update-available version. `otter status` only shows one-line summaries (counts and last fetch) — use `marketplace list` for the full catalog.
 
 Removing a marketplace leaves already-installed workflows in place; they're surfaced in `otter status` as `origin marketplace removed`.
 
