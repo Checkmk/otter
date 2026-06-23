@@ -32,9 +32,12 @@ impl DispatchTrigger {
     /// replacing any previous registration (e.g. from an earlier engine start).
     pub fn new(name: impl Into<String>, workflow: impl Into<String>, registry: DispatchRegistry) -> Self {
         let (tx, rx) = mpsc::channel::<DispatchMsg>(32);
+        // Recover from a poisoned lock rather than panicking the engine task: the
+        // registry is a plain name→sender map, so a panic elsewhere can't leave it
+        // in a state that makes inserting unsafe.
         registry
             .lock()
-            .expect("dispatch registry poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(workflow.into(), tx);
         Self {
             name: name.into(),
@@ -53,7 +56,7 @@ impl TriggerSource for DispatchTrigger {
         let mut rx = self
             .inbox
             .lock()
-            .expect("dispatch inbox poisoned")
+            .map_err(|_| TriggerError::Failed("dispatch inbox poisoned".to_string()))?
             .take()
             .ok_or_else(|| TriggerError::Failed("dispatch inbox already consumed".to_string()))?;
 

@@ -669,7 +669,9 @@ otter dispatch on-demand-handler \
   workflow whose trigger is not `dispatch`, returns an error.
 - `--context-dir <dir>` copies every regular file in `<dir>` into
   `trigger-context/`. `--context-file <name>=<path>` adds a single file under
-  `<name>`. Both may be combined and `--context-file` repeated.
+  `<name>`. Both may be combined and `--context-file` repeated. Context file
+  contents must be valid UTF-8 — they are carried as text, so binary files are
+  rejected at dispatch time.
 - `--payload <str>` is recorded as the run's trigger payload.
 - Each dispatch fires exactly one run; dispatches arriving while a run is in progress
   are queued (same as polling events).

@@ -235,26 +235,36 @@ impl WorkflowManager {
         payload: Option<String>,
         context_files: Vec<(String, String)>,
     ) -> anyhow::Result<()> {
+        let not_accepting = || {
+            anyhow::anyhow!(
+                "workflow '{}' is not accepting dispatches (not running, or not a dispatch trigger)",
+                workflow
+            )
+        };
+
         let sender = {
             let registry = self
                 .dispatch_registry
                 .lock()
                 .map_err(|_| anyhow::anyhow!("dispatch registry poisoned"))?;
-            registry.get(workflow).cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "workflow '{}' is not accepting dispatches (not running, or not a dispatch trigger)",
-                    workflow
-                )
-            })?
+            registry.get(workflow).cloned().ok_or_else(not_accepting)?
         };
 
-        sender
+        if sender
             .send(DispatchMsg {
                 payload: payload.unwrap_or_default(),
                 context_files,
             })
             .await
-            .map_err(|_| anyhow::anyhow!("workflow '{}' inbox is closed", workflow))?;
+            .is_err()
+        {
+            // The inbox is gone (workflow stopped); drop the stale registration so
+            // future dispatches get the actionable "not accepting" error up front.
+            if let Ok(mut registry) = self.dispatch_registry.lock() {
+                registry.remove(workflow);
+            }
+            return Err(not_accepting());
+        }
         Ok(())
     }
 

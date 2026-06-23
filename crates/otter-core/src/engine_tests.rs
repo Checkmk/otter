@@ -282,8 +282,9 @@ async fn inline_context_is_written_to_trigger_context() {
         std::fs::read_to_string(ctx.join("otter_command.txt")).unwrap(),
         "review"
     );
-    // AND the path-traversal entry was skipped
-    assert!(!temp.path().join("escape.txt").exists());
+    // AND the path-traversal entry was skipped: had the guard failed, joining
+    // "../escape.txt" onto trigger-context/ would have landed it in the run dir.
+    assert!(!scratch.join(run_id.to_string()).join("escape.txt").exists());
 }
 
 #[tokio::test]
