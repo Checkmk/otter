@@ -733,6 +733,12 @@ where
                 )));
             }
         }
+        Some(otter_core::types::TriggerDef::Dispatch) => {
+            lines.push(Line::from(Span::styled(
+                "  dispatch (started by another workflow)".to_string(),
+                base_style(),
+            )));
+        }
     }
 
     // WORKSPACE

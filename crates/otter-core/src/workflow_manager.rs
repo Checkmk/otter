@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
+use crate::triggers::{DispatchMsg, DispatchRegistry};
 use crate::types::{EngineEvent, StorageBackend, WorkflowDef, WorkflowState, WorkflowStatus};
 use otter_notify::Notifier;
 use otter_secrets::{NoOpSecretStore, SecretStore};
@@ -28,6 +29,7 @@ pub struct WorkflowManager {
     data_dir: PathBuf,
     notifier: Arc<dyn Notifier>,
     secret_store: Arc<dyn SecretStore>,
+    dispatch_registry: DispatchRegistry,
 }
 
 impl WorkflowManager {
@@ -44,6 +46,7 @@ impl WorkflowManager {
             data_dir,
             notifier,
             secret_store: Arc::new(NoOpSecretStore),
+            dispatch_registry: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -61,6 +64,7 @@ impl WorkflowManager {
             data_dir,
             notifier,
             secret_store,
+            dispatch_registry: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -192,7 +196,8 @@ impl WorkflowManager {
             scripts_dir,
             self.secret_store.clone(),
         )
-        .with_requirements(requirements);
+        .with_requirements(requirements)
+        .with_dispatch_registry(Some(self.dispatch_registry.clone()));
 
         let handle = self.handles.get_mut(name).unwrap();
         let shutdown = handle.shutdown.clone();
@@ -218,6 +223,38 @@ impl WorkflowManager {
             state: WorkflowState::Running,
         });
 
+        Ok(())
+    }
+
+    /// Hand a one-off run to a running `dispatch`-triggered workflow. The target
+    /// must be started (its engine registers the inbox on start) and use
+    /// `trigger.type = "dispatch"`.
+    pub async fn dispatch(
+        &self,
+        workflow: &str,
+        payload: Option<String>,
+        context_files: Vec<(String, String)>,
+    ) -> anyhow::Result<()> {
+        let sender = {
+            let registry = self
+                .dispatch_registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("dispatch registry poisoned"))?;
+            registry.get(workflow).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "workflow '{}' is not accepting dispatches (not running, or not a dispatch trigger)",
+                    workflow
+                )
+            })?
+        };
+
+        sender
+            .send(DispatchMsg {
+                payload: payload.unwrap_or_default(),
+                context_files,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("workflow '{}' inbox is closed", workflow))?;
         Ok(())
     }
 

@@ -97,6 +97,95 @@ fn polling_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
     }
 }
 
+fn dispatch_workflow(name: &str, command: Vec<String>) -> WorkflowDef {
+    WorkflowDef {
+        name: name.to_string(),
+        workflow_type: WorkflowType::Triggered,
+        schema: None,
+        version: None,
+        description: None,
+        trigger: Some(TriggerDef::Dispatch),
+        workspace: None,
+        resources: None,
+        sandbox: None,
+        steps: vec![StepDef {
+            command: Some(command),
+            ..shell_step()
+        }],
+        finally: vec![],
+        require: None,
+    }
+}
+
+#[tokio::test]
+async fn dispatch_runs_workflow_with_inline_context() {
+    // GIVEN a started dispatch-triggered workflow whose only step fails unless the
+    // dispatched context file was written into trigger-context/
+    let temp_dir = std::env::temp_dir().join(format!(
+        "otter-dispatch-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let (tx, _rx) = mpsc::channel(64);
+    let storage = Arc::new(InMemoryStorage::new());
+    let mut manager =
+        WorkflowManager::new(storage.clone(), temp_dir.clone(), tx, Arc::new(NoOpNotifier));
+
+    let wf = dispatch_workflow(
+        "handler",
+        vec![
+            "bash".to_string(),
+            "-c".to_string(),
+            "test -f trigger-context/summary.txt".to_string(),
+        ],
+    );
+    manager.register(wf, String::new());
+    manager.start("handler").await.unwrap();
+
+    // WHEN it is dispatched with a context file (retry until the engine task has
+    // registered the inbox)
+    let mut dispatched = false;
+    for _ in 0..100 {
+        if manager
+            .dispatch(
+                "handler",
+                Some("change-42".to_string()),
+                vec![("summary.txt".to_string(), "Change: 42".to_string())],
+            )
+            .await
+            .is_ok()
+        {
+            dispatched = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(dispatched, "dispatch should reach the started workflow");
+
+    // THEN a run executes and completes (the context file was present)
+    let mut runs = storage.runs();
+    for _ in 0..50 {
+        if !runs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        runs = storage.runs();
+    }
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].status,
+        crate::types::RunStatus::Completed,
+        "the dispatched context file should have been present"
+    );
+
+    manager.stop("handler").await.unwrap();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 #[test]
 fn register_makes_workflow_dormant() {
     // GIVEN

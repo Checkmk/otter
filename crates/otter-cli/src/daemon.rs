@@ -447,6 +447,22 @@ async fn handle_connection<S>(
             }
             let _ = write_json(&mut writer, &result_to_response(result)).await;
         }
+        DaemonCommand::Dispatch {
+            workflow,
+            payload,
+            context_files,
+        } => {
+            info!(workflow = %workflow, "Dispatch workflow requested");
+            let result = manager
+                .lock()
+                .await
+                .dispatch(&workflow, payload, context_files)
+                .await;
+            if let Err(e) = &result {
+                warn!(workflow = %workflow, error = %e, "Dispatch workflow failed");
+            }
+            let _ = write_json(&mut writer, &result_to_response(result)).await;
+        }
         DaemonCommand::Stop { name } => {
             info!(workflow = %name, "Stop workflow requested");
             let result = manager.lock().await.stop(&name).await;

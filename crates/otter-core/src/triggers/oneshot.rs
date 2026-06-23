@@ -29,6 +29,7 @@ impl TriggerSource for OneShotTrigger {
             payload: String::new(),
             preallocated_run_id: None,
             pending_context: None,
+            inline_context: None,
         })
         .await
         .map_err(|_| TriggerError::Failed("receiver dropped".to_string()))

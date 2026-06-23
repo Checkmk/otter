@@ -29,6 +29,7 @@ pub struct Engine {
     scripts_dir: Option<std::path::PathBuf>,
     secret_store: Arc<dyn SecretStore>,
     requirements: Option<Arc<Requirements>>,
+    dispatch_registry: Option<crate::triggers::DispatchRegistry>,
 }
 
 impl Engine {
@@ -45,6 +46,7 @@ impl Engine {
             scripts_dir: None,
             secret_store: Arc::new(NoOpSecretStore),
             requirements: None,
+            dispatch_registry: None,
         }
     }
 
@@ -62,6 +64,7 @@ impl Engine {
             scripts_dir,
             secret_store: Arc::new(NoOpSecretStore),
             requirements: None,
+            dispatch_registry: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl Engine {
             scripts_dir,
             secret_store,
             requirements: None,
+            dispatch_registry: None,
         }
     }
 
@@ -87,6 +91,16 @@ impl Engine {
     /// the daemon to scope env-var resolution for `requires = [..]`.
     pub fn with_requirements(mut self, requirements: Option<Arc<Requirements>>) -> Self {
         self.requirements = requirements;
+        self
+    }
+
+    /// Builder-style setter for the shared dispatch inbox registry. Required for
+    /// `dispatch`-triggered workflows so they can register and receive runs.
+    pub fn with_dispatch_registry(
+        mut self,
+        registry: Option<crate::triggers::DispatchRegistry>,
+    ) -> Self {
+        self.dispatch_registry = registry;
         self
     }
 
@@ -103,6 +117,7 @@ impl Engine {
             scripts_dir: None,
             secret_store: Arc::new(NoOpSecretStore),
             requirements: None,
+            dispatch_registry: None,
         }
     }
 
@@ -258,6 +273,7 @@ impl Engine {
             self.scripts_dir.as_deref(),
             self.secret_store.clone(),
             self.requirements.clone(),
+            self.dispatch_registry.clone(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -464,6 +480,27 @@ impl Engine {
                 self.storage.update_workflow_run(&run)?;
                 Self::emit(&ui_tx, EngineEvent::RunUpdated(run.clone()));
                 context_failed = true;
+            }
+        }
+
+        // Materialize inline context files (from a `dispatch` trigger) into
+        // trigger-context/ — the inline counterpart to a polling context command.
+        if let Some(files) = event.and_then(|e| e.inline_context.as_ref()) {
+            let ctx_dir = match &workspace_dir {
+                Some(ws) => ws.join("trigger-context"),
+                None => scratch_dir.join("trigger-context"),
+            };
+            std::fs::create_dir_all(&ctx_dir)?;
+            for (name, contents) in files {
+                // Guard against path traversal: only allow plain file names.
+                let safe = std::path::Path::new(name)
+                    .file_name()
+                    .map(|n| n == std::ffi::OsStr::new(name));
+                if safe != Some(true) {
+                    warn!(run_id = %run.id, "skipping unsafe inline context file name {:?}", name);
+                    continue;
+                }
+                std::fs::write(ctx_dir.join(name), contents)?;
             }
         }
 

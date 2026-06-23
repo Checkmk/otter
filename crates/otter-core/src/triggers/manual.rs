@@ -31,6 +31,7 @@ impl TriggerSource for ManualTrigger {
                     payload: String::new(),
                     preallocated_run_id: None,
                     pending_context: None,
+                    inline_context: None,
                 })
                 .await
                 .map_err(|e| TriggerError::Failed(e.to_string()))?;
@@ -45,6 +46,7 @@ impl TriggerSource for ManualTrigger {
             payload: String::new(),
             preallocated_run_id: None,
             pending_context: None,
+            inline_context: None,
         })
         .await
         .map_err(|e| TriggerError::Failed(e.to_string()))

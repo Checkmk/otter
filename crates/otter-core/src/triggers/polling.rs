@@ -238,6 +238,7 @@ impl PollingTrigger {
                     hash: hash.clone(),
                     secrets: self.poll_secrets.clone(),
                 }),
+                inline_context: None,
             };
 
             info!("sending trigger event for hash {}", hash);

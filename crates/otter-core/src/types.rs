@@ -90,6 +90,9 @@ pub enum TriggerDef {
         #[serde(default)]
         requires: Option<Vec<String>>,
     },
+    /// Fires only when another workflow hands it a run via `otter dispatch`.
+    /// The dispatched event carries a payload and a pre-built `trigger-context/`.
+    Dispatch,
 }
 
 fn default_poll_interval() -> u64 {
@@ -178,6 +181,11 @@ pub struct TriggerEvent {
     /// Context command to run at the start of the workflow run, after the workspace is set up.
     /// When set, `run_once()` invokes `command <hash> <ctx_dir>` before executing steps.
     pub pending_context: Option<PendingContext>,
+    /// Files to materialize directly into `trigger-context/` before steps run, as
+    /// `(filename, contents)` pairs. This is the inline counterpart to
+    /// `pending_context`'s command form, used by the `dispatch` trigger to hand a
+    /// pre-built context to a started run.
+    pub inline_context: Option<Vec<(String, String)>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -520,6 +528,15 @@ pub enum DaemonCommand {
     Ping,
     Start {
         name: String,
+    },
+    /// Hand a one-off run to a `dispatch`-triggered workflow, carrying a payload
+    /// and a set of `(filename, contents)` files to pre-populate `trigger-context/`.
+    Dispatch {
+        workflow: String,
+        #[serde(default)]
+        payload: Option<String>,
+        #[serde(default)]
+        context_files: Vec<(String, String)>,
     },
     Stop {
         name: String,

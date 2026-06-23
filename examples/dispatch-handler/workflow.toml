@@ -1,0 +1,21 @@
+name = "dispatch-handler"
+type = "triggered"
+schema = 1
+version = "0.1.0"
+description = "An on-demand handler started by another workflow via `otter dispatch`."
+
+# A dispatch trigger never fires on its own. The workflow sits idle (once started
+# or enabled) until something runs `otter dispatch dispatch-handler ...`, which
+# hands it a payload and a pre-populated trigger-context/ directory.
+[trigger]
+type = "dispatch"
+
+# Echo whatever context the dispatcher handed over. With no [workspace], steps run
+# in the run's scratch dir, where trigger-context/ is created.
+[[steps]]
+type = "shell"
+command = ["sh", "-c", "echo 'Dispatched run:'; cat trigger-context/summary.txt 2>/dev/null || echo '(no summary.txt provided)'"]
+
+[[steps]]
+type = "notify"
+message = "dispatch-handler ran from a handed-over context."

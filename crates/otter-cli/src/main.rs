@@ -44,6 +44,21 @@ enum Commands {
     Ui,
     /// Start a dormant workflow
     Start { name: String },
+    /// Hand a one-off run to a running `dispatch`-triggered workflow, passing a
+    /// payload and/or files to pre-populate its `trigger-context/`.
+    Dispatch {
+        /// Name of the target dispatch-triggered workflow
+        workflow: String,
+        /// Optional payload string, available to the run as the trigger payload
+        #[arg(long)]
+        payload: Option<String>,
+        /// A file to place in trigger-context/, as `name=path` (repeatable)
+        #[arg(long = "context-file", value_name = "NAME=PATH")]
+        context_file: Vec<String>,
+        /// A directory whose files are all copied into trigger-context/
+        #[arg(long = "context-dir", value_name = "DIR")]
+        context_dir: Option<String>,
+    },
     /// Stop a running workflow
     Stop { name: String },
     /// Print the status of all registered workflows
@@ -209,6 +224,41 @@ enum TriggersCommands {
     DeleteConsumed { workflow: String, trigger: String },
 }
 
+/// Build the `(filename, contents)` list for `otter dispatch` from any
+/// `--context-file name=path` args plus every file in an optional `--context-dir`.
+fn collect_context_files(
+    context_file: &[String],
+    context_dir: Option<&str>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut files = Vec::new();
+
+    if let Some(dir) = context_dir {
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("reading --context-dir {dir}: {e}"))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let contents = std::fs::read_to_string(entry.path())
+                .map_err(|e| anyhow::anyhow!("reading {}: {e}", entry.path().display()))?;
+            files.push((name, contents));
+        }
+    }
+
+    for spec in context_file {
+        let (name, path) = spec
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--context-file must be NAME=PATH, got '{spec}'"))?;
+        let contents =
+            std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+        files.push((name.to_string(), contents));
+    }
+
+    Ok(files)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -240,6 +290,20 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::_Daemon) => unreachable!(),
         Some(Commands::Start { name }) => {
             client::send_command_print(DaemonCommand::Start { name }).await
+        }
+        Some(Commands::Dispatch {
+            workflow,
+            payload,
+            context_file,
+            context_dir,
+        }) => {
+            let context_files = collect_context_files(&context_file, context_dir.as_deref())?;
+            client::send_command_print(DaemonCommand::Dispatch {
+                workflow,
+                payload,
+                context_files,
+            })
+            .await
         }
         Some(Commands::Stop { name }) => {
             client::send_command_print(DaemonCommand::Stop { name }).await

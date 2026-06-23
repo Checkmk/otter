@@ -238,6 +238,55 @@ async fn triggered_workflow_runs_once_per_event() {
 }
 
 #[tokio::test]
+async fn inline_context_is_written_to_trigger_context() {
+    // GIVEN a run seeded with an event carrying inline trigger-context files
+    let storage = Arc::new(InMemoryStorage::new());
+    let temp = tempfile::tempdir().unwrap();
+    let scratch = temp.path().to_path_buf();
+    let engine = Engine::new(
+        storage,
+        scratch.clone(),
+        Arc::new(otter_notify::NoOpNotifier),
+    );
+
+    let run_id = uuid::Uuid::new_v4();
+    let event = TriggerEvent {
+        source: "dispatch".to_string(),
+        payload: "ch-42".to_string(),
+        preallocated_run_id: Some(run_id),
+        pending_context: None,
+        inline_context: Some(vec![
+            ("summary.txt".to_string(), "Change: 42".to_string()),
+            ("otter_command.txt".to_string(), "review".to_string()),
+            // A traversal attempt must be ignored, not written.
+            ("../escape.txt".to_string(), "nope".to_string()),
+        ]),
+    };
+
+    let wf = workflow("inline-ctx", WorkflowType::Triggered, vec![]);
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    // WHEN the run executes
+    engine
+        .run_once(&wf, Some(&event), shutdown, None)
+        .await
+        .unwrap();
+
+    // THEN the inline files land in the run's trigger-context/ (scratch workspace)
+    let ctx = scratch.join(run_id.to_string()).join("trigger-context");
+    assert_eq!(
+        std::fs::read_to_string(ctx.join("summary.txt")).unwrap(),
+        "Change: 42"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ctx.join("otter_command.txt")).unwrap(),
+        "review"
+    );
+    // AND the path-traversal entry was skipped
+    assert!(!temp.path().join("escape.txt").exists());
+}
+
+#[tokio::test]
 async fn stop_prevents_next_iteration() {
     // GIVEN a looping workflow with a fast shell step
     let storage = Arc::new(InMemoryStorage::new());

@@ -630,6 +630,53 @@ Example script and workflow are available in the [examples/polling-simple](examp
 
 ---
 
+### `dispatch`
+
+Fires only when another workflow (or the CLI) hands it a run via `otter dispatch`.
+The workflow stays idle until a dispatch arrives; it never polls and never fires on
+its own. This lets one workflow programmatically start another **with data**: a
+payload string plus a set of files that pre-populate the run's `trigger-context/`
+— the same directory a polling `context_command` would write.
+
+**Fields:**
+- `type` (required): `"dispatch"`
+
+**Example:**
+```toml
+name = "on-demand-handler"
+type = "triggered"
+
+[trigger]
+type = "dispatch"
+
+[[steps]]
+type = "shell"
+command = ["cat", "trigger-context/summary.txt"]
+```
+
+**Usage:**
+```bash
+# Hand a run to a running dispatch-triggered workflow, with context files.
+otter dispatch on-demand-handler \
+  --payload "change-42" \
+  --context-dir ./my-context-dir \
+  --context-file summary.txt=/tmp/summary.txt
+```
+
+**Behavior:**
+- The target workflow must be **running** (started or enabled) — its engine
+  registers the dispatch inbox on start. Dispatching to a stopped workflow, or to a
+  workflow whose trigger is not `dispatch`, returns an error.
+- `--context-dir <dir>` copies every regular file in `<dir>` into
+  `trigger-context/`. `--context-file <name>=<path>` adds a single file under
+  `<name>`. Both may be combined and `--context-file` repeated.
+- `--payload <str>` is recorded as the run's trigger payload.
+- Each dispatch fires exactly one run; dispatches arriving while a run is in progress
+  are queued (same as polling events).
+- File names are restricted to plain names; path-traversal entries are skipped.
+
+---
+
 ## Workflow management
 
 A **workflow package** is a directory containing a `workflow.toml` plus any companion scripts used by the workflow's steps. Companion scripts in the package directory are automatically prepended to `PATH` when any step in that workflow runs.

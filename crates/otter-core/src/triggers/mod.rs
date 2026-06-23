@@ -1,6 +1,9 @@
+pub mod dispatch;
 pub mod manual;
 pub mod oneshot;
 pub mod polling;
+
+pub use dispatch::{DispatchMsg, DispatchRegistry};
 
 use async_trait::async_trait;
 use std::path::Path;
@@ -32,6 +35,7 @@ pub fn build_trigger(
     scripts_dir: Option<&Path>,
     secret_store: Arc<dyn SecretStore>,
     requirements: Option<Arc<Requirements>>,
+    dispatch_registry: Option<DispatchRegistry>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -61,6 +65,19 @@ pub fn build_trigger(
                 secret_store,
                 requirements,
                 requires.clone().unwrap_or_default(),
+            )))
+        }
+        TriggerDef::Dispatch => {
+            let registry = dispatch_registry.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "dispatch trigger for '{}' requires a dispatch registry",
+                    workflow_name
+                )
+            })?;
+            Ok(Arc::new(dispatch::DispatchTrigger::new(
+                "dispatch".to_string(),
+                workflow_name.to_string(),
+                registry,
             )))
         }
     }
