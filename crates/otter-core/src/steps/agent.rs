@@ -1,4 +1,5 @@
 use super::StepExecutor;
+use crate::process::inherited_env;
 use crate::requirements::resolve_requires;
 use crate::types::{ProgressChunk, StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
@@ -56,14 +57,17 @@ impl StepExecutor for AgentExecutor {
             tx
         });
 
-        let resolved_secrets = resolve_requires(
-            step_def.requires.as_deref().unwrap_or_default(),
-            ctx.requirements.as_deref(),
-            ctx.scripts_dir.as_deref(),
-            ctx.secret_store.as_ref(),
-            &ctx.workflow_name,
-        )
-        .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+        let mut env = inherited_env(&ctx.inherit_env);
+        env.extend(
+            resolve_requires(
+                step_def.requires.as_deref().unwrap_or_default(),
+                ctx.requirements.as_deref(),
+                ctx.scripts_dir.as_deref(),
+                ctx.secret_store.as_ref(),
+                &ctx.workflow_name,
+            )
+            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?,
+        );
 
         let output = manager
             .run_step(
@@ -75,7 +79,7 @@ impl StepExecutor for AgentExecutor {
                 progress_tx,
                 ctx.resource_limiter.clone(),
                 ctx.scripts_dir.as_deref(),
-                &resolved_secrets,
+                &env,
                 ctx.sandbox_config.clone(),
             )
             .await
@@ -174,6 +178,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
         let step_def = StepDef {

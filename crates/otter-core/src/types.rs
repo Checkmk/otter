@@ -68,6 +68,16 @@ pub struct WorkflowDef {
     /// Declared inputs consumed by the install/configure flow.
     #[serde(default)]
     pub require: Option<Requirements>,
+    #[serde(default)]
+    pub env: EnvDef,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvDef {
+    /// Host variables passed through to every workflow subprocess.
+    #[serde(default)]
+    pub inherit: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,6 +360,8 @@ pub struct StepContext {
     pub resource_limiter: Arc<dyn ResourceLimiter>,
     pub secret_store: Arc<dyn SecretStore>,
     pub requirements: Option<Arc<Requirements>>,
+    /// The workflow's `[env] inherit` list.
+    pub inherit_env: Vec<String>,
     /// Resolved sandbox configuration for this step, if sandboxing is active.
     pub sandbox_config: Option<agentbox::SandboxConfig>,
 }

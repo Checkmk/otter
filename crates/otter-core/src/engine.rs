@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::process::{inject_isolated_env, subprocess_path, PrependScriptsDir};
+use crate::process::{inherited_env, inject_isolated_env, subprocess_path, PrependScriptsDir};
 use crate::requirements::{resolve_requires, Requirements};
 use crate::resource_limiter::build_limiter;
 use crate::sandbox::resolve_sandbox_config;
@@ -155,6 +155,7 @@ impl Engine {
                 self.secret_store.as_ref(),
                 self.requirements.as_deref(),
                 self.scripts_dir.as_deref(),
+                &workflow.env.inherit,
             )
             .await?;
             run.workspace_dir = workspace_dir.clone();
@@ -258,6 +259,7 @@ impl Engine {
             self.scripts_dir.as_deref(),
             self.secret_store.clone(),
             self.requirements.clone(),
+            workflow.env.inherit.clone(),
         )?;
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<TriggerEvent>(32);
@@ -376,6 +378,7 @@ impl Engine {
             self.secret_store.as_ref(),
             self.requirements.as_deref(),
             self.scripts_dir.as_deref(),
+            &workflow.env.inherit,
         )
         .await
         {
@@ -440,21 +443,24 @@ impl Engine {
             };
             std::fs::create_dir_all(&ctx_dir)?;
             info!(run_id = %run.id, "running context command for hash {}", ctx.hash);
-            let resolved = resolve_requires(
-                &ctx.secrets,
-                self.requirements.as_deref(),
-                self.scripts_dir.as_deref(),
-                self.secret_store.as_ref(),
-                &workflow.name,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("requires resolution for context command failed: {}", e)
-            })?;
+            let mut env = inherited_env(&workflow.env.inherit);
+            env.extend(
+                resolve_requires(
+                    &ctx.secrets,
+                    self.requirements.as_deref(),
+                    self.scripts_dir.as_deref(),
+                    self.secret_store.as_ref(),
+                    &workflow.name,
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("requires resolution for context command failed: {}", e)
+                })?,
+            );
             let mut cmd = tokio::process::Command::new(&ctx.command[0]);
             cmd.args(&ctx.command[1..])
                 .arg(&ctx.hash)
                 .arg(subprocess_path(&ctx_dir));
-            inject_isolated_env(&mut cmd, &resolved, true);
+            inject_isolated_env(&mut cmd, &env, true);
             cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
             let out = cmd.output().await?;
             if !out.status.success() {
@@ -582,6 +588,7 @@ impl Engine {
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
                 requirements: self.requirements.clone(),
+                inherit_env: workflow.env.inherit.clone(),
                 sandbox_config,
             };
 
@@ -740,6 +747,7 @@ impl Engine {
                 resource_limiter: build_limiter(workflow.resources.as_ref()),
                 secret_store: self.secret_store.clone(),
                 requirements: self.requirements.clone(),
+                inherit_env: workflow.env.inherit.clone(),
                 sandbox_config,
             };
 

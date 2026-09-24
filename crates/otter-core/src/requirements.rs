@@ -10,6 +10,7 @@ use std::path::Path;
 
 use otter_secrets::{SecretError, SecretStore};
 
+use crate::process::is_always_passed;
 use crate::types::{
     StepDef, StepType, TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION,
 };
@@ -87,6 +88,18 @@ pub enum ValidationError {
 
     #[error("agent step must set either `message` or `message_file`")]
     AgentMissingMessage,
+
+    #[error(
+        "[env] inherit entry '{name}' is invalid: must be an exact variable name \
+         (no wildcards, '=' or empty names)"
+    )]
+    InvalidInheritName { name: String },
+
+    #[error(
+        "'{name}' is both declared in [require] and listed in [env] inherit; \
+         remove one so its value has a single source"
+    )]
+    InheritShadowsRequire { name: String },
 
     #[error("effort '{effort}' is invalid: must be one of {}", EFFORT_LEVELS.join(", "))]
     InvalidEffort { effort: String },
@@ -167,6 +180,22 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
     for name in &requires_refs {
         if !manifest.contains_key(name) {
             return Err(ValidationError::UndeclaredRequiresRef { name: name.clone() });
+        }
+    }
+
+    for name in &def.env.inherit {
+        if name.is_empty() || name.contains(['=', '\0', '*', '?']) {
+            return Err(ValidationError::InvalidInheritName { name: name.clone() });
+        }
+        if manifest.keys().any(|req| req.eq_ignore_ascii_case(name)) {
+            return Err(ValidationError::InheritShadowsRequire { name: name.clone() });
+        }
+        if is_always_passed(name) {
+            tracing::warn!(
+                workflow = %def.name,
+                name = %name,
+                "listed in [env] inherit but always passed through; the entry has no effect"
+            );
         }
     }
 
@@ -1345,6 +1374,110 @@ NOT_A_STRING = 42
         let names: Vec<&str> = manifest.keys().map(String::as_str).collect();
         // THEN — author wrote Z, A, M; that's the prompt order.
         assert_eq!(names, vec!["ZEBRA", "APPLE", "MANGO"]);
+    }
+
+    // ─── [env] inherit ───────────────────────────────────────────────────
+
+    #[test]
+    fn env_inherit_accepts_names_outside_require_naming_rule() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = ["BAZEL_SH", "ProgramFiles(x86)"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN
+        let def = ok(raw);
+        // THEN
+        assert_eq!(def.env.inherit, vec!["BAZEL_SH", "ProgramFiles(x86)"]);
+    }
+
+    #[test]
+    fn env_inherit_rejects_wildcards() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = ["AWS_*"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::InvalidInheritName { name } => assert_eq!(name, "AWS_*"),
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn env_inherit_rejects_empty_name() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = [""]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        assert!(matches!(
+            unwrap_err(raw),
+            ValidationError::InvalidInheritName { .. }
+        ));
+    }
+
+    #[test]
+    fn env_inherit_clashing_with_require_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [require.JAVA_HOME]
+            description = "..."
+            [env]
+            inherit = ["JAVA_HOME"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            requires = ["JAVA_HOME"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::InheritShadowsRequire { name } => assert_eq!(name, "JAVA_HOME"),
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn env_rejects_unknown_fields() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            passthrough = ["JAVA_HOME"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        match validate_workflow(raw) {
+            Err(ValidationError::Parse(msg)) => assert!(msg.contains("passthrough"), "msg = {msg}"),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 
     // ─── message_file ────────────────────────────────────────────────────
