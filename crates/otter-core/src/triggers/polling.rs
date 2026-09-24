@@ -12,7 +12,7 @@ use uuid::Uuid;
 use otter_secrets::SecretStore;
 
 use super::TriggerSource;
-use crate::process::{inject_isolated_env, PrependScriptsDir};
+use crate::process::{inherited_env, inject_isolated_env, PrependScriptsDir};
 use crate::requirements::{resolve_requires, Requirements};
 use crate::types::{PendingContext, TriggerError, TriggerEvent};
 
@@ -69,6 +69,7 @@ pub struct PollingTrigger {
     secret_store: Arc<dyn SecretStore>,
     requirements: Option<Arc<Requirements>>,
     poll_secrets: Vec<String>,
+    inherit_env: Vec<String>,
 }
 
 impl PollingTrigger {
@@ -84,6 +85,7 @@ impl PollingTrigger {
         secret_store: Arc<dyn SecretStore>,
         requirements: Option<Arc<Requirements>>,
         poll_secrets: Vec<String>,
+        inherit_env: Vec<String>,
     ) -> Self {
         Self {
             name,
@@ -97,6 +99,7 @@ impl PollingTrigger {
             secret_store,
             requirements,
             poll_secrets,
+            inherit_env,
         }
     }
 
@@ -170,17 +173,20 @@ impl TriggerSource for PollingTrigger {
 impl PollingTrigger {
     async fn poll_once(&self, tx: &mpsc::Sender<TriggerEvent>) -> anyhow::Result<()> {
         debug!("polling: running {:?}", self.poll_command);
-        let resolved = resolve_requires(
-            &self.poll_secrets,
-            self.requirements.as_deref(),
-            self.scripts_dir.as_deref(),
-            self.secret_store.as_ref(),
-            &self.workflow_name,
-        )
-        .map_err(|e| anyhow::anyhow!("requires resolution for poll command failed: {}", e))?;
+        let mut env = inherited_env(&self.inherit_env);
+        env.extend(
+            resolve_requires(
+                &self.poll_secrets,
+                self.requirements.as_deref(),
+                self.scripts_dir.as_deref(),
+                self.secret_store.as_ref(),
+                &self.workflow_name,
+            )
+            .map_err(|e| anyhow::anyhow!("requires resolution for poll command failed: {}", e))?,
+        );
         let mut cmd = Command::new(&self.poll_command[0]);
         cmd.args(&self.poll_command[1..]);
-        inject_isolated_env(&mut cmd, &resolved, true);
+        inject_isolated_env(&mut cmd, &env, true);
         cmd.prepend_scripts_dir(self.scripts_dir.as_deref());
         let output = cmd.output().await.map_err(|e| {
             anyhow::anyhow!(
@@ -284,6 +290,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -330,6 +337,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -364,6 +372,7 @@ mod tests {
             None,
             no_secrets_store(),
             None,
+            vec![],
             vec![],
         );
 
@@ -417,6 +426,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -467,6 +477,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);
@@ -516,6 +527,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -552,6 +564,7 @@ mod tests {
             None,
             no_secrets_store(),
             None,
+            vec![],
             vec![],
         );
 
@@ -599,6 +612,7 @@ mod tests {
             None,
             no_secrets_store(),
             None,
+            vec![],
             vec![],
         );
 
@@ -657,6 +671,7 @@ mod tests {
             no_secrets_store(),
             None,
             vec![],
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -703,6 +718,7 @@ mod tests {
             None,
             no_secrets_store(),
             None,
+            vec![],
             vec![],
         );
 
@@ -764,6 +780,7 @@ mod tests {
             Arc::new(OneSecret),
             None,
             vec!["POLL_SECRET".to_string()],
+            vec![],
         );
 
         let (tx, _rx) = mpsc::channel(32);
@@ -776,6 +793,42 @@ mod tests {
         let parts: Vec<&str> = contents.trim().splitn(2, '|').collect();
         assert_eq!(parts[0], "injected", "declared secret must be injected");
         assert_eq!(parts[1], "", "daemon env must not leak into poll command");
+    }
+
+    #[tokio::test]
+    async fn poll_command_receives_inherited_host_variable() {
+        // GIVEN a poll command that writes an inherited cargo-set host variable to a file
+        let temp_dir = TempDir::new().unwrap();
+        let env_file = temp_dir.path().join("env_check.txt");
+        let poll_path = write_executable_script(
+            temp_dir.path(),
+            "mock-poll.sh",
+            &format!(
+                "#!/bin/bash\nprintf '%s' \"$CARGO_PKG_NAME\" > '{}'\necho '[\"hash1\"]'",
+                env_file.display()
+            ),
+        )
+        .unwrap();
+        let trigger = PollingTrigger::new(
+            "test".to_string(),
+            "test".to_string(),
+            vec![poll_path.to_string_lossy().to_string()],
+            None,
+            Duration::from_millis(100),
+            temp_dir.path().join("seen.json"),
+            None,
+            Arc::new(otter_secrets::NoOpSecretStore),
+            None,
+            vec![],
+            vec!["CARGO_PKG_NAME".to_string()],
+        );
+        let (tx, _rx) = mpsc::channel(32);
+
+        // WHEN
+        trigger.poll_once(&tx).await.unwrap();
+
+        // THEN
+        assert_eq!(fs::read_to_string(&env_file).unwrap(), "otter-core");
     }
 
     #[tokio::test]
@@ -816,6 +869,7 @@ mod tests {
             Arc::new(DummyStore),
             None,
             vec!["API_KEY".to_string()],
+            vec![],
         );
 
         let (tx, mut rx) = mpsc::channel(32);

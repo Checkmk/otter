@@ -10,6 +10,7 @@ use std::path::Path;
 
 use otter_secrets::{SecretError, SecretStore};
 
+use crate::process::is_always_passed;
 use crate::types::{
     StepDef, StepType, TriggerDef, WorkflowDef, WorkspaceSource, WORKFLOW_SCHEMA_VERSION,
 };
@@ -87,7 +88,30 @@ pub enum ValidationError {
 
     #[error("agent step must set either `message` or `message_file`")]
     AgentMissingMessage,
+
+    #[error(
+        "[env] inherit entry '{name}' is invalid: must be an exact variable name \
+         (no wildcards, '=' or empty names)"
+    )]
+    InvalidInheritName { name: String },
+
+    #[error(
+        "'{name}' is both declared in [require] and listed in [env] inherit; \
+         remove one so its value has a single source"
+    )]
+    InheritShadowsRequire { name: String },
+
+    #[error("effort '{effort}' is invalid: must be one of {}", EFFORT_LEVELS.join(", "))]
+    InvalidEffort { effort: String },
+
+    #[error("`effort` is only supported with `provider = \"claude\"`")]
+    EffortRequiresClaude,
+
+    #[error("`model` cannot be combined with `command`; pass the model flag in `command` instead")]
+    ModelWithCommand,
 }
+
+const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 /// Parse + validate a workflow TOML string. The primary entry point used by
 /// both `otter workflow install` (fail-fast) and the daemon's load loop
@@ -159,12 +183,30 @@ pub fn validate_workflow(raw: &str) -> Result<WorkflowDef, ValidationError> {
         }
     }
 
-    // Per-step message/message_file checks.
-    for step in &def.steps {
-        validate_step_message(step)?;
+    for name in &def.env.inherit {
+        if name.is_empty() || name.contains(['=', '\0', '*', '?']) {
+            return Err(ValidationError::InvalidInheritName { name: name.clone() });
+        }
+        if manifest.keys().any(|req| req.eq_ignore_ascii_case(name)) {
+            return Err(ValidationError::InheritShadowsRequire { name: name.clone() });
+        }
+        if is_always_passed(name) {
+            tracing::warn!(
+                workflow = %def.name,
+                name = %name,
+                "listed in [env] inherit but always passed through; the entry has no effect"
+            );
+        }
     }
-    for fin in &def.finally {
-        validate_step_message(&fin.step)?;
+
+    // Per-step message and agent config checks.
+    for step in def
+        .steps
+        .iter()
+        .chain(def.finally.iter().map(|fin| &fin.step))
+    {
+        validate_step_message(step)?;
+        validate_step_agent_config(step)?;
     }
 
     // Declared-but-unused entries: warn only (typo guard).
@@ -195,6 +237,23 @@ fn validate_step_message(step: &StepDef) -> Result<(), ValidationError> {
         && step.message_file.is_none()
     {
         return Err(ValidationError::AgentMissingMessage);
+    }
+    Ok(())
+}
+
+fn validate_step_agent_config(step: &StepDef) -> Result<(), ValidationError> {
+    if step.command.is_some() && step.agent.model.is_some() {
+        return Err(ValidationError::ModelWithCommand);
+    }
+    if let Some(effort) = &step.agent.effort {
+        if step.agent.provider.as_deref() != Some("claude") {
+            return Err(ValidationError::EffortRequiresClaude);
+        }
+        if !EFFORT_LEVELS.contains(&effort.as_str()) {
+            return Err(ValidationError::InvalidEffort {
+                effort: effort.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -1317,6 +1376,110 @@ NOT_A_STRING = 42
         assert_eq!(names, vec!["ZEBRA", "APPLE", "MANGO"]);
     }
 
+    // ─── [env] inherit ───────────────────────────────────────────────────
+
+    #[test]
+    fn env_inherit_accepts_names_outside_require_naming_rule() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = ["BAZEL_SH", "ProgramFiles(x86)"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN
+        let def = ok(raw);
+        // THEN
+        assert_eq!(def.env.inherit, vec!["BAZEL_SH", "ProgramFiles(x86)"]);
+    }
+
+    #[test]
+    fn env_inherit_rejects_wildcards() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = ["AWS_*"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::InvalidInheritName { name } => assert_eq!(name, "AWS_*"),
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn env_inherit_rejects_empty_name() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            inherit = [""]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        assert!(matches!(
+            unwrap_err(raw),
+            ValidationError::InvalidInheritName { .. }
+        ));
+    }
+
+    #[test]
+    fn env_inherit_clashing_with_require_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [require.JAVA_HOME]
+            description = "..."
+            [env]
+            inherit = ["JAVA_HOME"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            requires = ["JAVA_HOME"]
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::InheritShadowsRequire { name } => assert_eq!(name, "JAVA_HOME"),
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn env_rejects_unknown_fields() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [env]
+            passthrough = ["JAVA_HOME"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        match validate_workflow(raw) {
+            Err(ValidationError::Parse(msg)) => assert!(msg.contains("passthrough"), "msg = {msg}"),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
     // ─── message_file ────────────────────────────────────────────────────
 
     #[test]
@@ -1355,6 +1518,86 @@ NOT_A_STRING = 42
             ValidationError::MessageAndMessageFile => {}
             e => panic!("unexpected: {e}"),
         }
+    }
+
+    #[test]
+    fn unknown_effort_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            provider = "claude"
+            effort = "hgih"
+            message = "hi"
+        "#;
+        // WHEN / THEN
+        match unwrap_err(raw) {
+            ValidationError::InvalidEffort { effort } => assert_eq!(effort, "hgih"),
+            e => panic!("unexpected: {e}"),
+        }
+    }
+
+    #[test]
+    fn effort_on_copilot_step_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            provider = "copilot"
+            effort = "high"
+            message = "hi"
+        "#;
+        // WHEN / THEN
+        assert!(matches!(
+            unwrap_err(raw),
+            ValidationError::EffortRequiresClaude
+        ));
+    }
+
+    #[test]
+    fn model_on_custom_command_step_is_rejected() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[finally]]
+            type = "agent"
+            command = ["aider"]
+            model = "gpt-4"
+            message = "hi"
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+        "#;
+        // WHEN / THEN
+        assert!(matches!(unwrap_err(raw), ValidationError::ModelWithCommand));
+    }
+
+    #[test]
+    fn claude_step_with_model_and_effort_is_accepted() {
+        // GIVEN
+        let raw = r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "agent"
+            provider = "claude"
+            model = "opus"
+            effort = "xhigh"
+            message = "hi"
+        "#;
+        // WHEN
+        let result = validate_workflow(raw);
+        // THEN
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]

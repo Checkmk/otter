@@ -41,6 +41,7 @@ fn workflow(name: &str, workflow_type: WorkflowType, steps: Vec<StepDef>) -> Wor
         steps,
         finally: vec![],
         require: None,
+        env: Default::default(),
     }
 }
 
@@ -206,6 +207,7 @@ async fn triggered_workflow_runs_once_per_event() {
         }],
         finally: vec![],
         require: None,
+        env: Default::default(),
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -396,6 +398,7 @@ async fn script_workspace_polling_trigger_context_written_to_workspace() {
         }],
         finally: vec![],
         require: None,
+        env: Default::default(),
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -558,6 +561,7 @@ async fn triggered_workflow_with_git_pool_acquires_and_releases_slot() {
         }],
         finally: vec![],
         require: None,
+        env: Default::default(),
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -661,6 +665,7 @@ async fn context_command_resolves_via_scripts_dir_path() {
         }],
         finally: vec![],
         require: None,
+        env: Default::default(),
     };
 
     let shutdown = Arc::new(AtomicBool::new(false));

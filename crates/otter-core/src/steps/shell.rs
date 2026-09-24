@@ -1,5 +1,5 @@
 use super::StepExecutor;
-use crate::process::build_subprocess_command;
+use crate::process::{build_subprocess_command, inherited_env};
 use crate::requirements::resolve_requires;
 use crate::types::{StepContext, StepDef, StepError, StepOutput};
 use async_trait::async_trait;
@@ -29,14 +29,17 @@ impl StepExecutor for ShellExecutor {
         let working_dir = ctx.workspace_dir.as_ref().unwrap_or(&ctx.scratch_dir);
 
         let display_cmd = command.join(" ");
-        let resolved = resolve_requires(
-            step_def.requires.as_deref().unwrap_or_default(),
-            ctx.requirements.as_deref(),
-            ctx.scripts_dir.as_deref(),
-            ctx.secret_store.as_ref(),
-            &ctx.workflow_name,
-        )
-        .map_err(|e| StepError::ExecutionFailed(e.to_string()))?;
+        let mut env = inherited_env(&ctx.inherit_env);
+        env.extend(
+            resolve_requires(
+                step_def.requires.as_deref().unwrap_or_default(),
+                ctx.requirements.as_deref(),
+                ctx.scripts_dir.as_deref(),
+                ctx.secret_store.as_ref(),
+                &ctx.workflow_name,
+            )
+            .map_err(|e| StepError::ExecutionFailed(e.to_string()))?,
+        );
 
         let command = if ctx.sandbox_config.is_none() {
             ctx.resource_limiter.apply(command)
@@ -47,7 +50,7 @@ impl StepExecutor for ShellExecutor {
             &command,
             working_dir,
             ctx.scripts_dir.as_deref(),
-            &resolved,
+            &env,
             ctx.sandbox_config.as_ref(),
         );
         cmd.kill_on_drop(true);
@@ -118,6 +121,7 @@ mod tests {
             resource_limiter: Arc::new(NoOpLimiter),
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         }
     }
@@ -351,6 +355,30 @@ mod tests {
         assert!(
             out.stdout.contains("repo=/srv/repo"),
             "non-sensitive value not injected: {}",
+            out.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn env_inherit_passes_only_listed_host_variables() {
+        // GIVEN host variables set by cargo for test runs, only one of them inherited
+        let scratch = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(scratch.path());
+        ctx.inherit_env = vec!["CARGO_PKG_NAME".into(), "OTTER_TEST_UNSET_VAR".into()];
+
+        let step_def = step(vec![
+            "bash",
+            "-c",
+            "echo pkg=$CARGO_PKG_NAME dir=${CARGO_MANIFEST_DIR-unset} other=${OTTER_TEST_UNSET_VAR-unset}",
+        ]);
+
+        // WHEN
+        let out = ShellExecutor.execute(&step_def, &ctx).await.unwrap();
+
+        // THEN
+        assert!(
+            out.stdout.contains("pkg=otter-core dir=unset other=unset"),
+            "unexpected env: {}",
             out.stdout
         );
     }

@@ -948,20 +948,12 @@ fn confirm_marketplace_install(
         }
     }
 
-    // Surface the [require] manifest up front so the user knows what they'll
-    // be asked for. We parse leniently — a workflow without [require] is fine.
+    // Surface the [require] manifest and [env] inherit list up front so the user
+    // knows what they'll be asked for and what they'll share. We parse leniently.
     let wf_toml = pkg.join("workflow.toml");
     if let Ok(raw) = std::fs::read_to_string(&wf_toml) {
         if let Ok(def) = toml::from_str::<otter_core::types::WorkflowDef>(&raw) {
-            if let Some(req) = def.require.as_ref() {
-                if !req.is_empty() {
-                    println!("This workflow declares the following inputs:");
-                    for (n, entry) in req.iter() {
-                        let kind = if entry.sensitive { "secret" } else { "param" };
-                        println!("  - {n} ({kind}): {}", entry.description);
-                    }
-                }
-            }
+            print!("{}", describe_workflow_inputs(&def));
         }
     }
 
@@ -974,6 +966,26 @@ fn confirm_marketplace_install(
         anyhow::bail!("Install cancelled.");
     }
     Ok(())
+}
+
+fn describe_workflow_inputs(def: &otter_core::types::WorkflowDef) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    if let Some(req) = def.require.as_ref().filter(|r| !r.is_empty()) {
+        out.push_str("This workflow declares the following inputs:\n");
+        for (n, entry) in req.iter() {
+            let kind = if entry.sensitive { "secret" } else { "param" };
+            let _ = writeln!(out, "  - {n} ({kind}): {}", entry.description);
+        }
+    }
+    if !def.env.inherit.is_empty() {
+        out.push_str("This workflow reads these variables from your environment:\n");
+        for name in &def.env.inherit {
+            let _ = writeln!(out, "  - {name}");
+        }
+    }
+    out
 }
 
 async fn stage_and_swap_upgrade(
@@ -1686,6 +1698,59 @@ mod tests {
 
         // WHEN/THEN the probe reports no daemon
         assert!(!daemon_is_live_at(&sock));
+    }
+
+    #[test]
+    fn install_preview_lists_inherited_variables() {
+        // GIVEN
+        let def = otter_core::requirements::validate_workflow(
+            r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [require.JIRA_PAT]
+            description = "Jira token"
+            sensitive = true
+            [env]
+            inherit = ["JAVA_HOME", "GITHUB_TOKEN"]
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            requires = ["JIRA_PAT"]
+            "#,
+        )
+        .unwrap();
+
+        // WHEN
+        let preview = describe_workflow_inputs(&def);
+
+        // THEN
+        assert!(
+            preview.contains("  - JIRA_PAT (secret): Jira token"),
+            "{preview}"
+        );
+        assert!(preview.contains("from your environment"), "{preview}");
+        assert!(preview.contains("  - JAVA_HOME\n"), "{preview}");
+        assert!(preview.contains("  - GITHUB_TOKEN\n"), "{preview}");
+    }
+
+    #[test]
+    fn install_preview_is_empty_without_inputs() {
+        // GIVEN
+        let def = otter_core::requirements::validate_workflow(
+            r#"
+            name = "wf"
+            type = "looping"
+            schema = 1
+            [[steps]]
+            type = "shell"
+            command = ["echo", "hi"]
+            "#,
+        )
+        .unwrap();
+
+        // WHEN / THEN
+        assert_eq!(describe_workflow_inputs(&def), "");
     }
 
     #[test]

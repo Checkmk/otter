@@ -224,6 +224,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         }
     }
@@ -249,6 +250,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         }
     }
@@ -514,6 +516,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 
@@ -587,6 +590,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 
@@ -630,6 +634,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 

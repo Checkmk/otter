@@ -1,7 +1,7 @@
 name = "secret-workflow"
 type = "triggered"
 schema = 1
-version = "0.1.0"
+version = "0.1.1"
 description = "End-to-end demo of the secrets flow: prompt at install time, store in the OS keyring, inject as env at runtime."
 
 # Showcase the secrets isolation flow end-to-end.
@@ -17,6 +17,7 @@ description = "End-to-end demo of the secrets flow: prompt at install time, stor
 # Expected output in the TUI logs:
 #   key=<the value you entered>    (secret was injected)
 #   canary=absent                  (daemon env did not leak)
+#   java_home=<your JAVA_HOME>     (inherited from your environment, or "unset")
 
 [trigger]
 type = "manual"
@@ -24,6 +25,11 @@ type = "manual"
 [require.TEST_API_KEY]
 description = "Example secret for the canary test (any non-empty string)"
 sensitive = true
+
+# Host variables passed through to every step from your environment.
+# Unset names are skipped, so Windows and Linux names can be mixed.
+[env]
+inherit = ["JAVA_HOME", "CommonProgramFiles(x86)"]
 
 # Step 1: The declared secret is injected and the daemon env is isolated.
 [[steps]]
@@ -35,6 +41,11 @@ requires = ["TEST_API_KEY"]
 [[steps]]
 type = "shell"
 command = ["bash", "-c", "echo undeclared=${TEST_API_KEY:-not-visible}"]
+
+# Step 3: Inherited host variables are available to every step.
+[[steps]]
+type = "shell"
+command = ["bash", "-c", "echo java_home=${JAVA_HOME:-unset}"]
 
 [[steps]]
 type = "notify"
