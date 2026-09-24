@@ -109,10 +109,29 @@ const SAFE_ENV_VARS: &[&str] = &[
     "USERPROFILE",
     "SYSTEMROOT",
     "SYSTEMDRIVE",
+    // Windows: required for launching programs and locating installed tools
+    "PATHEXT",
+    "COMSPEC",
+    "WINDIR",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMDATA",
+    "USERNAME",
 ];
 
 /// Variables that grant access to privileged host resources.
 const UNSAFE_ENV_VARS: &[&str] = &["SSH_AUTH_SOCK", "SSH_AGENT_PID"];
+
+/// Whether `name` is on the built-in safe list, and so reaches every subprocess anyway.
+pub fn is_always_passed(name: &str) -> bool {
+    SAFE_ENV_VARS.iter().any(|safe| {
+        if cfg!(windows) {
+            safe.eq_ignore_ascii_case(name)
+        } else {
+            *safe == name
+        }
+    })
+}
 
 /// Reset the command environment to an isolated baseline. Set `include_unsafe`
 /// gives access to some host resource access (e.g. SSH agent for git).
@@ -122,13 +141,14 @@ pub fn inject_isolated_env(
     include_unsafe: bool,
 ) {
     cmd.env_clear();
-    for &key in SAFE_ENV_VARS {
-        if key == "PATH" {
-            cmd.env("PATH", login_path());
-        } else if let Some(val) = std::env::var_os(key) {
+    // Iterate the host env rather than the safe list so Windows children see the
+    // host's spelling (`ProgramFiles`), which case-sensitive shells depend on.
+    for (key, val) in std::env::vars_os() {
+        if key.to_str().is_some_and(is_always_passed) {
             cmd.env(key, val);
         }
     }
+    cmd.env("PATH", login_path());
     if include_unsafe {
         for &key in UNSAFE_ENV_VARS {
             if let Some(val) = std::env::var_os(key) {
@@ -272,6 +292,41 @@ mod tests {
             test_sock,
             "non-sandboxed steps must receive SSH_AUTH_SOCK"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn isolated_env_keeps_windows_basics() {
+        // GIVEN the Windows basics that tooling relies on to launch programs
+        let basics = [
+            "PATHEXT",
+            "COMSPEC",
+            "WINDIR",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+            "PROGRAMDATA",
+            "USERNAME",
+        ];
+
+        // WHEN we inject the isolated env
+        let mut cmd = tokio::process::Command::new("cmd");
+        inject_isolated_env(&mut cmd, &[], false);
+
+        // THEN every basic set on the host is passed under the host's spelling and value,
+        // so case-sensitive consumers such as Git Bash still find e.g. `$ProgramFiles`
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for key in basics {
+            let Some((host_key, host_val)) =
+                std::env::vars_os().find(|(k, _)| k.eq_ignore_ascii_case(key))
+            else {
+                continue;
+            };
+            assert!(
+                envs.iter()
+                    .any(|(k, v)| *k == host_key && *v == Some(host_val.as_os_str())),
+                "{host_key:?} missing from isolated env"
+            );
+        }
     }
 
     #[test]

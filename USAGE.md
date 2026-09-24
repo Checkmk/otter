@@ -424,7 +424,7 @@ requires = ["JIRA_PAT"]           # ← sensitive: injected as env var at runtim
 
 **Sensitive entries** (`sensitive = true`) are prompted with hidden input and stored encrypted at `~/.config/otter/secrets.age`. The encryption key lives in the OS keyring (libsecret on Linux, Keychain on macOS, Credential Manager on Windows).
 
-**Injecting values into subprocess env** — `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` injects the resolved value into the subprocess env under the declared name. Sensitive names are fetched from the keyring; non-sensitive names are read from `<workflow>/.otter-state/values.toml` on each invocation, so `otter workflow configure` edits take effect on the next run without a daemon reload. The subprocess otherwise sees a clean environment (only `PATH`, `HOME`, `USER`, `TMPDIR`, etc., are kept).
+**Injecting values into subprocess env** — `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` injects the resolved value into the subprocess env under the declared name. Sensitive names are fetched from the keyring; non-sensitive names are read from `<workflow>/.otter-state/values.toml` on each invocation, so `otter workflow configure` edits take effect on the next run without a daemon reload. The subprocess otherwise sees a clean environment: only system basics such as `PATH`, `HOME`, `USER`, `TMPDIR`, `LANG` and their Windows counterparts (`USERPROFILE`, `APPDATA`, `PATHEXT`, `COMSPEC`, `ProgramFiles`, ...) are kept.
 
 **Rules:**
 
