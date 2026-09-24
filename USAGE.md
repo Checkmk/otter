@@ -160,9 +160,11 @@ Runs an AI CLI tool (Claude, Copilot, or custom) with a message. Supports persis
 **Fields:**
 - `provider` (optional): `"claude"` or `"copilot"`. Mutually exclusive with `command`.
 - `command` (optional): Escape hatch; arbitrary CLI command array. Mutually exclusive with `provider`.
+- `model` (optional): Model to use, passed as `--model <value>` to the provider CLI (e.g., `"opus"` or a full model ID for Claude). If omitted, the CLI's own default model is used. Not allowed together with `command` — pass the flag in `command` instead.
 - `message` (required unless `message_file` is set): Prompt sent to the agent.
 - `message_file` (optional): Path to a file whose contents are used as the prompt. Resolved relative to the workflow package directory. Mutually exclusive with `message`; only allowed on `agent` steps.
 - `session` (optional): Session name. Steps sharing the same session name resume the same conversation within a workflow run.
+- `effort` (Claude-only, optional): Passed as `--effort <value>` (`"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`). If omitted, the CLI's default effort is used. Any other value, or `effort` on a non-Claude step, fails at workflow-load time.
 - `allowed_tools` (optional): List of tool names the agent may use.
   - **Claude**: maps to `--allowed-tools <comma-separated-list>` (e.g., `["Write", "Read"]` → `--allowed-tools Write,Read`)
   - **Copilot**: maps to `--allow-tool=<name>` per entry
@@ -175,6 +177,8 @@ Claude with built-in provider:
 [[steps]]
 type = "agent"
 provider = "claude"
+model = "opus"
+effort = "high"
 allowed_tools = ["Write", "Read", "Bash"]
 permission_mode = "acceptEdits"
 message = "Implement the following feature..."
@@ -210,6 +214,7 @@ message_file = "prompts/implement-feature.md"
 - If `provider` is used, the provider is invoked as a subprocess
 - If `command` is used, the command is invoked as-is
 - If `session` is specified, the session is created on first use and resumed on subsequent `agent` steps with the same `session` name
+- A session keeps the `provider`, `model`, `effort`, `allowed_tools` and `permission_mode` of the step that created it; later steps resuming the session cannot change them
 - Sessions persist for the entire workflow run; checkpoints and other steps do not affect their lifecycle
 - If `session` is not specified, a temporary session is created for that step alone and discarded after
 - Agent output (stdout) is captured and logged

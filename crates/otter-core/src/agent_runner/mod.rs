@@ -158,15 +158,20 @@ impl AgentRunner for CustomRunner {
 /// Returns an error for unknown provider names.
 pub fn build_runner(
     provider: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
     allowed_tools: Option<&[String]>,
     permission_mode: Option<&str>,
 ) -> Result<Arc<dyn AgentRunner>, AgentError> {
     match provider {
         "claude" => Ok(Arc::new(ClaudeCodeRunner::new(
+            model.map(str::to_string),
+            effort.map(str::to_string),
             allowed_tools.map(|t| t.to_vec()),
             permission_mode.map(str::to_string),
         ))),
         "copilot" => Ok(Arc::new(CopilotRunner::new(
+            model.map(str::to_string),
             allowed_tools.map(|t| t.to_vec()),
         ))),
         other => Err(AgentError::Failed(format!(

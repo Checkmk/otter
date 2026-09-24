@@ -19,8 +19,21 @@ pub struct ClaudeCodeRunner {
 }
 
 impl ClaudeCodeRunner {
-    pub fn new(allowed_tools: Option<Vec<String>>, permission_mode: Option<String>) -> Self {
-        let mut base_args = vec!["--model".to_string(), "claude-sonnet-4-6".to_string()];
+    pub fn new(
+        model: Option<String>,
+        effort: Option<String>,
+        allowed_tools: Option<Vec<String>>,
+        permission_mode: Option<String>,
+    ) -> Self {
+        let mut base_args = Vec::new();
+        if let Some(model) = model {
+            base_args.push("--model".to_string());
+            base_args.push(model);
+        }
+        if let Some(effort) = effort {
+            base_args.push("--effort".to_string());
+            base_args.push(effort);
+        }
         if let Some(tools) = allowed_tools {
             base_args.push("--allowed-tools".to_string());
             base_args.push(tools.join(","));
@@ -276,6 +289,38 @@ fn summarize_tool_input(tool_name: &str, input: Option<&serde_json::Value>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_is_passed_to_cli_when_set() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(Some("claude-opus-5-5".into()), None, None, None);
+        // THEN
+        assert_eq!(runner.base_args, vec!["--model", "claude-opus-5-5"]);
+    }
+
+    #[test]
+    fn model_is_left_to_cli_default_when_unset() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, None, None, None);
+        // THEN
+        assert!(!runner.base_args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn effort_is_passed_to_cli_when_set() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, Some("high".into()), None, None);
+        // THEN
+        assert_eq!(runner.base_args, vec!["--effort", "high"]);
+    }
+
+    #[test]
+    fn effort_is_left_to_cli_default_when_unset() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, None, None, None);
+        // THEN
+        assert!(!runner.base_args.iter().any(|a| a == "--effort"));
+    }
 
     #[test]
     fn parse_thinking_event() {

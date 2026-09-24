@@ -133,6 +133,8 @@ impl AgentSessionManager {
             )),
             (Some(p), None) => build_runner(
                 p,
+                config.model.as_deref(),
+                config.effort.as_deref(),
                 config.allowed_tools.as_deref(),
                 config.permission_mode.as_deref(),
             ),

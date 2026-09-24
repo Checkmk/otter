@@ -209,6 +209,8 @@ impl std::fmt::Display for StepType {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgentConfig {
     pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
     pub permission_mode: Option<String>,
 }
