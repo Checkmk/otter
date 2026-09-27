@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::agent_runner::{
@@ -82,6 +82,7 @@ impl AgentSessionManager {
         };
 
         let output = if let Some((handle, runner)) = existing {
+            info!(session_id = %handle.id, "Resuming agent session");
             let output = runner
                 .prompt(&handle, message, progress_tx, secrets)
                 .await?;
@@ -92,7 +93,10 @@ impl AgentSessionManager {
         } else {
             let runner = self.resolve_runner(config, command)?;
 
+            let session_id = Uuid::new_v4().to_string();
+            info!(%session_id, "Starting agent session");
             let spec = AgentSpec {
+                session_id,
                 message: message.to_string(),
                 working_dir: working_dir.to_path_buf(),
                 resource_limiter,
@@ -237,6 +241,7 @@ mod tests {
                     stdout: format!("resp:{}", spec.message),
                     stderr: String::new(),
                     exit_code: Some(0),
+                    ..Default::default()
                 },
             ))
         }
@@ -256,6 +261,7 @@ mod tests {
                 stdout: format!("resp:{}", message),
                 stderr: String::new(),
                 exit_code: Some(0),
+                ..Default::default()
             })
         }
 

@@ -514,6 +514,7 @@ impl Engine {
 
     /// Runs all steps once. Returns `Ok(true)` if execution should stop (failed or shutdown).
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "run", skip_all, fields(run_id = %run.id))]
     async fn execute_steps(
         &self,
         workflow: &WorkflowDef,
@@ -698,6 +699,7 @@ impl Engine {
 
     /// Runs `[[finally]]` steps that match the given run outcome.
     /// Errors from individual steps are logged as warnings and do not change `run.status`.
+    #[tracing::instrument(name = "run", skip_all, fields(run_id = %run.id))]
     async fn execute_finally_steps(
         &self,
         workflow: &WorkflowDef,

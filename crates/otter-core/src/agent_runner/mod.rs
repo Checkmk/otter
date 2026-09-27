@@ -15,6 +15,7 @@ pub use copilot::CopilotRunner;
 
 #[derive(Clone)]
 pub struct AgentSpec {
+    pub session_id: String,
     pub message: String,
     pub working_dir: PathBuf,
     pub resource_limiter: Arc<dyn ResourceLimiter>,
@@ -34,21 +35,54 @@ pub struct AgentSessionHandle {
     pub sandbox_config: Option<agentbox::SandboxConfig>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AgentOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
+    /// Every stdout line exactly as the CLI printed it; empty unless streamed.
+    pub stream: String,
+    /// Set for providers whose CLI keeps its own transcript under this id.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("agent failed: {0}")]
     Failed(String),
-    #[error("rate limited: {0}")]
-    RateLimited(String),
+    #[error("rate limited: {message}")]
+    RateLimited {
+        message: String,
+        output: Box<AgentOutput>,
+    },
+    #[error("agent exited with code {}{detail}", describe_exit_code(*.code))]
+    Exited {
+        code: i32,
+        detail: String,
+        output: Box<AgentOutput>,
+    },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl AgentError {
+    /// What the agent produced before failing, if it ran at all.
+    pub fn output(&self) -> Option<&AgentOutput> {
+        match self {
+            Self::RateLimited { output, .. } | Self::Exited { output, .. } => Some(output),
+            Self::Failed(_) | Self::Io(_) => None,
+        }
+    }
+}
+
+/// Windows reports crashes as negative NTSTATUS codes, which are only
+/// recognizable in hex (e.g. `0xC0000409`).
+pub(crate) fn describe_exit_code(code: i32) -> String {
+    if code < 0 {
+        format!("{code} ({:#010X})", code as u32)
+    } else {
+        code.to_string()
+    }
 }
 
 #[async_trait]
@@ -88,7 +122,7 @@ impl AgentRunner for CustomRunner {
         _progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
         let handle = AgentSessionHandle {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: spec.session_id.clone(),
             working_dir: spec.working_dir.clone(),
             resource_limiter: spec.resource_limiter.clone(),
             scripts_dir: spec.scripts_dir.clone(),
@@ -111,7 +145,7 @@ impl AgentRunner for CustomRunner {
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -141,7 +175,7 @@ impl AgentRunner for CustomRunner {
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -180,7 +214,7 @@ pub fn build_runner(
     }
 }
 
-pub(super) fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentError {
+pub(super) fn classify_agent_error(code: i32, output: AgentOutput) -> AgentError {
     let combined = format!("{} {}", output.stdout, output.stderr);
     if combined.contains("out of extra usage")
         || combined.contains("rate limit")
@@ -188,11 +222,14 @@ pub(super) fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentErro
         || combined.contains("429")
     {
         let msg = output.stdout.trim().to_string();
-        return AgentError::RateLimited(if msg.is_empty() {
-            output.stderr.trim().to_string()
-        } else {
-            msg
-        });
+        return AgentError::RateLimited {
+            message: if msg.is_empty() {
+                output.stderr.trim().to_string()
+            } else {
+                msg
+            },
+            output: Box::new(output),
+        };
     }
     let detail = match (output.stdout.trim(), output.stderr.trim()) {
         ("", "") => String::new(),
@@ -200,7 +237,11 @@ pub(super) fn classify_agent_error(code: i32, output: &AgentOutput) -> AgentErro
         (out, "") => format!(" stdout: {out}"),
         (out, err) => format!(" stdout: {out} | stderr: {err}"),
     };
-    AgentError::Failed(format!("agent exited with code {code}{detail}"))
+    AgentError::Exited {
+        code,
+        detail,
+        output: Box::new(output),
+    }
 }
 
 /// Describes how to invoke an agent subprocess.
@@ -277,12 +318,15 @@ pub(super) async fn run_agent_subprocess(
 
         let mut result_text = String::new();
         let mut stderr_buf = String::new();
+        let mut stream = String::new();
 
         loop {
             tokio::select! {
                 line = stdout_reader.next_line() => {
                     match line {
                         Ok(Some(line)) => {
+                            stream.push_str(&line);
+                            stream.push('\n');
                             for chunk in parse_line(&line, &mut result_text) {
                                 let _ = progress_tx.try_send(chunk);
                             }
@@ -319,6 +363,8 @@ pub(super) async fn run_agent_subprocess(
             stdout,
             stderr: stderr_buf,
             exit_code: status.code(),
+            stream,
+            session_id: None,
         })
     } else {
         let output = child.wait_with_output().await?;
@@ -327,6 +373,7 @@ pub(super) async fn run_agent_subprocess(
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             exit_code: output.status.code(),
+            ..Default::default()
         })
     }
 }

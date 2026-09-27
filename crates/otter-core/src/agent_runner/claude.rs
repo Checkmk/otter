@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::types::ProgressChunk;
 
@@ -53,7 +52,7 @@ impl AgentRunner for ClaudeCodeRunner {
         spec: AgentSpec,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = spec.session_id.clone();
 
         let handle = AgentSessionHandle {
             id: session_id.clone(),
@@ -66,7 +65,7 @@ impl AgentRunner for ClaudeCodeRunner {
         let mut cmd_args = vec!["claude".to_string()];
         cmd_args.extend(self.base_args.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("stream-json".to_string());
             cmd_args.push("--verbose".to_string());
@@ -103,10 +102,11 @@ impl AgentRunner for ClaudeCodeRunner {
             )
             .await?
         };
+        output.session_id = Some(handle.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -123,7 +123,7 @@ impl AgentRunner for ClaudeCodeRunner {
         let mut cmd_args = vec!["claude".to_string()];
         cmd_args.extend(self.base_args.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("stream-json".to_string());
             cmd_args.push("--verbose".to_string());
@@ -160,10 +160,11 @@ impl AgentRunner for ClaudeCodeRunner {
             )
             .await?
         };
+        output.session_id = Some(session.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -480,8 +481,10 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         .await
         .unwrap();
 
-        // THEN — output contains the result text
+        // THEN — output contains the result text and every line as printed
         assert_eq!(output.stdout, "done");
+        assert_eq!(output.stream.lines().count(), 4);
+        assert!(output.stream.contains(r#""name":"Read""#));
 
         // Collect all chunks
         drop(tx);

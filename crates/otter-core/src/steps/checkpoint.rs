@@ -180,6 +180,7 @@ mod tests {
                     stdout: "initial".into(),
                     stderr: String::new(),
                     exit_code: Some(0),
+                    ..Default::default()
                 },
             ))
         }
@@ -199,6 +200,7 @@ mod tests {
                 stdout: format!("response:{}", message),
                 stderr: String::new(),
                 exit_code: Some(0),
+                ..Default::default()
             })
         }
 

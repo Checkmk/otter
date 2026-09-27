@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use super::{
     classify_agent_error, run_agent_subprocess, AgentError, AgentOutput, AgentRunner,
@@ -40,7 +39,7 @@ impl AgentRunner for CopilotRunner {
         spec: AgentSpec,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = spec.session_id.clone();
 
         let handle = AgentSessionHandle {
             id: session_id.clone(),
@@ -56,7 +55,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push("-p".to_string());
         cmd_args.push(spec.message.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--stream".to_string());
             cmd_args.push("on".to_string());
             cmd_args.push("--output-format".to_string());
@@ -89,10 +88,11 @@ impl AgentRunner for CopilotRunner {
             )
             .await?
         };
+        output.session_id = Some(handle.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -112,7 +112,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push("-p".to_string());
         cmd_args.push(message.to_string());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--stream".to_string());
             cmd_args.push("on".to_string());
             cmd_args.push("--output-format".to_string());
@@ -145,10 +145,11 @@ impl AgentRunner for CopilotRunner {
             )
             .await?
         };
+        output.session_id = Some(session.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 

@@ -222,6 +222,8 @@ message_file = "prompts/implement-feature.md"
 - Sessions persist for the entire workflow run; checkpoints and other steps do not affect their lifecycle
 - If `session` is not specified, a temporary session is created for that step alone and discarded after
 - Agent output (stdout) is captured and logged
+- When the output is streamed, every line the CLI printed (tool calls and results included) is saved to `step-<N>-stream.jsonl` in the run's scratch directory
+- The session ID is logged when a session starts or resumes, so a Claude transcript can be found at `~/.claude/projects/*/<session-id>.jsonl` while the step is still running
 - Checkpoint feedback is sent to the active agent session as a follow-up message
 - The agent's response to feedback is presented in the checkpoint again until the user continues or stops
 
