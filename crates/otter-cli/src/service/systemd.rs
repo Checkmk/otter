@@ -5,15 +5,21 @@ use anyhow::Context;
 
 use super::ServiceManager;
 
+type Systemctl = Box<dyn Fn(&[&str]) -> anyhow::Result<()>>;
+
 pub struct SystemdServiceManager {
     unit_dir: PathBuf,
+    systemctl: Systemctl,
 }
 
 impl SystemdServiceManager {
     pub fn new() -> Self {
         let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
         let unit_dir = home.join(".config/systemd/user");
-        Self { unit_dir }
+        Self {
+            unit_dir,
+            systemctl: Box::new(run_systemctl),
+        }
     }
 
     fn service_unit_path(&self) -> PathBuf {
@@ -27,15 +33,7 @@ impl SystemdServiceManager {
     }
 
     fn systemctl(&self, args: &[&str]) -> anyhow::Result<()> {
-        let status = Command::new("systemctl")
-            .arg("--user")
-            .args(args)
-            .status()
-            .context("failed to run systemctl")?;
-        if !status.success() {
-            anyhow::bail!("systemctl --user {} failed", args.join(" "));
-        }
-        Ok(())
+        (self.systemctl)(args)
     }
 
     fn write_unit_files(&self) -> anyhow::Result<()> {
@@ -85,6 +83,18 @@ impl SystemdServiceManager {
         }
         Ok(())
     }
+}
+
+fn run_systemctl(args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .status()
+        .context("failed to run systemctl")?;
+    if !status.success() {
+        anyhow::bail!("systemctl --user {} failed", args.join(" "));
+    }
+    Ok(())
 }
 
 /// Ensure linger is enabled for the current user so the service keeps running after logout.
@@ -174,20 +184,31 @@ impl ServiceManager for SystemdServiceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs;
+    use std::rc::Rc;
     use tempfile::tempdir;
 
-    fn manager_in(dir: &std::path::Path) -> SystemdServiceManager {
-        SystemdServiceManager {
+    type SystemctlCalls = Rc<RefCell<Vec<String>>>;
+
+    fn manager_in(dir: &std::path::Path) -> (SystemdServiceManager, SystemctlCalls) {
+        let calls = SystemctlCalls::default();
+        let recorder = Rc::clone(&calls);
+        let mgr = SystemdServiceManager {
             unit_dir: dir.to_path_buf(),
-        }
+            systemctl: Box::new(move |args| {
+                recorder.borrow_mut().push(args.join(" "));
+                Ok(())
+            }),
+        };
+        (mgr, calls)
     }
 
     #[test]
     fn enable_writes_service_unit() {
         // GIVEN a temp unit directory
         let tmp = tempdir().unwrap();
-        let mgr = manager_in(tmp.path());
+        let (mgr, _) = manager_in(tmp.path());
 
         // WHEN unit files are written
         mgr.write_unit_files().unwrap();
@@ -206,7 +227,7 @@ mod tests {
     fn cleanup_legacy_socket_removes_leftover_unit() {
         // GIVEN a unit dir with a leftover legacy otter.socket from an old version
         let tmp = tempdir().unwrap();
-        let mgr = manager_in(tmp.path());
+        let (mgr, systemctl_calls) = manager_in(tmp.path());
         fs::write(
             mgr.legacy_socket_unit_path(),
             "[Socket]\nListenStream=...\n",
@@ -216,26 +237,28 @@ mod tests {
         // WHEN the legacy socket is cleaned up
         let removed = mgr.cleanup_legacy_socket();
 
-        // THEN it reports removal and the unit file is gone
+        // THEN it reports removal, the unit file is gone and the socket is disabled
         assert!(removed);
         assert!(!mgr.legacy_socket_unit_path().exists());
+        assert_eq!(*systemctl_calls.borrow(), ["disable --now otter.socket"]);
     }
 
     #[test]
     fn cleanup_legacy_socket_is_noop_without_leftover() {
         // GIVEN a unit dir with no legacy socket unit
         let tmp = tempdir().unwrap();
-        let mgr = manager_in(tmp.path());
+        let (mgr, systemctl_calls) = manager_in(tmp.path());
 
-        // WHEN/THEN cleanup reports nothing to do
+        // WHEN/THEN cleanup reports nothing to do and leaves systemd alone
         assert!(!mgr.cleanup_legacy_socket());
+        assert!(systemctl_calls.borrow().is_empty());
     }
 
     #[test]
     fn is_enabled_reflects_service_unit_existence() {
         // GIVEN a temp unit directory with no files
         let tmp = tempdir().unwrap();
-        let mgr = manager_in(tmp.path());
+        let (mgr, _) = manager_in(tmp.path());
         assert!(!mgr.is_enabled());
 
         // WHEN the service unit is written
