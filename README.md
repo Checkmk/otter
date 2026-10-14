@@ -84,7 +84,7 @@ cargo build --release
 | Configuration & workflows      | `~/.config/otter/`      | `%APPDATA%\otter\` |
 | State, logs & run scratch dirs | `~/.local/share/otter/` | `%APPDATA%\otter\` |
 
-Finished runs are deleted after 30 days; see [Retention](USAGE.md#retention) to change or disable this.
+Finished runs are deleted after 30 days of inactivity and service logs are kept for the last 30 days the service ran; see [Retention](USAGE.md#retention) to change or disable this.
 
 `otter service enable` is the only path that writes outside these directories (it installs a systemd user unit to `~/.config/systemd/user/otter.service`). `otter service disable` removes it.
 

@@ -1,6 +1,7 @@
 mod client;
 mod config;
 mod daemon;
+mod daemon_log;
 mod service;
 mod updater;
 
@@ -1450,13 +1451,9 @@ fn handle_service_command(command: ServiceCommands) -> anyhow::Result<()> {
 }
 
 fn handle_log_command() -> anyhow::Result<()> {
-    let log_path = dirs_data_dir().join("daemon.log");
-    if !log_path.exists() {
-        anyhow::bail!(
-            "Log file not found: {}\nStart the daemon first with: otter service start",
-            log_path.display()
-        );
-    }
+    let Some(log_path) = daemon_log::latest(&dirs_data_dir()) else {
+        anyhow::bail!("No daemon log found\nStart the daemon first with: otter service start");
+    };
 
     #[cfg(unix)]
     {

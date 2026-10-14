@@ -794,7 +794,7 @@ otter service disable   # disable automatic startup and stop the service
 
 ## Retention
 
-Finished runs are deleted 30 days after their last activity (start or latest step log): the record and log in `state.db`, and the run's scratch directory (`~/.local/share/otter/runs/<run-id>/`). Change the age in `~/.config/otter/config.toml`:
+Finished runs are deleted 30 days after their last activity (start or latest step log): the record and log in `state.db`, and the run's scratch directory (`~/.local/share/otter/runs/<run-id>/`). Service logs rotate daily into `~/.local/share/otter/logs/daemon.<UTC-date>.log` and today's log is kept along with the newest 30 earlier ones. Days the service didn't run produce no file, so the kept logs can reach further back. Change the number in `~/.config/otter/config.toml`:
 
 ```toml
 [retention]
@@ -806,6 +806,7 @@ days = 30   # 0 keeps everything
 - Runs that are still running or waiting at a checkpoint are never deleted.
 - Scratch directories without a run record are deleted once they haven't been modified for the same number of days.
 - If `config.toml` can't be parsed, nothing is deleted and a warning is logged.
+- `otter log` opens the most recent service log.
 - Workspaces outside the scratch directory (`fixed`, `script`, pooled `git` slots) are not touched.
 
 ---

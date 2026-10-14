@@ -30,6 +30,7 @@ use otter_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, Secre
 use otter_storage::SqliteStorage;
 
 use crate::config::{load_retention, Retention};
+use crate::daemon_log;
 use crate::updater::{check_latest, read_cache, write_cache, GithubReleaseFetcher};
 use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path, write_enabled};
 
@@ -67,11 +68,16 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
 
-    // File-based logging: writes to ~/.local/share/otter/daemon.log.
+    let (retention, retention_error) = match load_retention(&config_dir) {
+        Ok(retention) => (retention, None),
+        Err(e) => (Retention::KeepForever, Some(e)),
+    };
+    let legacy_log_error = daemon_log::adopt_legacy_log(&data_dir).err();
+
     // The _guard must stay alive for the duration of the daemon; dropping it
     // flushes the non-blocking writer and stops log delivery.
-    let file_appender = tracing_appender::rolling::never(&data_dir, "daemon.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, _guard) =
+        tracing_appender::non_blocking(daemon_log::appender(&data_dir, retention)?);
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
         .with_env_filter(
@@ -79,6 +85,13 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                 .add_directive(tracing::Level::INFO.into()),
         )
         .init();
+
+    if let Some(e) = retention_error {
+        warn!("Keeping all runs and logs, invalid retention config: {e:#}");
+    }
+    if let Some(e) = legacy_log_error {
+        warn!("Legacy daemon.log stays outside log rotation: {e:#}");
+    }
 
     otter_core::process::init_login_env();
 
@@ -106,11 +119,6 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     );
 
     mark_interrupted_runs_failed(storage.as_ref(), notifier.as_ref()).await;
-
-    let retention = load_retention(&config_dir).unwrap_or_else(|e| {
-        warn!("Keeping all runs, invalid retention config: {e:#}");
-        Retention::KeepForever
-    });
 
     let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(256);
     let manager = Arc::new(Mutex::new(WorkflowManager::new_with_secret_store(
