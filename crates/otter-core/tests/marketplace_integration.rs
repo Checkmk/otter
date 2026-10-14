@@ -229,3 +229,43 @@ path = "workflows/alpha"
         Some(&Some("2.0.0".to_string()))
     );
 }
+
+#[tokio::test]
+async fn fetch_removes_stale_temp_packs_from_interrupted_fetches() {
+    if !git_available() {
+        eprintln!("git not available — skipping fetch_removes_stale_temp_packs");
+        return;
+    }
+
+    // GIVEN a temp pack older than the prune grace period and a fresh one
+    let upstream = TempDir::new().unwrap();
+    git(upstream.path(), &["init", "-q", "-b", "main"]);
+    write(&upstream.path().join("README.md"), "hi");
+    git(upstream.path(), &["add", "."]);
+    git(upstream.path(), &["commit", "-q", "-m", "initial"]);
+
+    let host = TempDir::new().unwrap();
+    let clone = host.path().join("clone");
+    let url = format!("file://{}", upstream.path().display());
+    marketplace::clone_marketplace(&url, &clone).await.unwrap();
+
+    let pack_dir = clone.join(".git/objects/pack");
+    let stale = pack_dir.join("tmp_pack_stale");
+    let in_progress = pack_dir.join("tmp_pack_in_progress");
+    std::fs::write(&stale, "partial").unwrap();
+    std::fs::write(&in_progress, "partial").unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(two_days_ago)
+        .unwrap();
+
+    // WHEN
+    marketplace::fetch_marketplace(&clone).await.unwrap();
+
+    // THEN
+    assert!(!stale.exists());
+    assert!(in_progress.exists());
+}
