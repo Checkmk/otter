@@ -14,7 +14,8 @@
 10. [Environment Passthrough](#environment-passthrough)
 11. [Workflow Management](#workflow-management)
 12. [Service Management](#service-management)
-13. [Theming](#theming)
+13. [Retention](#retention)
+14. [Theming](#theming)
 
 ---
 
@@ -788,6 +789,24 @@ otter service restart   # stop (if running) and start the service again
 otter service enable    # start service and register start-on-boot
 otter service disable   # disable automatic startup and stop the service
 ```
+
+---
+
+## Retention
+
+Finished runs are deleted 30 days after their last activity (start or latest step log): the record and log in `state.db`, and the run's scratch directory (`~/.local/share/otter/runs/<run-id>/`). Change the age in `~/.config/otter/config.toml`:
+
+```toml
+[retention]
+days = 30   # 0 keeps everything
+```
+
+**Behavior:**
+- Applied when the service starts and then once a day. Run `otter service restart` to apply a changed value.
+- Runs that are still running or waiting at a checkpoint are never deleted.
+- Scratch directories without a run record are deleted once they haven't been modified for the same number of days.
+- If `config.toml` can't be parsed, nothing is deleted and a warning is logged.
+- Workspaces outside the scratch directory (`fixed`, `script`, pooled `git` slots) are not touched.
 
 ---
 

@@ -16,18 +16,20 @@ use uuid::Uuid;
 
 use otter_core::engine::Engine;
 use otter_core::marketplace;
+use otter_core::run_retention;
 use otter_core::triggers::polling::{
     consumed_triggers_path, delete_consumed_trigger, load_consumed_triggers,
 };
 use otter_core::types::{
     CheckpointAction, CheckpointResponse, DaemonCommand, DaemonEvent, DaemonResponse, EngineEvent,
-    MarketplaceStatus, RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
+    LogEntry, MarketplaceStatus, RunOutcome, RunStatus, StorageBackend, WorkflowDef, WorkflowRun,
 };
 use otter_core::WorkflowManager;
 use otter_notify::{DesktopNotifier, NoOpNotifier, Notification, Notifier};
 use otter_secrets::{EncryptedSecretStore, KeyProvider, KeyringKeyProvider, SecretStore};
 use otter_storage::SqliteStorage;
 
+use crate::config::{load_retention, Retention};
 use crate::updater::{check_latest, read_cache, write_cache, GithubReleaseFetcher};
 use crate::{dirs_config_dir, dirs_data_dir, read_enabled, socket_path, write_enabled};
 
@@ -104,6 +106,11 @@ pub async fn run_daemon() -> anyhow::Result<()> {
     );
 
     mark_interrupted_runs_failed(storage.as_ref(), notifier.as_ref()).await;
+
+    let retention = load_retention(&config_dir).unwrap_or_else(|e| {
+        warn!("Keeping all runs, invalid retention config: {e:#}");
+        Retention::KeepForever
+    });
 
     let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(256);
     let manager = Arc::new(Mutex::new(WorkflowManager::new_with_secret_store(
@@ -200,6 +207,16 @@ pub async fn run_daemon() -> anyhow::Result<()> {
             broadcast_event(&subscribers_fanout, daemon_ev);
         }
     });
+
+    if let Retention::Days(days) = retention {
+        spawn_run_retention(
+            days,
+            storage.clone(),
+            data_dir.join("runs"),
+            recent_runs.clone(),
+            subscribers.clone(),
+        );
+    }
 
     info!(socket = ?socket_path, "Daemon started — all workflows dormant");
 
@@ -517,30 +534,16 @@ async fn handle_connection<S>(
                 run_finally_after_kill(run, def, scripts_dir, storage.clone(), subscribers.clone())
                     .await;
             }
-            // Delete from storage and scratch directory
-            let storage_result = storage.delete_run(run_id);
-            let scratch_dir = dirs_data_dir().join("runs").join(run_id.to_string());
-            let dir_result = if scratch_dir.exists() {
-                std::fs::remove_dir_all(&scratch_dir)
-            } else {
-                Ok(())
-            };
-            let resp = match (storage_result, dir_result) {
-                (Ok(()), Ok(())) => {
+            let runs_dir = dirs_data_dir().join("runs");
+            let resp = match run_retention::delete_run(storage.as_ref(), &runs_dir, run_id) {
+                Ok(()) => {
                     recent_runs.lock().unwrap().remove(&run_id);
-                    let event = DaemonEvent::RunDeleted { run_id };
-                    let mut subs = subscribers.lock().unwrap();
-                    subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+                    broadcast_event(&subscribers, DaemonEvent::RunDeleted { run_id });
                     info!(%run_id, "Run deleted");
                     DaemonResponse::Ok
                 }
-                (storage_res, dir_res) => {
-                    warn!(
-                        %run_id,
-                        storage_error = ?storage_res.err(),
-                        scratch_error = ?dir_res.err(),
-                        "Delete run failed"
-                    );
+                Err(e) => {
+                    warn!(%run_id, "Delete run failed: {e:#}");
                     DaemonResponse::Error {
                         message: "Failed to delete run".to_string(),
                     }
@@ -995,6 +998,52 @@ fn action_to_checkpoint_response(action: CheckpointAction) -> CheckpointResponse
     }
 }
 
+fn spawn_run_retention(
+    days: u32,
+    storage: Arc<dyn StorageBackend>,
+    runs_dir: PathBuf,
+    recent_runs: Arc<std::sync::Mutex<HashMap<Uuid, WorkflowRun>>>,
+    subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>>,
+) {
+    const DAILY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(DAILY);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            cull_and_announce(days, &storage, &runs_dir, &recent_runs, &subscribers).await;
+        }
+    });
+}
+
+async fn cull_and_announce(
+    days: u32,
+    storage: &Arc<dyn StorageBackend>,
+    runs_dir: &Path,
+    recent_runs: &std::sync::Mutex<HashMap<Uuid, WorkflowRun>>,
+    subscribers: &std::sync::Mutex<Vec<mpsc::Sender<DaemonEvent>>>,
+) {
+    let storage = storage.clone();
+    let runs_dir = runs_dir.to_path_buf();
+    let deleted = tokio::task::spawn_blocking(move || {
+        run_retention::cull_expired_runs(
+            storage.as_ref(),
+            &runs_dir,
+            chrono::Duration::days(days.into()),
+            chrono::Utc::now(),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!("Run retention failed: {e}");
+        Vec::new()
+    });
+    for run_id in deleted {
+        recent_runs.lock().unwrap().remove(&run_id);
+        broadcast_event(subscribers, DaemonEvent::RunDeleted { run_id });
+    }
+}
+
 async fn mark_interrupted_runs_failed(storage: &dyn StorageBackend, notifier: &dyn Notifier) {
     let runs = match storage.load_all_runs() {
         Ok(r) => r,
@@ -1014,6 +1063,21 @@ async fn mark_interrupted_runs_failed(storage: &dyn StorageBackend, notifier: &d
         run.status = RunStatus::Failed;
         if let Err(e) = storage.update_workflow_run(&run) {
             warn!(run_id = %run.id, "Failed to update interrupted run: {e}");
+        }
+        let interruption = LogEntry {
+            run_id: run.id,
+            iteration: run.iteration,
+            step_index: run.current_step,
+            step_type: "interrupted".to_string(),
+            stdout: String::new(),
+            stderr: "Run interrupted by service restart".to_string(),
+            exit_code: None,
+            accepted: None,
+            feedback: None,
+            timestamp: chrono::Utc::now(),
+        };
+        if let Err(e) = storage.append_log(interruption) {
+            warn!(run_id = %run.id, "Failed to log run interruption: {e}");
         }
         let _ = notifier
             .send(&Notification {
@@ -1104,6 +1168,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runs_interrupted_by_a_restart_survive_the_first_cull() {
+        // GIVEN a run that has waited at a checkpoint for longer than the retention
+        let storage = Arc::new(InMemoryStorage::new());
+        let mut run = run_with_status("wf", RunStatus::WaitingCheckpoint);
+        run.started_at = chrono::Utc::now() - chrono::Duration::days(31);
+        storage.save_workflow_run(&run).unwrap();
+        let storage: Arc<dyn StorageBackend> = storage;
+        let runs_dir = tempfile::TempDir::new().unwrap();
+
+        // WHEN the daemon restarts and culls
+        mark_interrupted_runs_failed(storage.as_ref(), &NoOpNotifier).await;
+        cull_and_announce(
+            30,
+            &storage,
+            runs_dir.path(),
+            &Mutex::new(HashMap::new()),
+            &Mutex::new(Vec::new()),
+        )
+        .await;
+
+        // THEN the user still gets to see why it failed
+        assert_eq!(storage.load_all_runs().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn terminal_runs_are_not_touched() {
         // GIVEN runs already in terminal states
         let storage = InMemoryStorage::new();
@@ -1189,5 +1278,29 @@ requires = ["MISSING"]
         // THEN — only the valid one loads; the bad one is skipped, no panic
         let names: Vec<_> = loaded.iter().map(|(d, _, _)| d.name.clone()).collect();
         assert_eq!(names, vec!["good"]);
+    }
+
+    #[tokio::test]
+    async fn culled_runs_are_forgotten_and_announced() {
+        // GIVEN an expired run that subscribers know about
+        let storage = Arc::new(InMemoryStorage::new());
+        let mut run = run_with_status("wf", RunStatus::Completed);
+        run.started_at = chrono::Utc::now() - chrono::Duration::days(31);
+        storage.save_workflow_run(&run).unwrap();
+        let storage: Arc<dyn StorageBackend> = storage;
+        let runs_dir = tempfile::TempDir::new().unwrap();
+        let recent_runs = Mutex::new(HashMap::from([(run.id, run.clone())]));
+        let (tx, mut rx) = mpsc::channel(8);
+        let subscribers = Mutex::new(vec![tx]);
+
+        // WHEN
+        cull_and_announce(30, &storage, runs_dir.path(), &recent_runs, &subscribers).await;
+
+        // THEN
+        assert!(recent_runs.lock().unwrap().is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DaemonEvent::RunDeleted { run_id }) if run_id == run.id
+        ));
     }
 }

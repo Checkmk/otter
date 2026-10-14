@@ -338,6 +338,10 @@ impl RunStatus {
             _ => None,
         }
     }
+
+    pub fn is_finished(&self) -> bool {
+        self.as_outcome().is_some()
+    }
 }
 
 #[derive(Clone)]
