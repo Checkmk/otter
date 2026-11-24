@@ -9,7 +9,7 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 age = "0.10"
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+keyring = "4.2"
 tracing = { workspace = true }
 tempfile = { workspace = true }
 
