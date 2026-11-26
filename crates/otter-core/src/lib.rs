@@ -4,6 +4,7 @@ pub mod marketplace;
 pub mod process;
 pub mod requirements;
 pub mod resource_limiter;
+pub mod run_retention;
 pub mod sandbox;
 pub mod session;
 pub mod steps;

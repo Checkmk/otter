@@ -32,6 +32,7 @@ pub fn build_trigger(
     scripts_dir: Option<&Path>,
     secret_store: Arc<dyn SecretStore>,
     requirements: Option<Arc<Requirements>>,
+    inherit_env: Vec<String>,
 ) -> Result<Arc<dyn TriggerSource>, anyhow::Error> {
     match def {
         TriggerDef::Manual => {
@@ -61,6 +62,7 @@ pub fn build_trigger(
                 secret_store,
                 requirements,
                 requires.clone().unwrap_or_default(),
+                inherit_env,
             )))
         }
     }

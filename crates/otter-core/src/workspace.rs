@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use otter_secrets::SecretStore;
 
-use crate::process::inject_isolated_env;
+use crate::process::{inherited_env, inject_isolated_env};
 use crate::requirements::{resolve_requires, Requirements};
 use crate::types::{RunOutcome, WorkspaceConfig, WorkspaceSource};
 use crate::workspace_pool::{acquire_pool_slot, release_pool_slot};
@@ -18,6 +18,7 @@ use crate::workspace_pool::{acquire_pool_slot, release_pool_slot};
 /// - `Git { base_repo, ref }` → create a git worktree at `ref` from the local base
 ///   repo. Unpooled: worktree lives inside `scratch_dir`. Pooled: acquires a slot
 ///   from `[workspace.pool]` and resets it to `ref`.
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_workspace(
     config: Option<&WorkspaceConfig>,
     workflow_name: &str,
@@ -26,6 +27,7 @@ pub async fn resolve_workspace(
     secret_store: &dyn SecretStore,
     requirements: Option<&Requirements>,
     scripts_dir: Option<&Path>,
+    inherit_env: &[String],
 ) -> anyhow::Result<Option<PathBuf>> {
     let Some(config) = config else {
         return Ok(None);
@@ -49,21 +51,24 @@ pub async fn resolve_workspace(
                     "workspace script command must not be empty"
                 ));
             }
-            let resolved_secrets = resolve_requires(
-                requires.as_deref().unwrap_or_default(),
-                requirements,
-                scripts_dir,
-                secret_store,
-                workflow_name,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("requires resolution for workspace script failed: {}", e)
-            })?;
+            let mut env = inherited_env(inherit_env);
+            env.extend(
+                resolve_requires(
+                    requires.as_deref().unwrap_or_default(),
+                    requirements,
+                    scripts_dir,
+                    secret_store,
+                    workflow_name,
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("requires resolution for workspace script failed: {}", e)
+                })?,
+            );
             let mut cmd = tokio::process::Command::new(&command[0]);
             cmd.args(&command[1..])
                 .arg(workflow_name)
                 .arg(run_id.to_string());
-            inject_isolated_env(&mut cmd, &resolved_secrets, true);
+            inject_isolated_env(&mut cmd, &env, true);
             let output = cmd.output().await.map_err(|e| {
                 anyhow::anyhow!("failed to run workspace script '{}': {}", command[0], e)
             })?;
@@ -284,7 +289,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .unwrap()
@@ -303,7 +309,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .unwrap()
@@ -328,6 +335,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -352,7 +360,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .is_err());
@@ -375,7 +384,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .is_err());
@@ -405,6 +415,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -445,6 +456,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -471,7 +483,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .is_err());
@@ -494,7 +507,8 @@ mod tests {
             s.path(),
             &no_secrets(),
             None,
-            None
+            None,
+            &[]
         )
         .await
         .is_err());
@@ -524,6 +538,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -582,6 +597,7 @@ mod tests {
             &OneSecret,
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -622,6 +638,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -633,6 +650,45 @@ mod tests {
             "",
             "daemon env must not leak into isolated workspace script"
         );
+    }
+
+    #[tokio::test]
+    async fn script_receives_inherited_host_variable() {
+        // GIVEN a script that writes an inherited cargo-set host variable to a file
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join("env_val.txt");
+        let target = dir.path().to_string_lossy().into_owned();
+        let config = cfg(WorkspaceSource::Script {
+            command: vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                format!(
+                    "echo \"$CARGO_PKG_NAME\" > '{}' ; echo '{}'",
+                    env_file.display(),
+                    target
+                ),
+            ],
+            requires: None,
+        });
+        let s = scratch();
+
+        // WHEN
+        resolve_workspace(
+            Some(&config),
+            "wf",
+            Uuid::new_v4(),
+            s.path(),
+            &no_secrets(),
+            None,
+            None,
+            &["CARGO_PKG_NAME".to_string()],
+        )
+        .await
+        .unwrap();
+
+        // THEN
+        let val = std::fs::read_to_string(&env_file).unwrap();
+        assert_eq!(val.trim(), "otter-core");
     }
 
     #[tokio::test]
@@ -686,6 +742,7 @@ mod tests {
             &no_secrets(),
             Some(&manifest),
             Some(scripts_dir.path()),
+            &[],
         )
         .await
         .unwrap();
@@ -716,6 +773,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -755,6 +813,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -790,6 +849,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap()
@@ -830,6 +890,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap()
@@ -862,6 +923,7 @@ mod tests {
             &no_secrets(),
             None,
             None,
+            &[],
         )
         .await
         .unwrap()

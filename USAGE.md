@@ -11,9 +11,11 @@
 7. [Sandbox Configuration](#sandbox-configuration)
 8. [Triggers](#triggers)
 9. [Inputs: params and secrets](#inputs-params-and-secrets)
-10. [Workflow Management](#workflow-management)
-11. [Service Management](#service-management)
-12. [Theming](#theming)
+10. [Environment Passthrough](#environment-passthrough)
+11. [Workflow Management](#workflow-management)
+12. [Service Management](#service-management)
+13. [Retention](#retention)
+14. [Theming](#theming)
 
 ---
 
@@ -33,6 +35,9 @@ path = "/home/user/my-project"
 cpu_quota = "200%"
 
 [sandbox]           # optional; see Sandbox Configuration below
+
+[env]               # optional; see Environment Passthrough below
+inherit = ["JAVA_HOME"]
 
 [trigger]  # optional; required if type = "triggered"
 type = "manual"
@@ -160,9 +165,11 @@ Runs an AI CLI tool (Claude, Copilot, or custom) with a message. Supports persis
 **Fields:**
 - `provider` (optional): `"claude"` or `"copilot"`. Mutually exclusive with `command`.
 - `command` (optional): Escape hatch; arbitrary CLI command array. Mutually exclusive with `provider`.
+- `model` (optional): Model to use, passed as `--model <value>` to the provider CLI (e.g., `"opus"` or a full model ID for Claude). If omitted, the CLI's own default model is used. Not allowed together with `command` — pass the flag in `command` instead.
 - `message` (required unless `message_file` is set): Prompt sent to the agent.
 - `message_file` (optional): Path to a file whose contents are used as the prompt. Resolved relative to the workflow package directory. Mutually exclusive with `message`; only allowed on `agent` steps.
 - `session` (optional): Session name. Steps sharing the same session name resume the same conversation within a workflow run.
+- `effort` (Claude-only, optional): Passed as `--effort <value>` (`"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`). If omitted, the CLI's default effort is used. Any other value, or `effort` on a non-Claude step, fails at workflow-load time.
 - `allowed_tools` (optional): List of tool names the agent may use.
   - **Claude**: maps to `--allowed-tools <comma-separated-list>` (e.g., `["Write", "Read"]` → `--allowed-tools Write,Read`)
   - **Copilot**: maps to `--allow-tool=<name>` per entry
@@ -175,6 +182,8 @@ Claude with built-in provider:
 [[steps]]
 type = "agent"
 provider = "claude"
+model = "opus"
+effort = "high"
 allowed_tools = ["Write", "Read", "Bash"]
 permission_mode = "acceptEdits"
 message = "Implement the following feature..."
@@ -210,9 +219,12 @@ message_file = "prompts/implement-feature.md"
 - If `provider` is used, the provider is invoked as a subprocess
 - If `command` is used, the command is invoked as-is
 - If `session` is specified, the session is created on first use and resumed on subsequent `agent` steps with the same `session` name
+- A session keeps the `provider`, `model`, `effort`, `allowed_tools` and `permission_mode` of the step that created it; later steps resuming the session cannot change them
 - Sessions persist for the entire workflow run; checkpoints and other steps do not affect their lifecycle
 - If `session` is not specified, a temporary session is created for that step alone and discarded after
 - Agent output (stdout) is captured and logged
+- When the output is streamed, every line the CLI printed (tool calls and results included) is saved to `step-<N>-stream.jsonl` in the run's scratch directory
+- The session ID is logged when a session starts or resumes, so a Claude transcript can be found at `~/.claude/projects/*/<session-id>.jsonl` while the step is still running
 - Checkpoint feedback is sent to the active agent session as a follow-up message
 - The agent's response to feedback is presented in the checkpoint again until the user continues or stops
 
@@ -419,7 +431,7 @@ requires = ["JIRA_PAT"]           # ← sensitive: injected as env var at runtim
 
 **Sensitive entries** (`sensitive = true`) are prompted with hidden input and stored encrypted at `~/.config/otter/secrets.age`. The encryption key lives in the OS keyring (libsecret on Linux, Keychain on macOS, Credential Manager on Windows).
 
-**Injecting values into subprocess env** — `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` injects the resolved value into the subprocess env under the declared name. Sensitive names are fetched from the keyring; non-sensitive names are read from `<workflow>/.otter-state/values.toml` on each invocation, so `otter workflow configure` edits take effect on the next run without a daemon reload. The subprocess otherwise sees a clean environment (only `PATH`, `HOME`, `USER`, `TMPDIR`, etc., are kept).
+**Injecting values into subprocess env** — `requires = ["NAME", ...]` on `[[steps]]`, `[[finally]]`, polling `[trigger]`, or script `[workspace]` injects the resolved value into the subprocess env under the declared name. Sensitive names are fetched from the keyring; non-sensitive names are read from `<workflow>/.otter-state/values.toml` on each invocation, so `otter workflow configure` edits take effect on the next run without a daemon reload. The subprocess otherwise sees a clean environment: only system basics such as `PATH`, `HOME`, `USER`, `TMPDIR`, `LANG` and their Windows counterparts (`USERPROFILE`, `APPDATA`, `PATHEXT`, `COMSPEC`, `ProgramFiles`, ...) are kept. To pass further host variables through, see [Environment Passthrough](#environment-passthrough).
 
 **Rules:**
 
@@ -488,6 +500,7 @@ sandbox = false                       # opt out for this step
 
 - The workspace directory is bind-mounted at `/workspace` inside the container
 - If the workflow has companion scripts (package directory), the scripts directory is bind-mounted at `/opt/scripts:ro` and added to `PATH`
+- Variables from `[env] inherit` are passed into the container verbatim — see [Environment Passthrough](#environment-passthrough)
 
 ### Building the default image
 
@@ -630,6 +643,30 @@ Example script and workflow are available in the [examples/polling-simple](examp
 
 ---
 
+## Environment Passthrough
+
+Every subprocess starts from a clean environment that keeps only system basics (see [Inputs](#inputs-params-and-secrets)). To pass further host variables through, such as tool settings like `JAVA_HOME`, `BAZEL_SH`, `ANDROID_SDK_ROOT` or `CARGO_HOME`, list them in `[env] inherit`:
+
+```toml
+[env]
+inherit = ["BAZEL_SH", "JAVA_HOME", "ANDROID_SDK_ROOT", "CommonProgramFiles(x86)"]
+```
+
+The list applies to every shell and agent step (including `[[finally]]`), to polling `poll_command` and `context_command`, and to the `script` workspace command.
+
+**`[env] inherit` vs. `[require]`:** `[require]` asks for a value once at install time and stores it, which suits per-install configuration and secrets. `[env] inherit` reads the value from your environment on every run, so it keeps working after you upgrade a tool or move an SDK.
+
+**Behavior:**
+- **Exact names only.** Wildcards such as `AWS_*` are rejected, so a pattern can't quietly hand tokens from your shell to an agent. Names aren't limited to `^[A-Z][A-Z0-9_]*$`, so `CommonProgramFiles(x86)` works. On Windows, names are case-insensitive.
+- **Unset means skipped.** A variable that isn't set is left out without an error, so one list can name both Windows and Linux variables.
+- **No overlap with `[require]`.** A name that is also declared in `[require]` makes the workflow fail to load, so explicit configuration is never silently overridden.
+- **Values come from the same source as `PATH`.** On Linux, that's your login shell's environment, captured when the service starts, so variables exported from your shell profile are visible even when systemd starts the service at boot. On Windows, it's the service's own environment. Either way, run `otter service restart` to pick up changed values.
+- **Built-in basics are ignored.** Names that are always passed (`PATH`, `HOME`, ...) have no effect and log a warning.
+- **Visible before install.** `otter workflow install <name>@<marketplace>` lists the inherited names in its preview, so you can see what a package reads from your environment before anything runs.
+- **Passed into `[sandbox]` as-is.** Inherited values are passed into the container verbatim. Host paths are not translated, so a path like `JAVA_HOME` only helps if the image has the tool at the same location.
+
+---
+
 ## Workflow management
 
 A **workflow package** is a directory containing a `workflow.toml` plus any companion scripts used by the workflow's steps. Companion scripts in the package directory are automatically prepended to `PATH` when any step in that workflow runs.
@@ -752,6 +789,25 @@ otter service restart   # stop (if running) and start the service again
 otter service enable    # start service and register start-on-boot
 otter service disable   # disable automatic startup and stop the service
 ```
+
+---
+
+## Retention
+
+Finished runs are deleted 30 days after their last activity (start or latest step log): the record and log in `state.db`, and the run's scratch directory (`~/.local/share/otter/runs/<run-id>/`). Service logs rotate daily into `~/.local/share/otter/logs/daemon.<UTC-date>.log` and today's log is kept along with the newest 30 earlier ones. Days the service didn't run produce no file, so the kept logs can reach further back. Change the number in `~/.config/otter/config.toml`:
+
+```toml
+[retention]
+days = 30   # 0 keeps everything
+```
+
+**Behavior:**
+- Applied when the service starts and then once a day. Run `otter service restart` to apply a changed value.
+- Runs that are still running or waiting at a checkpoint are never deleted.
+- Scratch directories without a run record are deleted once they haven't been modified for the same number of days.
+- If `config.toml` can't be parsed, nothing is deleted and a warning is logged.
+- `otter log` opens the most recent service log.
+- Workspaces outside the scratch directory (`fixed`, `script`, pooled `git` slots) are not touched.
 
 ---
 
