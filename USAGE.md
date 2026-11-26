@@ -790,6 +790,8 @@ otter service enable    # start service and register start-on-boot
 otter service disable   # disable automatic startup and stop the service
 ```
 
+On Linux, `otter service enable` records the current shell's `SSH_AUTH_SOCK` in the systemd user unit. This lets workflows using Git over SSH use the same SSH agent as that shell. Run `otter service enable` again from a shell using a different agent to update the service.
+
 ---
 
 ## Retention

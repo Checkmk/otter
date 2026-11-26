@@ -40,22 +40,11 @@ impl SystemdServiceManager {
         std::fs::create_dir_all(&self.unit_dir).context("create systemd user unit directory")?;
 
         let binary = std::env::current_exe().context("resolve current binary path")?;
-        let binary_str = binary.to_string_lossy();
+        let ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
 
         std::fs::write(
             self.service_unit_path(),
-            format!(
-                "[Unit]\n\
-                 Description=Otter workflow automation daemon\n\
-                 \n\
-                 [Service]\n\
-                 Environment=SHELL=/bin/bash\n\
-                 ExecStart={binary_str} _daemon\n\
-                 Restart=on-failure\n\
-                 \n\
-                 [Install]\n\
-                 WantedBy=default.target\n"
-            ),
+            render_service_unit(&binary.to_string_lossy(), ssh_auth_sock.as_deref()),
         )
         .context("write otter.service unit")?;
 
@@ -83,6 +72,36 @@ impl SystemdServiceManager {
         }
         Ok(())
     }
+}
+
+fn render_service_unit(binary: &str, ssh_auth_sock: Option<&str>) -> String {
+    let ssh_auth_sock = ssh_auth_sock
+        .map(|socket| format!("Environment=\"SSH_AUTH_SOCK={}\"\n", escape_unit_value(socket)))
+        .unwrap_or_default();
+
+    format!(
+        "[Unit]\n\
+         Description=Otter workflow automation daemon\n\
+         \n\
+         [Service]\n\
+         Environment=SHELL=/bin/bash\n\
+         {ssh_auth_sock}\
+         ExecStart={binary} _daemon\n\
+         Restart=on-failure\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    )
+}
+
+fn escape_unit_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 fn run_systemctl(args: &[&str]) -> anyhow::Result<()> {
@@ -221,6 +240,26 @@ mod tests {
         assert!(service_content.contains("Environment=SHELL=/bin/bash"));
         // No socket unit is written
         assert!(!mgr.legacy_socket_unit_path().exists());
+    }
+
+    #[test]
+    fn service_unit_preserves_the_enabling_shell_ssh_agent() {
+        // GIVEN an SSH agent socket in the enabling shell
+        let unit = render_service_unit("/usr/bin/otter", Some("/run/user/1000/keyring/ssh"));
+
+        // WHEN the user service unit is rendered
+        // THEN the daemon uses that socket instead of the user manager's value
+        assert!(unit.contains("Environment=\"SSH_AUTH_SOCK=/run/user/1000/keyring/ssh\""));
+    }
+
+    #[test]
+    fn service_unit_escapes_ssh_agent_socket_values() {
+        // GIVEN a socket path with characters that have meaning in a unit file
+        let unit = render_service_unit("/usr/bin/otter", Some("/run/user/1000/key ring/%agent"));
+
+        // WHEN the user service unit is rendered
+        // THEN the socket stays a single literal environment value
+        assert!(unit.contains("Environment=\"SSH_AUTH_SOCK=/run/user/1000/key ring/%%agent\""));
     }
 
     #[test]
