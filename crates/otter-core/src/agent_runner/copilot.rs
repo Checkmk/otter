@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use super::{
     classify_agent_error, run_agent_subprocess, AgentError, AgentOutput, AgentRunner,
@@ -19,8 +18,11 @@ pub struct CopilotRunner {
 }
 
 impl CopilotRunner {
-    pub fn new(allowed_tools: Option<Vec<String>>) -> Self {
+    pub fn new(model: Option<String>, allowed_tools: Option<Vec<String>>) -> Self {
         let mut base_args = Vec::new();
+        if let Some(model) = model {
+            base_args.push(format!("--model={model}"));
+        }
         if let Some(tools) = allowed_tools {
             for tool in tools {
                 base_args.push(format!("--allow-tool={tool}"));
@@ -37,7 +39,7 @@ impl AgentRunner for CopilotRunner {
         spec: AgentSpec,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = spec.session_id.clone();
 
         let handle = AgentSessionHandle {
             id: session_id.clone(),
@@ -53,7 +55,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push("-p".to_string());
         cmd_args.push(spec.message.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--stream".to_string());
             cmd_args.push("on".to_string());
             cmd_args.push("--output-format".to_string());
@@ -86,10 +88,11 @@ impl AgentRunner for CopilotRunner {
             )
             .await?
         };
+        output.session_id = Some(handle.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -109,7 +112,7 @@ impl AgentRunner for CopilotRunner {
         cmd_args.push("-p".to_string());
         cmd_args.push(message.to_string());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--stream".to_string());
             cmd_args.push("on".to_string());
             cmd_args.push("--output-format".to_string());
@@ -142,10 +145,11 @@ impl AgentRunner for CopilotRunner {
             )
             .await?
         };
+        output.session_id = Some(session.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -212,5 +216,26 @@ fn parse_copilot_stream_line(line: &str, stdout: &mut String) -> Vec<ProgressChu
             vec![ProgressChunk::Status(format!("Using tool: {name}"))]
         }
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_is_passed_to_cli_when_set() {
+        // GIVEN / WHEN
+        let runner = CopilotRunner::new(Some("gpt-5".into()), None);
+        // THEN
+        assert_eq!(runner.base_args, vec!["--model=gpt-5"]);
+    }
+
+    #[test]
+    fn model_is_left_to_cli_default_when_unset() {
+        // GIVEN / WHEN
+        let runner = CopilotRunner::new(None, None);
+        // THEN
+        assert!(!runner.base_args.iter().any(|a| a.starts_with("--model")));
     }
 }

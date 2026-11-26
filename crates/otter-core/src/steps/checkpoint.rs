@@ -180,6 +180,7 @@ mod tests {
                     stdout: "initial".into(),
                     stderr: String::new(),
                     exit_code: Some(0),
+                    ..Default::default()
                 },
             ))
         }
@@ -199,6 +200,7 @@ mod tests {
                 stdout: format!("response:{}", message),
                 stderr: String::new(),
                 exit_code: Some(0),
+                ..Default::default()
             })
         }
 
@@ -224,6 +226,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         }
     }
@@ -249,6 +252,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         }
     }
@@ -514,6 +518,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 
@@ -587,6 +592,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 
@@ -630,6 +636,7 @@ mod tests {
             scripts_dir: None,
             secret_store: Arc::new(otter_secrets::NoOpSecretStore),
             requirements: None,
+            inherit_env: Vec::new(),
             sandbox_config: None,
         };
 

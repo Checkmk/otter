@@ -253,36 +253,39 @@ pub async fn clone_marketplace(url: &str, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `git -C <clone> fetch && git -C <clone> reset --hard @{u}`.
+/// `git fetch && git reset --hard @{u}` in `<clone>`, then a best-effort
+/// `git prune` of leftovers from interrupted fetches.
 ///
 /// Idempotent: aligns the clone to the upstream tip on its current branch.
 /// Designed for the daemon's periodic fetch task — local edits in the clone
 /// are intentionally clobbered (the clone is purely a cache, not a workspace).
 pub async fn fetch_marketplace(clone: &Path) -> anyhow::Result<()> {
-    let fetch = Command::new("git")
-        .arg("-C")
-        .arg(clone)
-        .arg("fetch")
-        .arg("--quiet")
-        .output()
-        .await
-        .with_context(|| format!("failed to spawn 'git fetch' in {}", clone.display()))?;
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!("'git fetch' failed: {}", stderr.trim());
+    git_in(clone, &["fetch", "--quiet"]).await?;
+    git_in(clone, &["reset", "--hard", "@{u}"]).await?;
+    const SPARE_OBJECTS_OF_CONCURRENT_FETCHES: &str = "--expire=1.day.ago";
+    if let Err(e) = git_in(clone, &["prune", SPARE_OBJECTS_OF_CONCURRENT_FETCHES]).await {
+        tracing::warn!(clone = %clone.display(), error = %format!("{e:#}"), "Failed to prune marketplace clone");
     }
-    let reset = Command::new("git")
+    Ok(())
+}
+
+async fn git_in(clone: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let command = format!("git {}", args.join(" "));
+    let output = Command::new("git")
         .arg("-C")
         .arg(clone)
-        .arg("reset")
-        .arg("--hard")
-        .arg("@{u}")
+        .args(args)
         .output()
         .await
-        .with_context(|| format!("failed to spawn 'git reset' in {}", clone.display()))?;
-    if !reset.status.success() {
-        let stderr = String::from_utf8_lossy(&reset.stderr);
-        anyhow::bail!("'git reset --hard @{{u}}' failed: {}", stderr.trim());
+        .with_context(|| format!("failed to spawn '{command}' in {}", clone.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "'{command}' failed in {} (status {}): {}",
+            clone.display(),
+            output.status,
+            stderr.trim()
+        );
     }
     Ok(())
 }

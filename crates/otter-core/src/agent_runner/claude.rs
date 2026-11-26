@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::types::ProgressChunk;
 
@@ -19,8 +18,21 @@ pub struct ClaudeCodeRunner {
 }
 
 impl ClaudeCodeRunner {
-    pub fn new(allowed_tools: Option<Vec<String>>, permission_mode: Option<String>) -> Self {
-        let mut base_args = vec!["--model".to_string(), "claude-sonnet-4-6".to_string()];
+    pub fn new(
+        model: Option<String>,
+        effort: Option<String>,
+        allowed_tools: Option<Vec<String>>,
+        permission_mode: Option<String>,
+    ) -> Self {
+        let mut base_args = Vec::new();
+        if let Some(model) = model {
+            base_args.push("--model".to_string());
+            base_args.push(model);
+        }
+        if let Some(effort) = effort {
+            base_args.push("--effort".to_string());
+            base_args.push(effort);
+        }
         if let Some(tools) = allowed_tools {
             base_args.push("--allowed-tools".to_string());
             base_args.push(tools.join(","));
@@ -40,7 +52,7 @@ impl AgentRunner for ClaudeCodeRunner {
         spec: AgentSpec,
         progress_tx: Option<mpsc::Sender<ProgressChunk>>,
     ) -> Result<(AgentSessionHandle, AgentOutput), AgentError> {
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = spec.session_id.clone();
 
         let handle = AgentSessionHandle {
             id: session_id.clone(),
@@ -53,7 +65,7 @@ impl AgentRunner for ClaudeCodeRunner {
         let mut cmd_args = vec!["claude".to_string()];
         cmd_args.extend(self.base_args.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("stream-json".to_string());
             cmd_args.push("--verbose".to_string());
@@ -90,10 +102,11 @@ impl AgentRunner for ClaudeCodeRunner {
             )
             .await?
         };
+        output.session_id = Some(handle.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -110,7 +123,7 @@ impl AgentRunner for ClaudeCodeRunner {
         let mut cmd_args = vec!["claude".to_string()];
         cmd_args.extend(self.base_args.clone());
 
-        let output = if let Some(tx) = progress_tx {
+        let mut output = if let Some(tx) = progress_tx {
             cmd_args.push("--output-format".to_string());
             cmd_args.push("stream-json".to_string());
             cmd_args.push("--verbose".to_string());
@@ -147,10 +160,11 @@ impl AgentRunner for ClaudeCodeRunner {
             )
             .await?
         };
+        output.session_id = Some(session.id.clone());
 
         if let Some(code) = output.exit_code {
             if code != 0 {
-                return Err(classify_agent_error(code, &output));
+                return Err(classify_agent_error(code, output));
             }
         }
 
@@ -276,6 +290,38 @@ fn summarize_tool_input(tool_name: &str, input: Option<&serde_json::Value>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_is_passed_to_cli_when_set() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(Some("claude-opus-5-5".into()), None, None, None);
+        // THEN
+        assert_eq!(runner.base_args, vec!["--model", "claude-opus-5-5"]);
+    }
+
+    #[test]
+    fn model_is_left_to_cli_default_when_unset() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, None, None, None);
+        // THEN
+        assert!(!runner.base_args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn effort_is_passed_to_cli_when_set() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, Some("high".into()), None, None);
+        // THEN
+        assert_eq!(runner.base_args, vec!["--effort", "high"]);
+    }
+
+    #[test]
+    fn effort_is_left_to_cli_default_when_unset() {
+        // GIVEN / WHEN
+        let runner = ClaudeCodeRunner::new(None, None, None, None);
+        // THEN
+        assert!(!runner.base_args.iter().any(|a| a == "--effort"));
+    }
 
     #[test]
     fn parse_thinking_event() {
@@ -435,8 +481,10 @@ echo '{"type":"result","subtype":"success","result":"done"}'
         .await
         .unwrap();
 
-        // THEN — output contains the result text
+        // THEN — output contains the result text and every line as printed
         assert_eq!(output.stdout, "done");
+        assert_eq!(output.stream.lines().count(), 4);
+        assert!(output.stream.contains(r#""name":"Read""#));
 
         // Collect all chunks
         drop(tx);
