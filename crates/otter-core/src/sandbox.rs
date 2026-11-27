@@ -49,27 +49,8 @@ pub fn resolve_sandbox_config(
         });
     }
 
-    // Bind-mount ~/.claude and ~/.claude.json for auth and session persistence when provider is claude
-    if step_def.step_type == StepType::Agent && step_def.agent.provider.as_deref() == Some("claude")
-    {
-        if let Some(home) = std::env::var_os("HOME").map(|h| Path::new(&h).to_path_buf()) {
-            let claude_dir = home.join(".claude");
-            if claude_dir.is_dir() {
-                extra_mounts.push(agentbox::Mount {
-                    host: claude_dir,
-                    container: "/home/sandbox/.claude".into(),
-                    read_only: false,
-                });
-            }
-            let claude_json = home.join(".claude.json");
-            if claude_json.is_file() {
-                extra_mounts.push(agentbox::Mount {
-                    host: claude_json,
-                    container: "/home/sandbox/.claude.json".into(),
-                    read_only: false,
-                });
-            }
-        }
+    if let Some(home) = std::env::var_os("HOME") {
+        extra_mounts.extend(claude_mounts(step_def, Path::new(&home)));
     }
 
     // Build env vars: safe system vars + PATH extension for scripts
@@ -101,6 +82,35 @@ pub fn resolve_sandbox_config(
         env_vars,
         tty: false, // otter always uses piped stdio
     })
+}
+
+/// Claude agent steps get the host's `~/.claude` and `~/.claude.json` for auth and
+/// session persistence.
+fn claude_mounts(step_def: &StepDef, home: &Path) -> Vec<agentbox::Mount> {
+    let is_claude_agent = step_def.step_type == StepType::Agent
+        && step_def.agent.provider.as_deref() == Some("claude");
+    if !is_claude_agent {
+        return Vec::new();
+    }
+
+    let mut mounts = Vec::new();
+    let claude_dir = home.join(".claude");
+    if claude_dir.is_dir() {
+        mounts.push(agentbox::Mount {
+            host: claude_dir,
+            container: "/home/sandbox/.claude".into(),
+            read_only: false,
+        });
+    }
+    let claude_json = home.join(".claude.json");
+    if claude_json.is_file() {
+        mounts.push(agentbox::Mount {
+            host: claude_json,
+            container: "/home/sandbox/.claude.json".into(),
+            read_only: false,
+        });
+    }
+    mounts
 }
 
 #[cfg(test)]
@@ -330,88 +340,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claude_agent_without_session_gets_claude_mount() {
-        // GIVEN
-        let wf_sandbox = SandboxDef {
-            image: None,
-            network: None,
-        };
-        let step = claude_agent_step();
-        let scratch = tempfile::tempdir().unwrap();
+    fn home_with_claude_config() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude.json"), "{}").unwrap();
+        home
+    }
 
-        // WHEN
-        let config = resolve_sandbox_config(
-            Some(&wf_sandbox),
-            &step,
-            Path::new("/ws"),
-            None,
-            None,
-            scratch.path(),
-        )
-        .unwrap();
-
-        // THEN
-        assert!(config
-            .extra_mounts
+    fn containers(mounts: &[agentbox::Mount]) -> Vec<&str> {
+        mounts
             .iter()
-            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+            .map(|m| m.container.to_str().unwrap())
+            .collect()
     }
 
     #[test]
-    fn claude_agent_with_session_gets_claude_mount() {
+    fn claude_agent_gets_writable_claude_config_mounts() {
         // GIVEN
-        let wf_sandbox = SandboxDef {
-            image: None,
-            network: None,
-        };
-        let mut step = claude_agent_step();
-        step.session = Some("my-session".into());
-        let scratch = tempfile::tempdir().unwrap();
+        let home = home_with_claude_config();
+        let step = claude_agent_step();
 
         // WHEN
-        let config = resolve_sandbox_config(
-            Some(&wf_sandbox),
-            &step,
-            Path::new("/ws"),
-            None,
-            None,
-            scratch.path(),
-        )
-        .unwrap();
+        let mounts = claude_mounts(&step, home.path());
 
         // THEN
-        assert!(config
-            .extra_mounts
-            .iter()
-            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+        assert_eq!(
+            containers(&mounts),
+            ["/home/sandbox/.claude", "/home/sandbox/.claude.json"]
+        );
+        assert!(mounts.iter().all(|m| !m.read_only));
+    }
+
+    #[test]
+    fn claude_agent_without_claude_config_gets_no_mounts() {
+        // GIVEN
+        let home = tempfile::tempdir().unwrap();
+        let step = claude_agent_step();
+
+        // WHEN
+        let mounts = claude_mounts(&step, home.path());
+
+        // THEN
+        assert!(mounts.is_empty());
     }
 
     #[test]
     fn shell_step_does_not_get_claude_mount() {
         // GIVEN
-        let wf_sandbox = SandboxDef {
-            image: None,
-            network: None,
-        };
+        let home = home_with_claude_config();
         let step = shell_step();
 
         // WHEN
-        let config = resolve_sandbox_config(
-            Some(&wf_sandbox),
-            &step,
-            Path::new("/ws"),
-            None,
-            None,
-            Path::new("/scratch"),
-        )
-        .unwrap();
+        let mounts = claude_mounts(&step, home.path());
 
         // THEN
-        assert!(!config
-            .extra_mounts
-            .iter()
-            .any(|m| m.container.to_str() == Some("/home/sandbox/.claude")));
+        assert!(mounts.is_empty());
     }
 
     #[test]

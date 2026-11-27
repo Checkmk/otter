@@ -295,7 +295,12 @@ pub(super) async fn run_agent_subprocess(
 
     if let Some(message) = spec.stdin_message {
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(message.as_bytes()).await?;
+            // An agent that exits before reading its prompt closes the pipe. Its
+            // exit status and output explain why; the broken pipe would hide them.
+            match stdin.write_all(message.as_bytes()).await {
+                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.into()),
+                _ => {}
+            }
             // Explicitly close stdin so the child receives EOF and can proceed.
             // On Windows this is required; the child will otherwise block waiting
             // for more input before producing any output.
