@@ -472,8 +472,26 @@ network = "none"                      # optional; "bridge" (default) or "none"
 The presence of `[sandbox]` enables sandboxing for all shell and agent steps. To use the defaults (default image, bridge networking), an empty `[sandbox]` section suffices.
 
 **Fields:**
-- `image` (optional): Container image to use. Defaults to `localhost/agentbox:latest`
+- `backend` (optional): `"podman"` (default) or `"bwrap"` (experimental, see below)
+- `image` (optional): Container image to use. Defaults to `localhost/agentbox:latest`. Ignored by `bwrap`.
 - `network` (optional): Network mode — `"bridge"` (default, allows network access) or `"none"` (full network isolation)
+
+### Experimental: `bwrap` backend
+
+```toml
+[sandbox]
+backend = "bwrap"
+```
+
+Runs steps with [bubblewrap](https://github.com/containers/bubblewrap) instead of Podman, the same mechanism Claude Code and Codex CLI use for their own sandboxes. There is no image to build or keep current: the sandbox sees the host's `/usr` and `/etc` read-only, and the program a step runs (e.g. `claude`) is resolved on the host `PATH` and its executable file bind-mounted read-only. Agents therefore run the exact version installed on the host.
+
+The layout matches the Podman backend: the workspace at `/workspace`, companion scripts at `/opt/scripts`, a fresh `/home/sandbox`, and tmpfs `/tmp` and `/run`. Other host paths, including your home directory and the sockets under `/run/user` (D-Bus, keyring, SSH agent), are hidden unless explicitly mounted. Claude agent steps automatically mount existing `~/.claude` and `~/.claude.json` into `/home/sandbox` with write access for authentication and session persistence. Those steps can read and modify the host's Claude credentials, configuration, and session data. Each sandbox gets its own PID, IPC and network namespaces; `network = "bridge"` keeps the host network.
+
+**Limitations:**
+- Requires `bwrap` on `PATH`. On Ubuntu 24.04+, unprivileged user namespaces are restricted by AppArmor; the `bwrap-userns-restrict` profile from the `apparmor-profiles` package allows `bwrap`.
+- Only the step's own program is exposed. Tools a step calls indirectly (e.g. `sh -c "claude ..."`) must live under `/usr` or be invoked directly.
+- Programs outside the mounted system directories may fail if they need adjacent files: only the executable file is exposed, and workflow configuration does not support additional bind mounts. For such tools, use the Podman backend with an image containing the tool and its required files.
+- `[resources] cpu_quota` is not supported yet.
 
 ### Per-step override
 

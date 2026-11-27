@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::types::{ResourceConfig, SandboxDef, StepDef, StepType};
+use crate::types::{ResourceConfig, SandboxBackend, SandboxDef, StepDef, StepType};
 
 /// Resolve sandbox configuration for a step, combining workflow-level and step-level settings.
 ///
@@ -73,7 +73,13 @@ pub fn resolve_sandbox_config(
         ));
     }
 
+    let backend = match wf.backend {
+        SandboxBackend::Podman => agentbox::Backend::Podman,
+        SandboxBackend::Bwrap => agentbox::Backend::Bwrap,
+    };
+
     Some(agentbox::SandboxConfig {
+        backend,
         image: wf.image,
         workspace_dir: workspace_dir.to_path_buf(),
         extra_mounts,
@@ -155,6 +161,7 @@ mod tests {
     fn returns_config_when_workflow_level_enabled() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };
@@ -178,6 +185,7 @@ mod tests {
     fn step_level_override_opts_out() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };
@@ -222,6 +230,7 @@ mod tests {
     fn checkpoint_step_is_never_sandboxed() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };
@@ -249,6 +258,7 @@ mod tests {
     fn cpu_quota_converted_to_cpus() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };
@@ -275,6 +285,7 @@ mod tests {
     fn custom_image_and_network_from_workflow() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: Some("my-image:v1".to_string()),
             network: Some("none".to_string()),
         };
@@ -300,6 +311,7 @@ mod tests {
     fn scripts_dir_added_as_extra_mount() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };
@@ -401,6 +413,7 @@ mod tests {
     fn tty_is_always_false() {
         // GIVEN
         let wf_sandbox = SandboxDef {
+            backend: SandboxBackend::Podman,
             image: None,
             network: None,
         };

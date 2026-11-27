@@ -20,5 +20,8 @@ agentbox = { path = "../agentbox" }
 otter-notify = { path = "../otter-notify" }
 otter-secrets = { path = "../otter-secrets" }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

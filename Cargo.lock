@@ -2307,6 +2307,7 @@ dependencies = [
  "indexmap",
  "otter-notify",
  "otter-secrets",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

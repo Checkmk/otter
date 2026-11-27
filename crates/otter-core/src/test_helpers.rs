@@ -2,7 +2,6 @@
 ///
 /// Handles platform-specific differences (Unix file permissions, Windows .bat wrappers, etc.)
 /// and ensures proper synchronization before subprocess execution.
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Returns the executable filename for a script name on the current platform.
@@ -26,27 +25,42 @@ pub fn bash_path(path: &std::path::Path) -> String {
 
 /// Writes an executable script to disk and returns a path that can be executed directly.
 ///
-/// On Unix: writes the script with 0o755 permissions and fsyncs for durability.
+/// On Unix: a child process writes the script with 0o755 permissions. Writing it from
+/// the test process would race with parallel tests: a subprocess forked meanwhile
+/// inherits the open write handle until it execs, and executing the script during that
+/// window fails with "Text file busy".
 /// On Windows: writes the bash script as-is, then writes a `.bat` wrapper that invokes
 /// `bash <script>` — and returns the `.bat` path. This is needed because Windows cannot
 /// execute shebang scripts directly (os error 193).
 pub fn write_executable_script(dir: &Path, name: &str, content: &str) -> std::io::Result<PathBuf> {
     let script_path = dir.join(name);
-    fs::write(&script_path, content)?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
-        // Ensure file is durably written before subprocess accesses it
-        if let Ok(file) = fs::File::open(&script_path) {
-            let _ = file.sync_all();
+        use std::io::Write;
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&script_path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        writer
+            .stdin
+            .take()
+            .expect("stdin is piped")
+            .write_all(content.as_bytes())?;
+        let status = writer.wait()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "writing {} failed: {status}",
+                script_path.display()
+            )));
         }
         return Ok(script_path);
     }
 
     #[cfg(windows)]
     {
+        std::fs::write(&script_path, content)?;
         // Write a .bat wrapper so the path is directly executable on Windows.
         // The script content uses bash syntax, so we delegate to bash.
         let bat_name = format!("{name}.bat");
@@ -54,7 +68,7 @@ pub fn write_executable_script(dir: &Path, name: &str, content: &str) -> std::io
         // Use forward slashes in the bash path argument to avoid escaping issues.
         let script_str = script_path.to_string_lossy().replace('\\', "/");
         let bat_content = format!("@bash \"{script_str}\" %*\r\n");
-        fs::write(&bat_path, bat_content)?;
+        std::fs::write(&bat_path, bat_content)?;
         return Ok(bat_path);
     }
 }

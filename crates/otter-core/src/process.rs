@@ -233,7 +233,18 @@ pub fn build_subprocess_command(
     if let Some(sandbox) = sandbox_config {
         let mut sandbox = sandbox.clone();
         sandbox.env_vars.extend(secrets.iter().cloned());
-        let wrapped = agentbox::wrap_command(cmd_args, &sandbox);
+        let cmd_args = if sandbox.backend == agentbox::Backend::Bwrap {
+            expose_host_binary(
+                cmd_args,
+                login_path(),
+                scripts_dir,
+                &mut sandbox.extra_mounts,
+                working_dir,
+            )
+        } else {
+            cmd_args.to_vec()
+        };
+        let wrapped = agentbox::wrap_command(&cmd_args, &sandbox);
         let mut cmd = tokio::process::Command::new(&wrapped[0]);
         cmd.args(&wrapped[1..]);
         inject_isolated_env(&mut cmd, &[], false);
@@ -247,9 +258,462 @@ pub fn build_subprocess_command(
     }
 }
 
+/// The bwrap sandbox only sees the host's /usr and /etc, so tools installed
+/// elsewhere (e.g. `claude` under ~/.local or linuxbrew) would be missing. Resolve
+/// the program on the host PATH and bind its file read-only at the first hidden
+/// path in its symlink chain. Visible links and the invocation path stay intact.
+///
+/// Programs that don't resolve on the host PATH are left alone; they may be
+/// companion scripts that only exist on the sandbox PATH.
+fn expose_host_binary(
+    cmd_args: &[String],
+    host_path: impl AsRef<OsStr>,
+    scripts_dir: Option<&Path>,
+    mounts: &mut Vec<agentbox::Mount>,
+    working_dir: &Path,
+) -> Vec<String> {
+    let program = Path::new(&cmd_args[0]);
+    if program.is_relative() && cmd_args[0].contains('/') {
+        return cmd_args.to_vec();
+    }
+    if !cmd_args[0].contains('/')
+        && scripts_dir.is_some_and(|dir| is_executable(&dir.join(program)))
+    {
+        let mut args = cmd_args.to_vec();
+        args[0] = Path::new("/opt/scripts")
+            .join(program)
+            .display()
+            .to_string();
+        return args;
+    }
+    let found = if program.is_absolute() {
+        is_executable(program).then(|| program.to_path_buf())
+    } else {
+        std::env::split_paths(host_path.as_ref())
+            .map(|dir| working_dir.join(dir).join(program))
+            .find(|p| is_executable(p))
+    };
+    let Some(invocation) = found.and_then(|p| std::path::absolute(p).ok()) else {
+        return cmd_args.to_vec();
+    };
+    let Ok(resolved) = invocation.canonicalize() else {
+        return cmd_args.to_vec();
+    };
+    let destination = agentbox::resolve_visible_host_path(&invocation);
+    let visible = ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64"]
+        .iter()
+        .any(|root| destination.starts_with(root));
+    if destination != resolved || !visible {
+        mounts.push(agentbox::Mount {
+            host: resolved,
+            container: destination.clone(),
+            read_only: true,
+        });
+    }
+    let mut args = cmd_args.to_vec();
+    args[0] = invocation.display().to_string();
+    args
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{accessat, Access, AtFlags, CWD};
+        path.is_file() && accessat(CWD, path, Access::EXEC_OK, AtFlags::EACCESS).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires bwrap and permission to create user namespaces"]
+    fn bwrap_live_executable_resolution_and_isolation() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let scripts = root.path().join("scripts");
+        let host = root.path().join("host");
+        for dir in [&workspace, &scripts, &host] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let write_script = |path: &Path, body: &str| {
+            std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write_script(&workspace.join("tool"), "printf workspace");
+        write_script(&scripts.join("tool"), "printf companion");
+        write_script(&host.join("tool"), "printf host");
+        std::fs::write(host.join("secret"), "must remain hidden").unwrap();
+        symlink("tool", host.join("current")).unwrap();
+        symlink("current", host.join("alias")).unwrap();
+
+        let run = |command: Vec<String>, path: &str, companions: bool, tty: bool| {
+            let mut config = agentbox::SandboxConfig {
+                backend: agentbox::Backend::Bwrap,
+                image: None,
+                workspace_dir: workspace.clone(),
+                extra_mounts: vec![],
+                network: agentbox::NetworkMode::None,
+                cpus: None,
+                env_vars: vec![("HOME".into(), "/home/sandbox".into())],
+                tty,
+            };
+            let scripts_dir = companions.then_some(scripts.as_path());
+            if companions {
+                config.extra_mounts.push(agentbox::Mount {
+                    host: scripts.clone(),
+                    container: "/opt/scripts".into(),
+                    read_only: true,
+                });
+            }
+            let args = expose_host_binary(
+                &command,
+                path,
+                scripts_dir,
+                &mut config.extra_mounts,
+                &workspace,
+            );
+            let wrapped = agentbox::wrap_command(&args, &config);
+            let output = std::process::Command::new(&wrapped[0])
+                .args(&wrapped[1..])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{command:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+
+        for tty in [false, true] {
+            assert_eq!(
+                run(vec!["tool".into()], host.to_str().unwrap(), true, tty),
+                "companion"
+            );
+            assert_eq!(
+                run(vec!["./tool".into()], host.to_str().unwrap(), true, tty),
+                "workspace"
+            );
+            for path in ["", "."] {
+                assert_eq!(run(vec!["tool".into()], path, false, tty), "workspace");
+            }
+            assert_eq!(
+                run(vec!["alias".into()], host.to_str().unwrap(), false, tty),
+                "host"
+            );
+            write_script(&host.join("probe"), &format!(
+                "test ! -e '{}' && test \"$PWD\" = /workspace && test \"$HOME\" = /home/sandbox && ! ( : </dev/tty ) 2>/dev/null && touch written",
+                host.join("secret").display()
+            ));
+            assert_eq!(
+                run(
+                    vec![host.join("probe").display().to_string()],
+                    "",
+                    false,
+                    tty
+                ),
+                ""
+            );
+            assert!(workspace.join("written").exists());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_does_not_mount_invalid_absolute_commands() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("not-executable");
+        std::fs::write(&file, "private data").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        for program in [Path::new("/.."), root.path(), &file] {
+            let command = vec![program.display().to_string()];
+            let mut mounts = vec![];
+            let args = expose_host_binary(&command, "", None, &mut mounts, root.path());
+            assert_eq!(args, command);
+            assert!(mounts.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_resolves_relative_path_entries_from_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace = workspace.path().canonicalize().unwrap();
+        std::fs::create_dir(workspace.join("bin")).unwrap();
+        for entry in ["", ".", "bin"] {
+            let tool = workspace.join(entry).join("tool");
+            std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut mounts = vec![];
+            let args = expose_host_binary(&["tool".into()], entry, None, &mut mounts, &workspace);
+            assert_ne!(args[0], "tool");
+            assert_eq!(mounts.len(), 1);
+            assert_eq!(mounts[0].host, tool.canonicalize().unwrap());
+            assert_eq!(mounts[0].container, Path::new(&args[0]));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_leaves_relative_paths_for_workspace_resolution() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir(host.path().join("tools")).unwrap();
+        for program in ["git", "tools/git"] {
+            let path = host.path().join(program);
+            std::fs::write(&path, "").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for program in ["./git", "tools/git"] {
+            let mut mounts = vec![];
+            let command = vec![program.into(), "status".into()];
+            assert_eq!(
+                expose_host_binary(
+                    &command,
+                    host.path().to_str().unwrap(),
+                    Some(host.path()),
+                    &mut mounts,
+                    Path::new("/"),
+                ),
+                command,
+            );
+            assert!(mounts.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_prefers_executable_companion_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scripts = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        let companion = scripts.path().join("git");
+        let host = host.path().canonicalize().unwrap();
+        let host_binary = host.join("git");
+        std::fs::write(&companion, "#!/bin/sh\n").unwrap();
+        std::fs::write(&host_binary, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&host_binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for executable in [true, false] {
+            std::fs::set_permissions(
+                &companion,
+                std::fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+            )
+            .unwrap();
+            let mut mounts = vec![];
+            let args = expose_host_binary(
+                &["git".into(), "status".into()],
+                host.to_str().unwrap(),
+                Some(scripts.path()),
+                &mut mounts,
+                Path::new("/"),
+            );
+            assert_eq!(args[1], "status");
+            if executable {
+                assert_eq!(args[0], "/opt/scripts/git");
+                assert!(mounts.is_empty());
+            } else {
+                assert_eq!(args[0], host_binary.to_str().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_mounts_only_resolved_symlink_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // GIVEN a tool installed outside /usr and linked from a PATH dir
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let versions = root.join("share/claude/versions");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(versions.join("2.1.0"), "").unwrap();
+        std::fs::set_permissions(
+            versions.join("2.1.0"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(versions.join("2.1.0"), bin.join("claude")).unwrap();
+        let mut mounts = vec![];
+
+        // WHEN
+        let args = expose_host_binary(
+            &["claude".into(), "-p".into()],
+            bin.to_str().unwrap(),
+            None,
+            &mut mounts,
+            Path::new("/"),
+        );
+
+        // THEN
+        assert_eq!(
+            args,
+            vec![bin.join("claude").display().to_string(), "-p".into()]
+        );
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host, versions.join("2.1.0"));
+        assert_eq!(mounts[0].container, bin.join("claude"));
+        assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_bypasses_hidden_intermediate_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("usr/bin");
+        let hidden = root.path().join("opt/tool");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", hidden.join("current")).unwrap();
+        std::os::unix::fs::symlink("../../opt/tool/current", bin.join("sh")).unwrap();
+        let mut mounts = vec![];
+        let args = expose_host_binary(
+            &[
+                bin.join("sh").display().to_string(),
+                "-c".into(),
+                "true".into(),
+            ],
+            "",
+            None,
+            &mut mounts,
+            Path::new("/"),
+        );
+
+        // This invocation is outside the system mounts, so bind the file directly
+        // there. No hidden links are needed and the applet name stays sh.
+        assert_eq!(args[0], bin.join("sh").to_str().unwrap());
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].container, Path::new(&args[0]));
+        assert_eq!(mounts[0].host, Path::new("/bin/sh").canonicalize().unwrap());
+        assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_preserves_alias_of_system_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let alias = root.path().canonicalize().unwrap().join("sh");
+        std::os::unix::fs::symlink("/bin/sh", &alias).unwrap();
+        for program in ["sh".to_string(), alias.display().to_string()] {
+            let mut mounts = vec![];
+            let args = expose_host_binary(
+                &[program, "-c".into(), "true".into()],
+                alias.parent().unwrap().to_str().unwrap(),
+                None,
+                &mut mounts,
+                Path::new("/"),
+            );
+            assert_eq!(
+                args,
+                vec![alias.display().to_string(), "-c".into(), "true".into()]
+            );
+            assert_eq!(mounts.len(), 1);
+            assert_eq!(mounts[0].host, alias.canonicalize().unwrap());
+            assert_eq!(mounts[0].container, alias);
+            assert!(mounts[0].read_only);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_skips_non_executable_path_candidates() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let dirs: Vec<_> = ["directory", "nonexecutable", "executable"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect();
+        for dir in &dirs {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::create_dir(dirs[0].join("tool")).unwrap();
+        for (dir, mode) in [(&dirs[1], 0o644), (&dirs[2], 0o755)] {
+            let path = dir.join("tool");
+            std::fs::write(&path, "").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let host_path = std::env::join_paths(&dirs).unwrap();
+        let mut mounts = vec![];
+        let args = expose_host_binary(
+            &["tool".into()],
+            host_path.to_str().unwrap(),
+            None,
+            &mut mounts,
+            Path::new("/"),
+        );
+        assert_eq!(args[0], dirs[2].join("tool").to_str().unwrap());
+        assert_eq!(mounts.len(), 1);
+    }
+
+    #[test]
+    fn expose_host_binary_leaves_unknown_program_untouched() {
+        // GIVEN a companion script that only exists on the sandbox PATH
+        let mut mounts = vec![];
+
+        // WHEN
+        let args = expose_host_binary(
+            &["poll.sh".into()],
+            "/nonexistent",
+            None,
+            &mut mounts,
+            Path::new("/"),
+        );
+
+        // THEN
+        assert_eq!(args, vec!["poll.sh".to_string()]);
+        assert!(mounts.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expose_host_binary_handles_merged_and_split_usr_system_paths() {
+        let mut checked = 0;
+        for dir in ["/usr/bin", "/bin"] {
+            let invocation = Path::new(dir).join("sh");
+            if !is_executable(&invocation) {
+                continue;
+            }
+            checked += 1;
+            let resolved = invocation.canonicalize().unwrap();
+            let mut mounts = vec![];
+            let args = expose_host_binary(&["sh".into()], dir, None, &mut mounts, Path::new("/"));
+
+            assert_eq!(args[0], invocation.to_str().unwrap());
+            let destination = agentbox::resolve_visible_host_path(&invocation);
+            if ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64"]
+                .iter()
+                .any(|root| resolved.starts_with(root))
+                && destination == resolved
+            {
+                assert!(mounts.is_empty());
+            } else {
+                assert_eq!(mounts.len(), 1);
+                assert_eq!(mounts[0].host, resolved);
+                assert_eq!(mounts[0].container, destination);
+                assert!(mounts[0].read_only);
+            }
+        }
+        assert!(checked > 0, "expected a system sh on this Unix host");
+    }
 
     #[test]
     #[cfg(unix)]
@@ -320,6 +784,7 @@ mod tests {
     fn sandboxed_command_passes_step_env_into_container() {
         // GIVEN an inherited host path and a sandbox
         let sandbox = agentbox::SandboxConfig {
+            backend: agentbox::Backend::Podman,
             image: None,
             workspace_dir: PathBuf::from("/ws"),
             extra_mounts: vec![],

@@ -147,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let tty = !no_tty && std::io::stdin().is_terminal();
 
             let config = agentbox::SandboxConfig {
+                backend: agentbox::Backend::Podman,
                 image: Some(image),
                 workspace_dir: workspace,
                 extra_mounts,

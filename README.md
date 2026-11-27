@@ -77,6 +77,20 @@ cargo build --release
 # Binary is at: target/release/otter
 ```
 
+To install or update both `otter` and `agentbox` from this checkout using the locked dependencies:
+
+```bash
+just install
+```
+
+This uses Cargo's installation directory (normally `~/.cargo/bin`), which must be on your `PATH`. If the otter service is running, it is restarted so it runs the new binary.
+
+`agentbox` (needed for [sandboxed steps](USAGE.md#sandbox-configuration)) is not part of the GitHub releases, and `otter update` does not update it. Install or update it from a checkout of this repo:
+
+```bash
+cargo install --path crates/agentbox
+```
+
 ## User Data
 
 | Purpose                        | Linux                   | Windows            |
