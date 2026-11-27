@@ -19,9 +19,19 @@ pub struct ResourceConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxDef {
+    #[serde(default)]
+    pub backend: SandboxBackend,
     pub image: Option<String>,
     #[serde(default, deserialize_with = "deserialize_network_mode")]
     pub network: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxBackend {
+    #[default]
+    Podman,
+    Bwrap,
 }
 
 fn deserialize_network_mode<'de, D: serde::Deserializer<'de>>(
@@ -907,6 +917,27 @@ mod tests {
         assert_eq!(sandbox.network.as_deref(), Some("none"));
         assert!(def.steps[0].sandbox.is_none());
         assert_eq!(def.steps[1].sandbox, Some(false));
+    }
+
+    #[test]
+    fn sandbox_backend_defaults_to_podman_and_accepts_bwrap() {
+        // GIVEN
+        let toml_for = |sandbox: &str| {
+            format!(
+                "name = \"w\"\ntype = \"looping\"\n{sandbox}\n[[steps]]\ntype = \"shell\"\ncommand = [\"true\"]\n"
+            )
+        };
+
+        // WHEN
+        let default: WorkflowDef = toml::from_str(&toml_for("[sandbox]")).unwrap();
+        let bwrap: WorkflowDef =
+            toml::from_str(&toml_for("[sandbox]\nbackend = \"bwrap\"")).unwrap();
+        let invalid = toml::from_str::<WorkflowDef>(&toml_for("[sandbox]\nbackend = \"vm\""));
+
+        // THEN
+        assert_eq!(default.sandbox.unwrap().backend, SandboxBackend::Podman);
+        assert_eq!(bwrap.sandbox.unwrap().backend, SandboxBackend::Bwrap);
+        assert!(invalid.is_err());
     }
 
     #[test]
