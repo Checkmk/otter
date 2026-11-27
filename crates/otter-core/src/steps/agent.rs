@@ -328,6 +328,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_exiting_without_reading_its_prompt_reports_its_own_failure() {
+        // GIVEN an agent that exits without reading stdin, and a prompt larger than
+        // the pipe buffer, so writing it always hits the closed pipe
+        let scratch = tempfile::tempdir().unwrap();
+        let script = crate::test_helpers::write_executable_script(
+            scratch.path(),
+            "failing-agent.sh",
+            "#!/bin/bash\necho 'partial work'\necho 'boom' >&2\nexit 3\n",
+        )
+        .unwrap();
+        let ctx = step_context(scratch.path(), crate::session::AgentSessionManager::new());
+        let mut step_def = agent_step(
+            Default::default(),
+            Some(vec![script.to_string_lossy().to_string()]),
+        );
+        step_def.message = Some("x".repeat(1024 * 1024));
+
+        // WHEN
+        let result = AgentExecutor.execute(&step_def, &ctx).await;
+
+        // THEN
+        assert!(result.is_err());
+        let written = std::fs::read_to_string(scratch.path().join("step-2-output.md")).unwrap();
+        assert!(written.contains("partial work"), "{written}");
+        assert!(written.contains("exited with code 3"), "{written}");
+    }
+
+    #[tokio::test]
     async fn crashed_agent_leaves_session_id_and_stream_in_scratch_dir() {
         // GIVEN
         let scratch = tempfile::tempdir().unwrap();
